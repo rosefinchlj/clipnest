@@ -9,6 +9,25 @@ use raw_window_handle::{
 };
 use std::num::NonZeroIsize;
 
+/// 是否隐藏启动（正式模式默认隐藏：托盘常驻，等待快捷键/托盘唤起）。
+///
+/// 环境变量（开发/测试）：
+/// - `CLIPNEST_START_VISIBLE=1`：启动即显示；
+/// - `CLIPNEST_START_HIDDEN=1`：强制隐藏；
+/// - `CLIPNEST_NO_SYS=1`：跳过系统层（联调 Store/UI 时默认显示窗口）。
+pub fn start_hidden(preview_mode: bool) -> bool {
+    if preview_mode {
+        return false;
+    }
+    if std::env::var_os("CLIPNEST_START_VISIBLE").is_some() {
+        return false;
+    }
+    if std::env::var_os("CLIPNEST_START_HIDDEN").is_some() {
+        return true;
+    }
+    std::env::var_os("CLIPNEST_NO_SYS").is_none()
+}
+
 /// 从 eframe Frame 取原生 HWND（isize）。
 pub fn hwnd_of_frame(frame: &eframe::Frame) -> Option<isize> {
     match frame.window_handle().ok()?.as_raw() {

@@ -170,6 +170,59 @@ UI 线程，由 Lead 在 `app.rs` 转发给 Store（保持 Sys 不依赖 Store�
   `write_clipboard(&PastePayload, data_dir: &Path) -> Result<(), ClipError>`；格式优先级
   HDROP > UNICODETEXT > PNG > DIBV5 > DIB；文本 ≤ `max_text_bytes`、图片 ≤ `max_image_pixels`、
   文件 ≤ `max_files_per_clip`；DIB 解析必须有单元测试（24/32bpp、top-down、BITFIELDS、V5）。
+- **clipboard 域接口（clipboard-dev 实现，sys 调用）**，`src/clipboard/mod.rs` 导出：
+
+```rust
+pub const SELF_MARKER_FORMAT: &str = "ClipNest.SelfWrite";
+
+/// 原始剪贴板内容（读取阶段，未归一化）。
+pub struct RawClipboard {
+    pub text: Option<String>,
+    /// 已是 PNG 编码的图片（CF_PNG 注册格式优先，其次由 DIB 转码；二者只保留一个）。
+    pub png: Option<Vec<u8>>,
+    /// 原始 CF_DIB/CF_DIBV5 字节（仅在无 PNG 时保留，供转码兜底/日志）。
+    pub dib: Option<Vec<u8>>,
+    pub files: Vec<std::path::PathBuf>,
+    /// 含 Clipboard Viewer Ignore 或本程序自写标记 → 不应入库。
+    pub ignore: bool,
+}
+
+pub struct CaptureLimits {
+    pub max_text_bytes: u64,
+    pub max_image_pixels: u32,
+    pub max_files: usize,
+}
+impl CaptureLimits {
+    pub fn from_settings(settings: &crate::model::Settings) -> Self; // 字段缺失时用默认
+    pub fn defaults() -> Self;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClipError {
+    #[error("剪贴板被占用")] Busy,
+    #[error("Win32 错误: {0}")] Win32(String),
+    #[error("图片处理失败: {0}")] Image(String),
+    #[error("IO 错误: {0}")] Io(#[from] std::io::Error),
+}
+pub type ClipResult<T> = Result<T, ClipError>;
+
+/// 读取系统剪贴板（内部 5×20ms 重试 OpenClipboard；只在 Sys 线程调用）。
+pub fn read_clipboard() -> ClipResult<RawClipboard>;
+
+/// 归一化为 ClipInput（优先级 HDROP > 非空文本 > 图片；忽略空白文本/超限内容；
+/// 内部计算 SHA-256 hash 并填 preview/byte_len/width/height）。
+pub fn normalize(raw: RawClipboard, limits: &CaptureLimits) -> Option<ClipInput>;
+
+/// 把 Store 提供的粘贴载荷写回系统剪贴板（文本/图片 DIB+PNG 注册格式/文件 CF_HDROP），
+/// 并写入 SELF_MARKER_FORMAT 标记避免自身的 WM_CLIPBOARDUPDATE 被再次采集。
+pub fn write_clipboard(payload: &crate::model::PastePayload, data_dir: &std::path::Path) -> ClipResult<()>;
+```
+
+> Sys 侧：采集到 `RawClipboard.ignore == true` 时直接丢弃；否则 `normalize` 后填
+> `source_app/source_title/captured_at` 再发 `Event::Captured`。图片 PNG 转码与 DIB 解析、
+> CF_HDROP 构造、文本全局内存读写全部封装在 clipboard 域，sys 不直接碰这些格式。
+> DIB 解析必须有单元测试（24/32bpp、top-down、BITFIELDS、V5、损坏输入不 panic），
+> `write_clipboard` 的 `build_dib`/`build_hdrop` 纯函数也要测试。
 - 图像内存安全：`GlobalLock` 后必须 `GlobalUnlock`；`OpenClipboard` 失败 5×20ms 重试；
   所有错误路径不得泄漏句柄、不得 panic。
 

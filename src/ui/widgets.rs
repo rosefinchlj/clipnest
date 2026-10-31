@@ -268,12 +268,13 @@ pub fn search_box(
         },
     );
 
-    // 右侧：清除按钮 / 快捷键提示（按提示文本实际宽度预留，避免被裁切）
-    let hint_width = right_hint
-        .map(|hint| paint::text_width(ui, hint, theme::font_aux()) + 22.0)
-        .unwrap_or(28.0);
+    // 右侧：清除按钮 / 快捷键提示（画成键帽样式，避免反引号等窄字形被误认为被裁切）
+    let mono_font = FontId::new(theme::SIZE_AUX, egui::FontFamily::Monospace);
+    let hint_size = right_hint
+        .map(|hint| paint::text_width(ui, hint, mono_font.clone()) + 14.0)
+        .unwrap_or(0.0);
     let right_reserved = if text.is_empty() {
-        hint_width.max(24.0)
+        (hint_size + 12.0).max(24.0)
     } else {
         28.0
     };
@@ -281,12 +282,27 @@ pub fn search_box(
     let mut clear_clicked = false;
     if text.is_empty() {
         if let Some(hint) = right_hint {
+            let key_rect = Rect::from_center_size(
+                Pos2::new(rect.right() - 10.0 - hint_size / 2.0, rect.center().y),
+                Vec2::new(hint_size, 18.0),
+            );
+            ui.painter().rect_filled(
+                key_rect,
+                CornerRadius::same(4),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 10),
+            );
+            ui.painter().rect_stroke(
+                key_rect,
+                CornerRadius::same(4),
+                theme::divider(),
+                StrokeKind::Inside,
+            );
             ui.painter().text(
-                Pos2::new(rect.right() - 12.0, rect.center().y),
-                Align2::RIGHT_CENTER,
+                key_rect.center(),
+                Align2::CENTER_CENTER,
                 hint,
-                theme::font_aux(),
-                theme::TEXT_WEAK,
+                mono_font.clone(),
+                theme::TEXT_SECONDARY,
             );
         }
     } else {

@@ -169,17 +169,8 @@ fn run_native(preview: Option<String>) -> eframe::Result<()> {
 
     let is_picker_preview = preview.as_deref() == Some("picker");
     // 正式模式默认隐藏启动（托盘常驻，等全局快捷键/托盘唤起）；
-    // CLIPNEST_START_VISIBLE=1 / CLIPNEST_NO_SYS=1 时直接显示窗口（开发联调）；
-    // CLIPNEST_START_HIDDEN=1 强制隐藏（测试隐藏启动路径）。
-    let start_hidden = if preview.is_some() {
-        false
-    } else if std::env::var_os("CLIPNEST_START_VISIBLE").is_some() {
-        false
-    } else if std::env::var_os("CLIPNEST_START_HIDDEN").is_some() {
-        true
-    } else {
-        std::env::var_os("CLIPNEST_NO_SYS").is_none()
-    };
+    // 环境变量见 window::start_hidden 注释。
+    let start_hidden = window::start_hidden(preview.is_some());
     let size = if preview.is_some() {
         [1100.0, 720.0]
     } else {

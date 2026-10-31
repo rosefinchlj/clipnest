@@ -17,7 +17,7 @@ use crate::model::{
 };
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{theme, ManagerPage, UiAction, UiState, WindowMode};
-use eframe::egui::{self, Align2, Color32, Vec2};
+use eframe::egui::{self, Color32, Rect, Vec2};
 use std::cell::RefCell;
 
 thread_local! {
@@ -196,22 +196,47 @@ impl PreviewState {
         } = self;
 
         if mode == "picker" {
-            // 复刻真实候选窗：透明桌面背景 + 620×560 圆角面板（外层窗口 660×620）
+            // 复刻真实候选窗：桌面底色 + 620×560 圆角面板（外层原生窗口 660×620）
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(Color32::from_rgb(0x0B, 0x0D, 0x11)))
                 .show(ctx, |_ui| {});
-            let frame = theme::picker_frame().shadow(theme::window_shadow());
-            egui::Window::new("clipnest-preview-picker")
-                .title_bar(false)
-                .resizable(false)
-                .movable(false)
-                .collapsible(false)
-                .fixed_size(Vec2::new(620.0, 560.0))
-                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-                .frame(frame)
-                .show(ctx, |ui| {
-                    actions = state.render_into(ui, thumbs);
-                });
+            let screen = ctx.screen_rect();
+            let panel_rect = Rect::from_center_size(screen.center(), Vec2::new(620.0, 560.0));
+            let layer = egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new("clipnest-preview-picker"),
+            );
+            let painter = ctx.layer_painter(layer);
+            let radius = egui::CornerRadius::same(theme::RADIUS_WINDOW);
+            // 近似投影（多层半透明圆角矩形）
+            painter.rect_filled(
+                panel_rect.translate(Vec2::new(0.0, 6.0)).expand(8.0),
+                radius,
+                Color32::from_black_alpha(50),
+            );
+            painter.rect_filled(
+                panel_rect.translate(Vec2::new(0.0, 3.0)).expand(3.0),
+                radius,
+                Color32::from_black_alpha(60),
+            );
+            painter.rect_filled(panel_rect, radius, theme::window_bg());
+            painter.rect_stroke(
+                panel_rect,
+                radius,
+                theme::divider(),
+                egui::StrokeKind::Inside,
+            );
+            let content_rect = panel_rect.shrink(theme::PICKER_PAD);
+            let mut child = egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new("clipnest-preview-picker-ui"),
+                egui::UiBuilder::new()
+                    .max_rect(content_rect)
+                    .layer_id(layer),
+            );
+            child.set_clip_rect(panel_rect);
+            child.set_min_size(content_rect.size());
+            actions = state.render_into(&mut child, thumbs);
         } else {
             // 管理台：整窗填充（窗口 1100×720，由 Lead 控制）
             egui::CentralPanel::default()

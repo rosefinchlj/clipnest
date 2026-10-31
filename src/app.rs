@@ -58,6 +58,9 @@ pub struct ClipNestApp {
     paste_due: Option<(Instant, crate::model::PastePayload, bool)>,
     unfocused_since: Option<Instant>,
     first_stats_at: Option<Instant>,
+    /// App 创建时刻（调试用：隐藏启动后延时显示）。
+    #[allow(dead_code)]
+    started_at: Instant,
     quitting: bool,
 }
 
@@ -67,6 +70,7 @@ impl ClipNestApp {
         crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
         crate::ui::install_fonts(&cc.egui_ctx);
         crate::ui::install_theme(&cc.egui_ctx);
+        let window_visible = !crate::window::start_hidden(preview.is_some());
 
         let settings_shared = Arc::new(Mutex::new(settings.clone()));
         let (events_tx, events) = mpsc::channel::<Event>();
@@ -139,7 +143,7 @@ impl ClipNestApp {
             hwnd: None,
             backdrop: None,
             positioned: false,
-            window_visible: true,
+            window_visible,
             init_error,
             manager_mode: false,
             target_hwnd: 0,
@@ -147,6 +151,7 @@ impl ClipNestApp {
             paste_due: None,
             unfocused_since: None,
             first_stats_at: Some(Instant::now() + FIRST_STATS_DELAY),
+            started_at: Instant::now(),
             quitting: false,
         }
     }
@@ -598,6 +603,26 @@ impl ClipNestApp {
         }
     }
 
+    /// 调试用：隐藏启动后 `CLIPNEST_DEV_SHOW_MS` 毫秒自动显示候选窗，
+    /// 验证"隐藏窗口仍然运行 update、可被事件唤起"这条链路。
+    #[cfg(debug_assertions)]
+    fn dev_show_after(&mut self, ctx: &egui::Context) {
+        if self.window_visible {
+            return;
+        }
+        let Some(ms) = std::env::var("CLIPNEST_DEV_SHOW_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+        else {
+            return;
+        };
+        ctx.request_repaint_after(Duration::from_millis(50));
+        if self.started_at.elapsed().as_millis() as u64 >= ms {
+            crate::logging::log("dev: show picker from hidden startup");
+            self.show_picker_window(ctx);
+        }
+    }
+
     fn render_init_error(&self, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(
@@ -644,6 +669,8 @@ impl eframe::App for ClipNestApp {
         self.dev_hotkeys(ctx);
         #[cfg(debug_assertions)]
         self.dev_auto_switch(ctx);
+        #[cfg(debug_assertions)]
+        self.dev_show_after(ctx);
 
         if let Some(mode) = self.preview.clone() {
             crate::ui::preview::show(ctx, &mode);

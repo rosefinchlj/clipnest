@@ -31,8 +31,9 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, VK_F10, VK_LWIN,
-    VK_OEM_3, VK_RWIN, VK_V,
+    RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, VK_F10, VK_LWIN, VK_OEM_3, VK_RWIN,
+    VK_V,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW,
@@ -79,6 +80,8 @@ enum HookMode {
     SwallowV,
     /// 吞 V down/up，并吞掉紧随其后的 Win up（开始菜单补偿）。
     SwallowVWinUp,
+    /// 同 SwallowVWinUp，但补吞 Win up 后 30ms 注入一次 Win up 清掉系统键状态（补偿修复版）。
+    SwallowVWinUpFix,
 }
 
 impl HookMode {
@@ -87,6 +90,7 @@ impl HookMode {
             "off" => Some(HookMode::Off),
             "swallow_v" => Some(HookMode::SwallowV),
             "swallow_v_winup" | "swallow_v+winup" => Some(HookMode::SwallowVWinUp),
+            "swallow_v_winup_fix" => Some(HookMode::SwallowVWinUpFix),
             _ => None,
         }
     }
@@ -96,6 +100,7 @@ impl HookMode {
             HookMode::Off => "off",
             HookMode::SwallowV => "swallow_v",
             HookMode::SwallowVWinUp => "swallow_v_winup",
+            HookMode::SwallowVWinUpFix => "swallow_v_winup_fix",
         }
     }
 }
@@ -297,6 +302,29 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: WPARAM, lparam: LP
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
+/// 注入一次「Win 抬起」：用于补偿模式清除被吞掉的 Win up 造成的系统键状态粘滞。
+fn inject_win_up() {
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VK_LWIN,
+                wScan: 0,
+                dwFlags: KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let sent = unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
+    if sent != 1 {
+        p0log(&format!(
+            "HOOK_COMPENSATE|inject_win_up fail err={}",
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
 /// 返回 Some(true)=吞掉，Some(false)=放行，None=与本策略无关。
 fn hook_decide(ctx: &HookCtx, vk: u32, is_down: bool) -> Option<bool> {
     let vk_lwin = VK_LWIN as u32;
@@ -311,12 +339,21 @@ fn hook_decide(ctx: &HookCtx, vk: u32, is_down: bool) -> Option<bool> {
         }
         ctx.win_down.store(false, Ordering::SeqCst);
         let swallowed_v = ctx.swallowed_v_cycle.swap(false, Ordering::SeqCst);
-        if ctx.mode == HookMode::SwallowVWinUp && swallowed_v {
+        if matches!(ctx.mode, HookMode::SwallowVWinUp | HookMode::SwallowVWinUpFix) && swallowed_v {
             // 开始菜单补偿：吞掉 Win up，避免系统看到「干净的一次 Win 点击」
             if let Ok(mut s) = ctx.status.lock() {
                 s.win_up_swallowed += 1;
             }
             p0log("HOOK_SWALLOW|win_up（开始菜单补偿）");
+            if ctx.mode == HookMode::SwallowVWinUpFix {
+                // 补吞后系统异步键状态会停在「Win 按下」；30ms 后注入一次 Win up 清状态。
+                // （正式实现应由 Sys 线程用 SetTimer 执行，不在钩子回调里做耗时操作）
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(30));
+                    inject_win_up();
+                    p0log("HOOK_COMPENSATE|inject_win_up（清除粘住的 Win 键状态）");
+                });
+            }
             return Some(true);
         }
         return Some(false);
