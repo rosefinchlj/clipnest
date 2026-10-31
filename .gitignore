@@ -1,0 +1,4 @@
+/target/
+/p0.log
+*.log
+/target/p0-*.png
