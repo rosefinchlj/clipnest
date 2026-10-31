@@ -1,8 +1,899 @@
-//! UI 域：主题、字体、Picker 面板、Manager 管理台、复用控件、缩略图。
+//! UI 域：主题、字体、Picker 候选窗、Manager 管理台、复用控件、缩略图缓存。
 //!
-//! 由 ui teammate 实现。对外只暴露 [`crate::ui::ClipNestApp`] 相关的渲染入口
-//! （由 Lead 在 `app.rs` 中接线）；`ui::preview` 提供 `--ui-preview` 独立预览模式。
+//! 对外 API 见 `docs/CONTRACT.md` §4（由 Lead 在 `app.rs` 中接线）：
+//! - [`install_theme`] / [`install_fonts`]：App 启动时各调用一次；
+//! - [`UiState`] / [`UiAction`] / [`WindowMode`] / [`ManagerPage`]：每帧 `show()` 返回动作；
+//! - [`ThumbCache`]：后台缩略图缓存；
+//! - [`preview`]：`--ui-preview picker|manager|settings|about` 独立假数据预览。
+//!
+//! 数据流（spec §9.3）：UI 不直接碰数据库/剪贴板，所有副作用都通过 [`UiAction`] 交给 Lead。
 
 #![allow(dead_code)]
 
+pub mod fonts;
+pub mod keys;
+pub mod manager;
+pub mod pages;
+pub mod paint;
+pub mod picker;
 pub mod preview;
+pub mod theme;
+pub mod thumbs;
+pub mod widgets;
+
+pub use fonts::install_fonts;
+pub use theme::install_theme;
+pub use thumbs::ThumbCache;
+
+use crate::model::{
+    ClipFilter, ClipId, ClipItem, Settings, SearchPage, Stats, WinVStatus,
+};
+use eframe::egui;
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+/// 搜索防抖 80ms（spec §6.1/§11）。
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(80);
+/// Toast 显示 1.6s（spec §6.3/§7.3）。
+const TOAST_DURATION: Duration = Duration::from_millis(1600);
+/// 翻页/加载更多时距列表底部多少像素触发。
+const LOAD_MORE_MARGIN: f32 = 240.0;
+
+// ---------------------------------------------------------------------------
+// 对外类型（CONTRACT §4）
+// ---------------------------------------------------------------------------
+
+/// 窗口模式：候选窗 / 管理台（同一个原生窗口运行时切换）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowMode {
+    Picker,
+    Manager,
+}
+
+/// 管理台页面。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ManagerPage {
+    History,
+    Favorites,
+    Settings,
+    About,
+}
+
+impl ManagerPage {
+    /// 导航显示名。
+    pub fn label(self) -> &'static str {
+        match self {
+            ManagerPage::History => "历史",
+            ManagerPage::Favorites => "收藏",
+            ManagerPage::Settings => "设置",
+            ManagerPage::About => "关于",
+        }
+    }
+}
+
+/// UI → Lead 的动作（Lead 负责映射为 Store/Sys 命令与窗口命令）。
+#[derive(Clone, Debug)]
+pub enum UiAction {
+    /// 查询/翻页；`gen` 用于丢弃过期结果。
+    Search {
+        text: String,
+        filter: ClipFilter,
+        offset: usize,
+        gen: u64,
+    },
+    /// 粘贴选中项（`plain=true` 只复制到剪贴板）。
+    Paste { id: ClipId, plain: bool },
+    /// 粘贴前先取载荷（Lead 发 `StoreCmd::GetPastePayload`）。
+    RequestPastePayload(ClipId),
+    /// 收藏/取消收藏。
+    Pin { id: ClipId, pinned: bool },
+    /// 删除一批记录。
+    Delete { ids: Vec<ClipId> },
+    /// 清空历史。
+    Clear { delete_blobs: bool },
+    /// 把文件条目实体复制进数据目录（收藏时）。
+    SaveFavoriteFiles(ClipId),
+    /// 打开管理台。
+    OpenManager,
+    /// 回到候选窗。
+    OpenPicker,
+    /// 隐藏窗口（隐藏而非退出）。
+    HideWindow,
+    /// 退出程序。
+    Quit,
+    /// 保存设置（Lead 落盘并应用快捷键/自启等）。
+    SetSettings(Box<Settings>),
+    /// 设置开机自启。
+    SetAutostart(bool),
+    /// 暂停/恢复记录。
+    SetPause(bool),
+    /// 导出 JSON。
+    ExportJson,
+    /// 打开数据目录。
+    OpenDataDir,
+    /// 刷新统计。
+    RefreshStats,
+    /// 切换管理台页面。
+    SelectManagerPage(ManagerPage),
+}
+
+// ---------------------------------------------------------------------------
+// 内部状态
+// ---------------------------------------------------------------------------
+
+/// 待发送的搜索请求（防抖用）。
+struct PendingSearch {
+    gen: u64,
+    due: Instant,
+    offset: usize,
+}
+
+/// Toast 状态。
+struct ToastState {
+    text: String,
+    until: Instant,
+}
+
+/// 确认框要执行的动作。
+enum ConfirmKind {
+    Delete(Vec<ClipId>),
+    Clear,
+}
+
+/// 确认框（内容 + 待执行动作）。
+struct Confirm {
+    state: widgets::ConfirmState,
+    kind: ConfirmKind,
+}
+
+/// UI 全局状态（每帧由 [`UiState::show`] 渲染）。
+pub struct UiState {
+    // ---- 模式与页面 ----
+    mode: WindowMode,
+    manager_page: ManagerPage,
+    preview: bool,
+
+    // ---- 设置副本与草稿 ----
+    settings: Settings,
+    settings_draft: Settings,
+
+    // ---- 列表数据 ----
+    items: Vec<ClipItem>,
+    total: usize,
+    loading: bool,
+    active_gen: u64,
+    next_gen: u64,
+    append_gen: Option<u64>,
+    append_requested_len: usize,
+    selected: Option<usize>,
+    /// 键盘导航后需要滚动到的行下标（下一次渲染列表时应用一次）。
+    pending_scroll_row: Option<usize>,
+    stats: Stats,
+
+    // ---- 搜索 ----
+    search_text: String,
+    search_focus: bool,
+    search_focused: bool,
+    pending: Option<PendingSearch>,
+    picker_filter: ClipFilter,
+    manager_filter: ClipFilter,
+
+    // ---- 反馈 ----
+    toast: Option<ToastState>,
+    paused: bool,
+    capturing: bool,
+
+    // ---- 状态展示 ----
+    winv_status: WinVStatus,
+    hotkey_status: Option<(bool, Option<String>)>,
+
+    // ---- Manager ----
+    detail_open: bool,
+    multi_selected: HashSet<ClipId>,
+    last_click_index: Option<usize>,
+    confirm: Option<Confirm>,
+    manager_search_focus: bool,
+
+    // ---- 设置页 ----
+    rec: widgets::HotkeyRecorderState,
+    ignore_input: String,
+    clear_delete_blobs: bool,
+}
+
+impl UiState {
+    /// 创建 UI 状态（Lead 在 App 启动时调用一次）。
+    pub fn new(_ctx: &egui::Context, settings: &Settings) -> Self {
+        let mut s = Self {
+            mode: WindowMode::Picker,
+            manager_page: ManagerPage::History,
+            preview: false,
+            settings: settings.clone(),
+            settings_draft: settings.clone(),
+            items: Vec::new(),
+            total: 0,
+            loading: false,
+            active_gen: 0,
+            next_gen: 0,
+            append_gen: None,
+            append_requested_len: 0,
+            selected: None,
+            pending_scroll_row: None,
+            stats: Stats::default(),
+            search_text: String::new(),
+            search_focus: true,
+            search_focused: false,
+            pending: None,
+            picker_filter: ClipFilter::All,
+            manager_filter: ClipFilter::All,
+            toast: None,
+            paused: settings.pause_capture,
+            capturing: false,
+            winv_status: WinVStatus::Unknown,
+            hotkey_status: None,
+            detail_open: true,
+            multi_selected: HashSet::new(),
+            last_click_index: None,
+            confirm: None,
+            manager_search_focus: false,
+            rec: widgets::HotkeyRecorderState::default(),
+            ignore_input: String::new(),
+            clear_delete_blobs: true,
+        };
+        s.schedule_search(true);
+        s
+    }
+
+    /// 应用 Store 返回的搜索页（gen 过期自动丢弃；翻页结果追加）。
+    pub fn apply_search_page(&mut self, page: SearchPage) {
+        if page.gen == self.active_gen {
+            self.items = page.items;
+            self.total = page.total;
+            self.loading = false;
+            self.append_gen = None;
+            self.append_requested_len = 0;
+            // 修正选择位置 + 清理失效的多选
+            if self.items.is_empty() {
+                self.selected = None;
+            } else {
+                let idx = self.selected.unwrap_or(0).min(self.items.len() - 1);
+                self.selected = Some(idx);
+            }
+            let ids: HashSet<ClipId> = self.items.iter().map(|i| i.id).collect();
+            self.multi_selected.retain(|id| ids.contains(id));
+            self.last_click_index = None;
+        } else if Some(page.gen) == self.append_gen {
+            for item in page.items {
+                if !self.items.iter().any(|x| x.id == item.id) {
+                    self.items.push(item);
+                }
+            }
+            self.total = page.total;
+            self.append_gen = None;
+            self.loading = false;
+        }
+        // 其它 gen：过期结果，直接丢弃
+    }
+
+    /// 应用统计信息。
+    pub fn apply_stats(&mut self, stats: Stats) {
+        self.stats = stats;
+    }
+
+    /// 应用 Win+V 接管状态。
+    pub fn apply_winv(&mut self, status: WinVStatus) {
+        self.winv_status = status;
+    }
+
+    /// 应用备用快捷键注册状态。
+    pub fn apply_hotkey_status(&mut self, ok: bool, reason: Option<String>) {
+        if !ok {
+            self.toast(format!(
+                "备用快捷键注册失败：{}",
+                reason
+                    .clone()
+                    .unwrap_or_else(|| "可能被其他程序占用".to_string())
+            ));
+        }
+        self.hotkey_status = Some((ok, reason));
+    }
+
+    /// 同步最新设置（Lead 保存/加载后调用）。
+    pub fn set_settings(&mut self, settings: &Settings) {
+        self.settings = settings.clone();
+        self.settings_draft = settings.clone();
+        self.paused = settings.pause_capture;
+    }
+
+    /// 弹一条 toast。
+    pub fn toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some(ToastState {
+            text: msg.into(),
+            until: Instant::now() + TOAST_DURATION,
+        });
+    }
+
+    /// 当前模式。
+    pub fn mode(&self) -> WindowMode {
+        self.mode
+    }
+
+    /// 进入管理台指定页（Lead 处理托盘「管理历史」/首次运行等）。
+    pub fn enter_manager(&mut self, page: ManagerPage) {
+        self.mode = WindowMode::Manager;
+        self.manager_page = page;
+        self.manager_search_focus = false;
+        self.search_focus = false;
+        if matches!(page, ManagerPage::History | ManagerPage::Favorites) {
+            self.schedule_search(true);
+        }
+    }
+
+    /// 回到候选窗：清空搜索与过滤、聚焦搜索框、立即查询（Lead 在呼出面板时调用）。
+    pub fn enter_picker(&mut self) {
+        self.mode = WindowMode::Picker;
+        self.search_text.clear();
+        self.picker_filter = ClipFilter::All;
+        self.selected = Some(0);
+        self.pending_scroll_row = Some(0);
+        self.search_focus = true;
+        self.pending = None;
+        self.append_gen = None;
+        self.schedule_search(true);
+    }
+
+    /// 立即重发当前查询（ClipsChanged / 粘贴成功 / 设置变更后调用）。
+    pub fn refresh(&mut self) {
+        self.append_gen = None;
+        self.append_requested_len = 0;
+        self.schedule_search(true);
+    }
+
+    /// 当前是否在文本输入/录制快捷键（Lead 用于决定失焦是否隐藏）。
+    pub fn is_capturing_input(&self) -> bool {
+        self.capturing
+    }
+
+    /// 本帧产生的的动作是否包含隐藏/退出（预览模式用于示意）。
+    pub fn preview_mode(&mut self, on: bool) {
+        self.preview = on;
+    }
+
+    // -----------------------------------------------------------------------
+    // 每帧入口
+    // -----------------------------------------------------------------------
+
+    /// 每帧渲染；返回本帧产生的动作（Lead 负责执行并清空）。
+    pub fn show(&mut self, ctx: &egui::Context, thumbs: &mut ThumbCache) -> Vec<UiAction> {
+        let mut actions = Vec::new();
+        self.begin_frame(ctx, &mut actions);
+        match self.mode {
+            WindowMode::Picker => {
+                egui::CentralPanel::default()
+                    .frame(theme::picker_frame())
+                    .show(ctx, |ui| picker::show(self, ui, thumbs, &mut actions));
+            }
+            WindowMode::Manager => {
+                egui::CentralPanel::default()
+                    .frame(theme::manager_frame())
+                    .show(ctx, |ui| manager::show(self, ui, thumbs, &mut actions));
+            }
+        }
+        self.show_confirm(ctx, &mut actions);
+        self.end_frame(ctx);
+        actions
+    }
+
+    /// 渲染到指定 `Ui`（预览模式用：外层窗口由 preview 控制）。
+    pub fn render_into(
+        &mut self,
+        ui: &mut egui::Ui,
+        thumbs: &mut ThumbCache,
+    ) -> Vec<UiAction> {
+        let ctx = ui.ctx().clone();
+        let mut actions = Vec::new();
+        self.begin_frame(&ctx, &mut actions);
+        match self.mode {
+            WindowMode::Picker => picker::show(self, ui, thumbs, &mut actions),
+            WindowMode::Manager => manager::show(self, ui, thumbs, &mut actions),
+        }
+        self.show_confirm(&ctx, &mut actions);
+        self.end_frame(&ctx);
+        actions
+    }
+
+    /// 每帧开始：处理 toast 过期、搜索防抖到期、重绘调度。
+    fn begin_frame(&mut self, ctx: &egui::Context, actions: &mut Vec<UiAction>) {
+        if matches!(&self.toast, Some(t) if Instant::now() >= t.until) {
+            self.toast = None;
+        }
+        if let Some(pending) = &self.pending {
+            let now = Instant::now();
+            if now >= pending.due {
+                let pending = self.pending.take().expect("pending 已判定存在");
+                self.active_gen = pending.gen;
+                self.loading = true;
+                actions.push(UiAction::Search {
+                    text: self.search_text.clone(),
+                    filter: self.effective_filter(),
+                    offset: pending.offset,
+                    gen: pending.gen,
+                });
+            }
+        }
+        if let Some(pending) = &self.pending {
+            ctx.request_repaint_after(pending.due.saturating_duration_since(Instant::now()));
+        }
+        if self.toast.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(80));
+        }
+        if self.rec.recording {
+            ctx.request_repaint();
+        }
+        self.capturing = false;
+    }
+
+    /// 每帧结束：记录是否在输入中，必要时请求重绘。
+    fn end_frame(&mut self, ctx: &egui::Context) {
+        let focused = ctx.memory(|m| m.focused().is_some());
+        self.capturing = focused || self.rec.recording;
+        // 呼吸动画/淡出需要持续重绘
+        if self.toast.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(80));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 查询调度
+    // -----------------------------------------------------------------------
+
+    /// 当前生效的过滤条件（收藏页强制只看收藏）。
+    pub(crate) fn effective_filter(&self) -> ClipFilter {
+        match self.mode {
+            WindowMode::Picker => self.picker_filter,
+            WindowMode::Manager => match self.manager_page {
+                ManagerPage::Favorites => ClipFilter::Pinned,
+                _ => self.manager_filter,
+            },
+        }
+    }
+
+    /// 单次查询条数：候选窗 200 / 管理台 500（spec §11）。
+    fn list_limit(&self) -> usize {
+        match self.mode {
+            WindowMode::Picker => 200,
+            WindowMode::Manager => 500,
+        }
+    }
+
+    /// 安排一次搜索（`immediate` 时立即发，否则防抖 80ms）。
+    fn schedule_search(&mut self, immediate: bool) {
+        self.next_gen += 1;
+        let gen = self.next_gen;
+        let due = if immediate {
+            Instant::now()
+        } else {
+            Instant::now() + SEARCH_DEBOUNCE
+        };
+        self.append_gen = None;
+        self.append_requested_len = 0;
+        self.pending = Some(PendingSearch {
+            gen,
+            due,
+            offset: 0,
+        });
+    }
+
+    /// 请求加载下一页（滚动到列表底部附近时调用）。
+    pub(crate) fn request_more(&mut self, actions: &mut Vec<UiAction>) {
+        if self.loading || self.pending.is_some() {
+            return;
+        }
+        if self.items.len() >= self.total || self.items.is_empty() {
+            return;
+        }
+        if self.append_requested_len == self.items.len() {
+            return;
+        }
+        self.next_gen += 1;
+        let gen = self.next_gen;
+        self.append_gen = Some(gen);
+        self.append_requested_len = self.items.len();
+        self.loading = true;
+        actions.push(UiAction::Search {
+            text: self.search_text.clone(),
+            filter: self.effective_filter(),
+            offset: self.items.len(),
+            gen,
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // 动作辅助
+    // -----------------------------------------------------------------------
+
+    /// 当前选中的条目。
+    pub(crate) fn selected_item(&self) -> Option<&ClipItem> {
+        self.selected.and_then(|i| self.items.get(i))
+    }
+
+    /// 请求粘贴第 `index` 条：先要载荷，再发粘贴动作（Lead 按 plain 标志执行）。
+    pub(crate) fn paste_item(
+        &mut self,
+        index: usize,
+        plain: bool,
+        actions: &mut Vec<UiAction>,
+    ) {
+        let Some(item) = self.items.get(index) else {
+            return;
+        };
+        let id = item.id;
+        actions.push(UiAction::RequestPastePayload(id));
+        actions.push(UiAction::Paste { id, plain });
+    }
+
+    /// 收藏/取消收藏第 `index` 条（先乐观更新，Store 返回后会刷新）。
+    pub(crate) fn toggle_pin(&mut self, index: usize, actions: &mut Vec<UiAction>) {
+        let Some(item) = self.items.get_mut(index) else {
+            return;
+        };
+        item.pinned = !item.pinned;
+        let pinned = item.pinned;
+        let id = item.id;
+        actions.push(UiAction::Pin { id, pinned });
+        if pinned && self.items[index].kind == crate::model::ClipKind::Files {
+            // 收藏文件时把实体复制进数据目录（spec §12.2）
+            actions.push(UiAction::SaveFavoriteFiles(id));
+        }
+        self.toast(if pinned { "已收藏" } else { "已取消收藏" });
+    }
+
+    /// 删除一批记录（乐观移除，Store 结果刷新时校准）。
+    pub(crate) fn delete_ids(&mut self, ids: Vec<ClipId>, actions: &mut Vec<UiAction>) {
+        if ids.is_empty() {
+            return;
+        }
+        let set: HashSet<ClipId> = ids.iter().copied().collect();
+        let before = self.items.len();
+        self.items.retain(|it| !set.contains(&it.id));
+        self.total = self.total.saturating_sub(before - self.items.len());
+        self.multi_selected.retain(|id| !set.contains(id));
+        if self.items.is_empty() {
+            self.selected = None;
+        } else if let Some(sel) = self.selected {
+            self.selected = Some(sel.min(self.items.len() - 1));
+        }
+        actions.push(UiAction::Delete { ids });
+        self.toast("已删除");
+    }
+
+    /// 删除当前选中（收藏项二次确认，spec §6.1）。
+    pub(crate) fn request_delete_selected(&mut self, actions: &mut Vec<UiAction>) {
+        let ids: Vec<ClipId> = self.selected_item().map(|i| i.id).into_iter().collect();
+        self.request_delete_ids(ids, actions);
+    }
+
+    /// 删除一批记录：其中含收藏项时先弹确认框。
+    pub(crate) fn request_delete_ids(&mut self, ids: Vec<ClipId>, actions: &mut Vec<UiAction>) {
+        if ids.is_empty() {
+            return;
+        }
+        let any_pinned = self
+            .items
+            .iter()
+            .any(|item| ids.contains(&item.id) && item.pinned);
+        if any_pinned {
+            self.confirm = Some(Confirm {
+                state: widgets::ConfirmState {
+                    title: "删除收藏项".to_string(),
+                    message: format!(
+                        "选中的 {} 条记录里有收藏项，删除后不可恢复。确定删除吗？",
+                        ids.len()
+                    ),
+                    confirm_label: "删除".to_string(),
+                    danger: true,
+                },
+                kind: ConfirmKind::Delete(ids),
+            });
+        } else {
+            self.delete_ids(ids, actions);
+        }
+    }
+
+    /// 打开管理台某页（Picker 齿轮 / Ctrl+, 等）。
+    pub(crate) fn request_manager(
+        &mut self,
+        page: ManagerPage,
+        actions: &mut Vec<UiAction>,
+    ) {
+        self.mode = WindowMode::Manager;
+        self.manager_page = page;
+        self.search_focus = false;
+        if matches!(page, ManagerPage::History | ManagerPage::Favorites) {
+            self.schedule_search(true);
+        }
+        actions.push(UiAction::OpenManager);
+        actions.push(UiAction::SelectManagerPage(page));
+    }
+
+    /// 管理台内部切页（不请求 Lead 切窗口，只同步页面）。
+    pub(crate) fn go_manager_page(
+        &mut self,
+        page: ManagerPage,
+        actions: &mut Vec<UiAction>,
+    ) {
+        if self.manager_page == page {
+            return;
+        }
+        self.manager_page = page;
+        self.multi_selected.clear();
+        if matches!(page, ManagerPage::History | ManagerPage::Favorites) {
+            self.schedule_search(true);
+        }
+        actions.push(UiAction::SelectManagerPage(page));
+    }
+
+    /// 显示确认框（Lead 在错误/清空等场景也可调用 `toast`）。
+    fn show_confirm(&mut self, ctx: &egui::Context, actions: &mut Vec<UiAction>) {
+        let Some(confirm) = &self.confirm else {
+            return;
+        };
+        match widgets::confirm_dialog(ctx, &confirm.state) {
+            Some(true) => {
+                let confirm = self.confirm.take().expect("确认框存在");
+                match confirm.kind {
+                    ConfirmKind::Delete(ids) => self.delete_ids(ids, actions),
+                    ConfirmKind::Clear => {
+                        actions.push(UiAction::Clear {
+                            delete_blobs: self.clear_delete_blobs,
+                        });
+                        self.toast("正在清空历史…");
+                    }
+                }
+            }
+            Some(false) => {
+                self.confirm = None;
+            }
+            None => {}
+        }
+    }
+
+    /// 请求清空历史（设置页调用；二次确认）。
+    pub(crate) fn request_clear(&mut self) {
+        self.confirm = Some(Confirm {
+            state: widgets::ConfirmState {
+                title: "清空剪贴板历史".to_string(),
+                message: if self.clear_delete_blobs {
+                    "将删除全部历史记录，并同时删除图片/文件副本，操作不可恢复。确定继续吗？"
+                        .to_string()
+                } else {
+                    "将删除全部历史记录（保留图片/文件副本文件）。操作不可恢复，确定继续吗？"
+                        .to_string()
+                },
+                confirm_label: "清空".to_string(),
+                danger: true,
+            },
+            kind: ConfirmKind::Clear,
+        });
+    }
+
+    /// 设置页保存草稿。
+    pub(crate) fn save_settings_draft(&mut self, actions: &mut Vec<UiAction>) {
+        let draft = self.settings_draft.clone();
+        self.settings = draft.clone();
+        self.paused = draft.pause_capture;
+        actions.push(UiAction::SetSettings(Box::new(draft)));
+        self.toast("设置已保存");
+    }
+
+    // -----------------------------------------------------------------------
+    // 预览支持（assert 用）
+    // -----------------------------------------------------------------------
+}
+
+// ---------------------------------------------------------------------------
+// 测试
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ClipItem, ClipKind, SearchPage};
+
+    fn state() -> UiState {
+        UiState::new(&egui::Context::default(), &Settings::default())
+    }
+
+    fn page(gen: u64, n: usize) -> SearchPage {
+        SearchPage {
+            gen,
+            total: n,
+            items: (0..n)
+                .map(|i| ClipItem {
+                    id: i as i64 + 1,
+                    kind: ClipKind::Text,
+                    text: Some(format!("条目{i}")),
+                    ..Default::default()
+                })
+                .collect(),
+            elapsed_ms: 0,
+        }
+    }
+
+    #[test]
+    fn new_state_has_pending_initial_query() {
+        let s = state();
+        assert_eq!(s.mode(), WindowMode::Picker);
+        assert!(s.pending.is_some());
+        assert_eq!(s.effective_filter(), ClipFilter::All);
+    }
+
+    #[test]
+    fn apply_page_filters_stale_generation() {
+        let mut s = state();
+        s.active_gen = 5;
+        let mut p = page(4, 3);
+        p.total = 3;
+        s.apply_search_page(p);
+        assert!(s.items.is_empty(), "过期 gen 必须丢弃");
+
+        s.apply_search_page(page(5, 3));
+        assert_eq!(s.items.len(), 3);
+        assert_eq!(s.total, 3);
+        assert_eq!(s.selected, Some(0));
+    }
+
+    #[test]
+    fn append_result_appends_without_duplicates() {
+        let mut s = state();
+        s.active_gen = 1;
+        s.apply_search_page(page(1, 2));
+        s.append_gen = Some(2);
+        s.requested_more_for_test();
+        // 构造追加页（与第一页有重复 id）
+        let mut more = SearchPage {
+            gen: 2,
+            total: 4,
+            items: vec![
+                ClipItem {
+                    id: 2,
+                    ..Default::default()
+                },
+                ClipItem {
+                    id: 3,
+                    ..Default::default()
+                },
+            ],
+            elapsed_ms: 0,
+        };
+        more.gen = 2;
+        s.apply_search_page(more);
+        assert_eq!(s.items.len(), 3, "重复 id 不追加");
+        assert_eq!(s.total, 4);
+        assert!(s.append_gen.is_none());
+    }
+
+    #[test]
+    fn toast_lifecycle() {
+        let mut s = state();
+        assert!(s.toast.is_none());
+        s.toast("已复制");
+        assert!(s.toast.is_some());
+        // 手动过期
+        if let Some(t) = &mut s.toast {
+            t.until = Instant::now() - Duration::from_millis(1);
+        }
+        let mut actions = Vec::new();
+        s.begin_frame(&egui::Context::default(), &mut actions);
+        assert!(s.toast.is_none());
+    }
+
+    #[test]
+    fn search_debounce_eventually_dispatches_once() {
+        let mut s = state();
+        let ctx = egui::Context::default();
+        s.pending = None;
+        s.search_text = "中文".to_string();
+        s.schedule_search(false);
+        let mut actions = Vec::new();
+        // 未到期不发
+        s.begin_frame(&ctx, &mut actions);
+        assert!(actions.iter().all(|a| !matches!(a, UiAction::Search { .. })));
+        // 手动把到期时间提前
+        if let Some(p) = &mut s.pending {
+            p.due = Instant::now() - Duration::from_millis(1);
+        }
+        s.begin_frame(&ctx, &mut actions);
+        let searches: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, UiAction::Search { .. }))
+            .collect();
+        assert_eq!(searches.len(), 1);
+        // 发出后 pending 清空，不会重复发
+        actions.clear();
+        s.begin_frame(&ctx, &mut actions);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn enter_picker_resets_search_and_filter() {
+        let mut s = state();
+        s.mode = WindowMode::Manager;
+        s.search_text = "旧搜索".into();
+        s.picker_filter = ClipFilter::Pinned;
+        s.enter_picker();
+        assert_eq!(s.mode(), WindowMode::Picker);
+        assert!(s.search_text.is_empty());
+        assert_eq!(s.picker_filter, ClipFilter::All);
+        assert!(s.search_focus);
+        assert!(s.pending.is_some());
+    }
+
+    #[test]
+    fn toggle_pin_and_delete_are_optimistic() {
+        let mut s = state();
+        s.active_gen = 1;
+        s.apply_search_page(page(1, 2));
+        let mut actions = Vec::new();
+        s.toggle_pin(0, &mut actions);
+        assert!(s.items[0].pinned);
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, UiAction::Pin { pinned: true, .. })));
+        s.delete_ids(vec![1], &mut actions);
+        assert_eq!(s.items.len(), 1);
+        assert_eq!(s.total, 1);
+    }
+
+    #[test]
+    fn favorites_page_forces_pinned_filter() {
+        let mut s = state();
+        s.mode = WindowMode::Manager;
+        s.manager_page = ManagerPage::Favorites;
+        s.manager_filter = ClipFilter::Text;
+        assert_eq!(s.effective_filter(), ClipFilter::Pinned);
+        s.manager_page = ManagerPage::History;
+        assert_eq!(s.effective_filter(), ClipFilter::Text);
+    }
+
+    #[test]
+    fn request_manager_emits_actions_and_switches_mode() {
+        let mut s = state();
+        let mut actions = Vec::new();
+        s.request_manager(ManagerPage::Settings, &mut actions);
+        assert_eq!(s.mode(), WindowMode::Manager);
+        assert_eq!(s.manager_page, ManagerPage::Settings);
+        assert!(matches!(actions[0], UiAction::OpenManager));
+        assert!(matches!(
+            actions[1],
+            UiAction::SelectManagerPage(ManagerPage::Settings)
+        ));
+    }
+
+    #[test]
+    fn request_more_respects_total_and_loading() {
+        let mut s = state();
+        s.active_gen = 1;
+        s.pending = None; // 初始查询已发出（预览/真实环境都会走到这个状态）
+        s.apply_search_page(page(1, 5));
+        s.total = 500;
+        let mut actions = Vec::new();
+        s.request_more(&mut actions);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(
+            &actions[0],
+            UiAction::Search { offset: 5, .. }
+        ));
+        // 已在翻页中 → 不重复请求
+        actions.clear();
+        s.request_more(&mut actions);
+        assert!(actions.is_empty());
+    }
+}
+
+#[cfg(test)]
+impl UiState {
+    /// 测试辅助：模拟已受理翻页请求。
+    fn requested_more_for_test(&mut self) {
+        self.append_requested_len = self.items.len();
+    }
+}
