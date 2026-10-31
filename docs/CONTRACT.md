@@ -173,17 +173,17 @@ UI 线程，由 Lead 在 `app.rs` 转发给 Store（保持 Sys 不依赖 Store�
 - 图像内存安全：`GlobalLock` 后必须 `GlobalUnlock`；`OpenClipboard` 失败 5×20ms 重试；
   所有错误路径不得泄漏句柄、不得 panic。
 
-### 3.3 窗口工具（synd 提供，Lead 在 app.rs 调用）
+### 3.3 Sys 辅助工具（sys 提供，Lead 的 app.rs 调用）
 
 ```rust
-/// 从 eframe Frame 取原生 HWND（isize）；失败 None。仅在 UI 线程调用。
-pub fn hwnd_of_frame(frame: &eframe::Frame) -> Option<isize>;
-/// Win11 亚克力/云母；失败返回 Err（Lead 回退半透明深色）。
-pub fn apply_acrylic(hwnd: isize) -> Result<(), String>;
-/// 进程名（小写含 .exe）/ 是否提权。
+/// 当前前台窗口所属进程名（小写、含 .exe，用于忽略名单/来源记录）。
 pub fn foreground_app_name() -> Option<String>;
+/// 当前进程是否提权（诊断用）。
 pub fn is_elevated() -> bool;
 ```
+
+> 窗口/亚克力/定位/HWND 相关工具由 **Lead 在 `src/window.rs` 实现**（Lead 写域），
+> sys 域不要重复实现；P0 spike 中验证亚克力/托盘/热键的能力结论写进 `docs/P0-FINDINGS.md` 即可。
 
 ## 4. UI 域（`src/ui/**`，owner: ui teammate）
 

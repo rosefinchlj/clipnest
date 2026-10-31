@@ -19,6 +19,7 @@ mod model;
 mod store;
 mod sys;
 mod ui;
+mod window;
 
 use eframe::egui;
 
@@ -166,19 +167,31 @@ fn run_native(preview: Option<String>) -> eframe::Result<()> {
         config::data_dir().display()
     ));
 
+    let is_picker_preview = preview.as_deref() == Some("picker");
     let size = if preview.is_some() {
         [1100.0, 720.0]
     } else {
         settings.picker_size
     };
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size(if is_picker_preview {
+            [660.0, 620.0]
+        } else {
+            size
+        })
+        .with_title(model::APP_TITLE)
+        .with_transparent(true);
+    if preview.is_none() || is_picker_preview {
+        viewport = viewport
+            .with_decorations(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            .with_resizable(false);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size(size)
-            .with_min_inner_size([320.0, 240.0])
-            .with_title(model::APP_TITLE)
-            .with_transparent(true)
-            .with_decorations(true),
+        viewport,
         ..Default::default()
     };
 
