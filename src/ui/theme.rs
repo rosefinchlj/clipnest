@@ -302,7 +302,7 @@ pub fn outline_frame() -> egui::Frame {
         .fill(Color32::TRANSPARENT)
         .corner_radius(CornerRadius::same(RADIUS_CARD))
         .stroke(Stroke::new(
-            1.0,
+            1.0_f32,
             Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 16),
         ))
         .inner_margin(Margin::same(12))
@@ -348,6 +348,10 @@ pub fn button_fill(hovered: bool, pressed: bool) -> Color32 {
 
 /// 安装深色主题（色板 + 圆角 + 字号 + 动效），App 启动时调用一次。
 pub fn install_theme(ctx: &egui::Context) {
+    // 用户明确只要深色主题（spec §2.2）：强制主题偏好为 Dark，
+    // 否则 egui 在系统亮色模式下会切到 Light 的默认 Style，导致 ComboBox/DragValue/
+    // TextEdit 等默认控件变亮（自绘控件不受影响，但会显得不协调）。
+    ctx.set_theme(egui::ThemePreference::Dark);
     let mut style = (*ctx.style()).clone();
 
     // ---- Visuals ----
@@ -387,7 +391,7 @@ pub fn install_theme(ctx: &egui::Context) {
         bg_fill: CARD_HOVER,
         weak_bg_fill: CARD_HOVER,
         bg_stroke: Stroke::new(
-            1.0,
+            1.0_f32,
             Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 28),
         ),
         corner_radius: CornerRadius::same(RADIUS_INPUT),
@@ -548,6 +552,13 @@ mod tests {
         assert_eq!(style.spacing.scroll.bar_width, 6.0);
         assert_eq!(style.animation_time, 0.12);
         assert_eq!(style.spacing.item_spacing.y, GAP_S - 2.0);
+        // 强制深色：即使系统是亮色模式，egui 也必须用我们的深色 Style
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+        assert_eq!(
+            ctx.style().visuals.override_text_color,
+            Some(TEXT),
+            "强制 Dark 后当前 Style 仍应是主题色"
+        );
     }
 
     #[test]

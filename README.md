@@ -13,7 +13,7 @@
 现有剪贴板工具常见问题：侧栏常驻占屏、界面粗糙、内存占用偏高（100MB+）、历史容量不可控。
 ClipNest 的目标是**低占用、键盘优先、视觉克制**：
 
-- 纯 Rust + OpenGL（egui），无 WebView，空闲内存目标 ≤60MB；
+- 纯 Rust + OpenGL（egui），无 WebView，空闲内存目标 ≤60MB（release 实测约 55MB）；
 - 托盘常驻，默认**不占任务栏**；按快捷键在光标屏幕中央弹出候选窗，选完即粘贴回原窗口；
 - Ctrl+C 即入库，SQLite 持久化，重启/关机不丢；默认 5000 条 / 图片 200MB，可调、可改无限；
 - 文本、图片（截图）、文件列表三类内容都支持；文件默认只记路径，**收藏时**才复制实体进库；
@@ -45,7 +45,7 @@ ClipNest 的目标是**低占用、键盘优先、视觉克制**：
 | 候选窗 | `Delete` | 删除选中项 |
 | 候选窗 | `Ctrl+,` | 打开设置 |
 | 候选窗 | `Esc` | 关闭面板 |
-| 管理台 | `Ctrl+F` / `Delete` / `Ctrl+E` / `Esc` | 搜索 / 删除 / 导出 / 返回 |
+| 管理台 | `Ctrl+F` / `Ctrl+A` / `Delete` / `Ctrl+E` / `Esc` | 搜索 / 全选 / 删除 / 导出 / 返回 |
 
 ## Win+V 接管说明
 
@@ -56,7 +56,7 @@ ClipNest 按以下顺序自动降级（设置页显示实际状态）：
 2. **L2**：安装低级键盘钩子，吞掉 `Win+V` 并打开 ClipNest，可选补偿逻辑避免开始菜单误弹；
 3. **L4**：以上失败时仍可用备用快捷键（默认 `Ctrl+``，可自定义；被占用时会临时降级到其他组合并提示）。
 
-> 系统剪贴板历史与 ClipNest 可同时存在；如只想用 ClipNest，可在设置里关闭系统剪贴板历史（可随时恢复）。
+> 系统剪贴板历史与 ClipNest 可同时存在；如只想用 ClipNest，可在 **Windows 设置 → 系统 → 剪贴板** 中关闭「剪贴板历史记录」（ClipNest 不代改系统设置）。
 
 ## 数据与目录
 
@@ -124,6 +124,7 @@ UI 线程 (eframe/egui)  ←Event─┐
 - 实施计划：[`docs/superpowers/plans/2026-10-31-clipnest-implementation.md`](docs/superpowers/plans/2026-10-31-clipnest-implementation.md)
 - 模块契约：[`docs/CONTRACT.md`](docs/CONTRACT.md)
 - 验收清单：[`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)
+- 验收结果：[`docs/ACCEPTANCE-RESULT.md`](docs/ACCEPTANCE-RESULT.md)
 
 ## 许可
 

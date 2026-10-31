@@ -616,7 +616,7 @@ pub enum Event {
     WinVStatus(WinVStatus),
     /// 备用全局快捷键注册状态。
     HotkeyStatus { ok: bool, reason: Option<String> },
-    /// 剪贴板监听线程捕获到新内容（内部转发用；正常情况下 Sys 直接发 StoreCmd）。
+    /// 剪贴板监听线程捕获到新内容（正常情况下 Sys 发 `Event::Captured`，由 UI 线程转发 `StoreCmd::Upsert`）。
     Captured(ClipInput),
 }
 

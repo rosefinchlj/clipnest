@@ -31,14 +31,24 @@ thread_local! {
     static SHOT_DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// 安装字体 + 主题（只执行一次；真实 App 由 Lead 在 `ClipNestApp::new` 主动调用）。
+/// 安装字体 + 主题（只执行一次）。
+///
+/// 真实 App 由 Lead 在 `ClipNestApp::new` 里已经调用过 `install_fonts/install_theme`，
+/// 这里用「是否已注入命名 TextStyle」探测主题，避免预览模式重复 mmap 字体/重复 set_fonts。
 pub fn ensure_installed(ctx: &egui::Context) {
     INSTALLED.with(|flag| {
-        if !flag.get() {
+        if flag.get() {
+            return;
+        }
+        let themed = ctx
+            .style()
+            .text_styles
+            .contains_key(&egui::TextStyle::Name("row_title".into()));
+        if !themed {
             crate::ui::install_fonts(ctx);
             crate::ui::install_theme(ctx);
-            flag.set(true);
         }
+        flag.set(true);
     });
 }
 

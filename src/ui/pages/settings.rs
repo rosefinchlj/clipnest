@@ -264,7 +264,7 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
         );
         ui.add_space(6.0);
         ui.label(theme::weak(
-            "提示：若系统剪贴板历史与 Win+V 冲突，请用「恢复系统剪贴板历史」相关功能（由 Lead 在集成阶段提供）或先关闭系统历史。",
+            "提示：若系统剪贴板历史与 Win+V 冲突，可在 Windows 设置 → 系统 → 剪贴板 中关闭「剪贴板历史记录」。",
         ));
         let _ = actions;
     });
@@ -478,7 +478,7 @@ fn ignore_section(state: &mut UiState, ui: &mut egui::Ui) {
             }
         });
         ui.add_space(8.0);
-        ui.label(theme::weak("「从运行中的进程添加」将在集成阶段由 Lead 接线（需要 Sys 域枚举进程）。"));
+        ui.label(theme::weak("提示：在下方输入进程名（如 notepad.exe）后点击「添加」；自动枚举运行中进程将在 v1.1 提供。"));
     });
 }
 
@@ -527,7 +527,7 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
         });
         ui.add_space(8.0);
         ui.label(theme::weak(
-            "提示：清空历史不可恢复；收藏项也会被清空。导出/导入为 JSON（由 Lead 实现），重建索引暂未接线。",
+            "提示：清空历史不可恢复；收藏项也会被清空。导出为 JSON；导入与重建索引计划在 v1.1 提供。",
         ));
     });
 }

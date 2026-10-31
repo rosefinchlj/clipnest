@@ -1,0 +1,416 @@
+//! Sys 线程内部状态：剪贴板采集、热键/托盘事件、SysCmd 处理、退出清理。
+//!
+//! 仅由 [`crate::sys::thread`] 的窗口过程在 Sys 线程内调用（方法都要求 `&mut self`），
+//! 不跨线程共享；本文件承载 Sys 线程的全部业务逻辑，`thread.rs` 只负责消息循环与生命周期。
+
+#![allow(dead_code)]
+
+use crate::clipboard;
+use crate::config;
+use crate::logging;
+use crate::model::{Event, Settings, SysCmd};
+use crate::sys::thread::HOTKEY_ID_PICKER;
+use crate::sys::{autostart, hotkey, paste, tray, util, winv, SysDiag};
+use eframe::egui;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use windows_sys::Win32::Foundation::HWND;
+
+/// Sys 线程内部状态（Box 后挂在窗口的 GWLP_USERDATA 上，仅本线程访问）。
+pub(crate) struct SysState {
+    pub(crate) hwnd: HWND,
+    pub(crate) events: Sender<Event>,
+    pub(crate) ctx: egui::Context,
+    pub(crate) settings: Arc<Mutex<Settings>>,
+    /// 备用呼出快捷键注册结果（含降级信息）。
+    pub(crate) picker_hotkey: Option<hotkey::HotkeyRegistration>,
+    /// Win+V 接管句柄。
+    pub(crate) winv: winv::WinVHandle,
+    /// 当前已应用的 Win+V 模式（用于 SetHotkeys 去重，避免无变更时反复装卸钩子）。
+    pub(crate) winv_mode: crate::model::WinVMode,
+    /// 托盘（None 表示创建失败；drop 即移除图标）。
+    pub(crate) tray: Option<tray::TrayState>,
+    /// 是否已收到 Shutdown。
+    pub(crate) shutdown: bool,
+    /// 运行状态快照（`--diagnose` 读取）。
+    pub(crate) diag: Arc<Mutex<SysDiag>>,
+    /// 内部命令队列：bridge 线程转投递，`WM_APP_CMD` 只作为唤醒信号。
+    /// 不把指针放进 wparam，避免其它进程向隐藏窗口 PostMessage 伪造指针导致崩溃。
+    pub(crate) cmd_rx: Receiver<SysCmd>,
+}
+
+impl SysState {
+    // -----------------------------------------------------------------------
+    // 事件辅助
+    // -----------------------------------------------------------------------
+
+    fn emit(&self, event: Event) {
+        let _ = self.events.send(event);
+        self.ctx.request_repaint();
+    }
+
+    fn toast(&self, msg: impl Into<String>) {
+        self.emit(Event::Toast(msg.into()));
+    }
+
+    pub(crate) fn update_diag(&self, f: impl FnOnce(&mut SysDiag)) {
+        let mut guard = match self.diag.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        f(&mut guard);
+    }
+
+    fn settings_snapshot(&self) -> Settings {
+        match self.settings.lock() {
+            Ok(s) => s.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn with_settings<R>(&self, f: impl FnOnce(&mut Settings) -> R) -> R {
+        let mut guard = match self.settings.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        f(&mut guard)
+    }
+
+    fn save_settings(&self) {
+        let snapshot = self.settings_snapshot();
+        if let Err(err) = config::save_settings(&snapshot) {
+            logging::warn(&format!("保存设置失败：{err}"));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 剪贴板采集
+    // -----------------------------------------------------------------------
+
+    /// `WM_CLIPBOARDUPDATE`：读取 → 归一化 → `Event::Captured`。
+    pub(crate) fn on_clipboard_update(&mut self) {
+        let settings = self.settings_snapshot();
+        if settings.pause_capture {
+            logging::debug("剪贴板有变化，但已暂停记录，跳过");
+            return;
+        }
+
+        let raw = match clipboard::read_clipboard() {
+            Ok(raw) => raw,
+            Err(err) => {
+                // 剪贴板被占用/读取失败：跳过本次，不影响后续
+                logging::warn(&format!("读取剪贴板失败（跳过本次采集）：{err}"));
+                return;
+            }
+        };
+        if raw.ignore {
+            logging::debug("剪贴板含忽略标记（Clipboard Viewer Ignore / 本程序回写），跳过");
+            return;
+        }
+
+        let source_app = util::foreground_app_name();
+        if let Some(app) = &source_app {
+            if settings
+                .ignore_apps
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(app))
+            {
+                logging::debug(&format!("来源应用 {app} 在忽略名单中，跳过"));
+                return;
+            }
+        }
+
+        let limits = clipboard::CaptureLimits::from_settings(&settings);
+        let Some(mut input) = clipboard::normalize(raw, &limits) else {
+            logging::debug("剪贴板内容为空/纯空白/超限，跳过");
+            return;
+        };
+        input.source_app = source_app;
+        input.source_title = util::foreground_window_title();
+        input.captured_at = crate::model::now_ms();
+
+        // 隐私：日志只记录类型/大小/hash 前 8 位，绝不记录内容
+        let hash_prefix: String = input.hash.chars().take(8).collect();
+        logging::log(&format!(
+            "采集剪贴板：类型={} 字节={} hash={hash_prefix} 来源={:?}",
+            input.kind.label(),
+            input.byte_len,
+            input.source_app
+        ));
+        self.emit(Event::Captured(input));
+    }
+
+    // -----------------------------------------------------------------------
+    // 热键 / 托盘事件
+    // -----------------------------------------------------------------------
+
+    pub(crate) fn request_picker(&mut self, source: &str) {
+        let target_hwnd = util::foreground_window_handle();
+        logging::log(&format!("呼出面板（{source}），target_hwnd={target_hwnd}"));
+        self.emit(Event::PickerRequested { target_hwnd });
+    }
+
+    pub(crate) fn on_hotkey(&mut self, id: i32) {
+        match id {
+            HOTKEY_ID_PICKER => self.request_picker("备用快捷键"),
+            winv::WINV_HOTKEY_ID => self.request_picker("Win+V(L1)"),
+            _ => logging::debug(&format!("未知 WM_HOTKEY id={id}")),
+        }
+    }
+
+    pub(crate) fn on_tray_menu(&mut self, code: u32) {
+        match code {
+            tray::MENU_OPEN => self.request_picker("托盘菜单"),
+            tray::MENU_MANAGER => {
+                logging::log("托盘：打开管理历史");
+                self.emit(Event::ManagerRequested);
+            }
+            tray::MENU_PAUSE => self.toggle_pause(),
+            tray::MENU_CLEAR => {
+                // 清空需要 UI 二次确认（spec §6.4）
+                self.emit(Event::ManagerRequested);
+                self.toast("清空历史请在管理台确认");
+            }
+            tray::MENU_SETTINGS => {
+                logging::log("托盘：打开设置");
+                self.emit(Event::ManagerRequested);
+                self.toast("请在管理台左侧打开「设置」");
+            }
+            tray::MENU_AUTOSTART => self.toggle_autostart(),
+            tray::MENU_QUIT => {
+                logging::log("托盘：请求退出");
+                self.emit(Event::QuitRequested);
+            }
+            other => logging::debug(&format!("未知托盘菜单动作 {other}")),
+        }
+    }
+
+    pub(crate) fn on_tray_click(&mut self, code: u32) {
+        if code == tray::TRAY_LEFT_CLICK {
+            self.request_picker("托盘单击");
+        }
+    }
+
+    fn toggle_pause(&mut self) {
+        let paused = self.with_settings(|s| {
+            s.pause_capture = !s.pause_capture;
+            s.pause_capture
+        });
+        self.save_settings();
+        if let Some(tray) = &self.tray {
+            tray.set_paused(paused);
+        }
+        logging::log(&format!("暂停记录：{}", if paused { "开" } else { "关" }));
+        self.toast(if paused {
+            "已暂停记录剪贴板"
+        } else {
+            "已恢复记录剪贴板"
+        });
+    }
+
+    fn toggle_autostart(&mut self) {
+        let enabled = !autostart::get();
+        match autostart::set(enabled) {
+            Ok(()) => {
+                self.with_settings(|s| s.autostart = enabled);
+                self.save_settings();
+                if let Some(tray) = &self.tray {
+                    tray.set_autostart(enabled);
+                }
+                self.toast(if enabled {
+                    "已开启开机自启"
+                } else {
+                    "已关闭开机自启"
+                });
+            }
+            Err(err) => {
+                logging::warn(&format!("切换开机自启失败：{err}"));
+                self.toast(format!("设置开机自启失败：{err}"));
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SysCmd 处理
+    // -----------------------------------------------------------------------
+
+    /// 排空内部命令队列（`WM_APP_CMD` 处理入口；不直接读取 wparam）。
+    pub(crate) fn drain_commands(&mut self) {
+        while let Ok(cmd) = self.cmd_rx.try_recv() {
+            self.handle_cmd(cmd);
+        }
+    }
+
+    fn handle_cmd(&mut self, cmd: SysCmd) {
+        match cmd {
+            SysCmd::SetPause(paused) => {
+                self.with_settings(|s| s.pause_capture = paused);
+                self.save_settings();
+                if let Some(tray) = &self.tray {
+                    tray.set_paused(paused);
+                }
+                logging::log(&format!("SysCmd::SetPause -> {paused}"));
+                self.toast(if paused {
+                    "已暂停记录剪贴板"
+                } else {
+                    "已恢复记录剪贴板"
+                });
+            }
+            SysCmd::SetHotkeys {
+                picker,
+                winv_mode,
+            } => self.apply_hotkeys(picker, winv_mode),
+            SysCmd::SetAutostart(enabled) => match autostart::set(enabled) {
+                Ok(()) => {
+                    self.with_settings(|s| s.autostart = enabled);
+                    self.save_settings();
+                    if let Some(tray) = &self.tray {
+                        tray.set_autostart(enabled);
+                    }
+                    self.toast(if enabled {
+                        "已开启开机自启"
+                    } else {
+                        "已关闭开机自启"
+                    });
+                }
+                Err(err) => {
+                    logging::warn(&format!("设置开机自启失败：{err}"));
+                    self.toast(format!("设置开机自启失败：{err}"));
+                }
+            },
+            SysCmd::WriteClipboard(payload) => {
+                match clipboard::write_clipboard(&payload, &config::data_dir()) {
+                    Ok(()) => logging::debug("已写剪贴板（不自动粘贴）"),
+                    Err(err) => {
+                        logging::warn(&format!("写剪贴板失败：{err}"));
+                        self.toast(format!("写剪贴板失败：{err}"));
+                    }
+                }
+            }
+            SysCmd::Paste {
+                payload,
+                target_hwnd,
+            } => self.handle_paste(payload, target_hwnd),
+            SysCmd::Shutdown => {
+                logging::log("收到 Shutdown，准备退出 Sys 线程");
+                self.shutdown = true;
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
+                }
+            }
+        }
+    }
+
+    fn apply_hotkeys(
+        &mut self,
+        picker: crate::model::HotkeyChord,
+        winv_mode: crate::model::WinVMode,
+    ) {
+        self.with_settings(|s| {
+            s.hotkey_picker = picker;
+            s.winv_mode = winv_mode;
+        });
+
+        // UI 任何设置变更都会发 SetHotkeys；这里按「请求值是否真的变化」去重，
+        // 避免无谓地反复注销/注册热键、装卸 Win+V 钩子。
+        let picker_changed = match &self.picker_hotkey {
+            Some(existing) => existing.requested != picker,
+            None => true,
+        };
+        let winv_changed = self.winv_mode != winv_mode;
+        if !picker_changed && !winv_changed {
+            logging::debug("SetHotkeys：请求值未变化，跳过重注册");
+            return;
+        }
+
+        // 备用呼出键：注销旧的 → 按降级链重新注册
+        let registration = hotkey::register_with_fallback(self.hwnd, HOTKEY_ID_PICKER, picker);
+        let (ok, reason) = registration.status();
+        logging::log(&format!(
+            "热键重配：请求={} 生效={} ok={ok}",
+            picker.label(),
+            registration.effective.label()
+        ));
+        self.update_diag(|d| {
+            d.hotkey_requested = Some(picker);
+            d.hotkey_note = registration.note.clone();
+            d.hotkey_effective = Some(registration.effective);
+            d.hotkey_ok = ok;
+        });
+        self.picker_hotkey = Some(registration);
+        self.emit(Event::HotkeyStatus { ok, reason });
+
+        // Win+V：卸载旧策略后重新应用（仅模式变化时）
+        if winv_changed {
+            self.winv.reapply(
+                self.hwnd,
+                winv_mode,
+                self.events.clone(),
+                self.ctx.clone(),
+            );
+        }
+        self.winv_mode = winv_mode;
+        let winv_status = self.winv.status.clone();
+        self.update_diag(|d| d.winv_status = Some(winv_status.clone()));
+        self.emit(Event::WinVStatus(winv_status));
+    }
+
+    fn handle_paste(&mut self, payload: crate::model::PastePayload, target_hwnd: isize) {
+        // 1) 写剪贴板（失败不粘贴）
+        if let Err(err) = clipboard::write_clipboard(&payload, &config::data_dir()) {
+            logging::warn(&format!("自动粘贴：写剪贴板失败：{err}"));
+            self.emit(Event::PasteResult {
+                ok: false,
+                reason: Some(format!("写剪贴板失败：{err}")),
+            });
+            return;
+        }
+        let paste_key = self.with_settings(|s| s.paste_key);
+        // 2) 恢复前台 + SendInput
+        match paste::restore_and_paste(target_hwnd, paste_key) {
+            Ok(()) => {
+                logging::log(&format!(
+                    "自动粘贴完成：target={target_hwnd} 按键={}",
+                    paste_key.label()
+                ));
+                self.emit(Event::PasteResult { ok: true, reason: None });
+            }
+            Err(err) => {
+                logging::warn(&format!(
+                    "自动粘贴失败：{err}（target={target_hwnd} 按键={}）",
+                    paste_key.label()
+                ));
+                self.emit(Event::PasteResult {
+                    ok: false,
+                    reason: Some(err.reason().to_string()),
+                });
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 退出清理
+    // -----------------------------------------------------------------------
+
+    /// 在 Sys 线程内释放所有 Win32 资源（顺序：监听/热键/钩子/托盘/窗口）。
+    pub(crate) fn cleanup(&mut self) {
+        logging::log("Sys 线程开始清理…");
+        unsafe {
+            windows_sys::Win32::System::DataExchange::RemoveClipboardFormatListener(self.hwnd);
+        }
+        if self.picker_hotkey.is_some() {
+            hotkey::unregister(self.hwnd, HOTKEY_ID_PICKER);
+            self.picker_hotkey = None;
+        }
+        self.winv.uninstall(self.hwnd);
+        // drop 托盘 → 从通知区移除图标
+        self.tray = None;
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
+                self.hwnd,
+                winv::WINV_RESET_TIMER_ID,
+            );
+        }
+        logging::log("Sys 线程清理完成");
+    }
+}

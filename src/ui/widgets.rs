@@ -3,7 +3,7 @@
 //! 全部按 spec §7 视觉规范自绘（深色卡片 + 细描边 + 圆角 + 强调色），
 //! 不依赖 egui 默认控件外观；图标见 [`crate::ui::paint`]（几何自绘，不用 emoji）。
 
-use crate::model::{fmt_relative_time, ClipFilter, ClipItem, ClipKind, HotkeyChord};
+use crate::model::{ClipFilter, HotkeyChord};
 use crate::ui::{keys, paint, theme};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind,
@@ -364,6 +364,9 @@ pub fn search_box(
     }
 }
 
+// 列表行（Picker，64px）实现在 `crate::ui::row`，这里 re-export 保持控件入口统一。
+pub use crate::ui::row::{clip_row, ClipRow};
+
 // ---------------------------------------------------------------------------
 // 过滤胶囊
 // ---------------------------------------------------------------------------
@@ -422,201 +425,6 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
         }
     });
     changed
-}
-
-// ---------------------------------------------------------------------------
-// 列表行（Picker，64px）
-// ---------------------------------------------------------------------------
-
-/// `clip_row` 的入参（避免长参数列表）。
-pub struct ClipRow<'a> {
-    pub item: &'a ClipItem,
-    /// 图片缩略图（懒加载完成才有）。
-    pub thumb: Option<&'a egui::TextureHandle>,
-    pub selected: bool,
-}
-
-/// 列表行输出。
-pub struct ClipRowOutput {
-    pub response: Response,
-    /// 行矩形（滚动到选中行时用）。
-    pub rect: Rect,
-    /// 本帧是否点了收藏星标。
-    pub star_clicked: bool,
-}
-
-/// 64px 列表行：类型徽标/40×40 缩略图（圆角 8）+ 标题单行 + 预览单行 +
-/// 右侧相对时间与星标；选中态强调色 12% + 左侧 2px 竖条，悬停 6%。
-pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(width, theme::ROW_HEIGHT),
-        Sense::click(),
-    );
-    let ctx = ui.ctx().clone();
-    let sel_t = ctx.animate_bool_with_time(response.id.with("sel"), row.selected, 0.08);
-    let hover_t = ctx.animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.08);
-
-    // 背景 / 左侧竖条
-    let painter = ui.painter().clone();
-    if sel_t > 0.001 {
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(theme::RADIUS_ROW),
-            theme::accent_fill().gamma_multiply(sel_t),
-        );
-        let bar = Rect::from_min_max(
-            Pos2::new(rect.left() + 1.0, rect.top() + 12.0),
-            Pos2::new(rect.left() + 3.0, rect.bottom() - 12.0),
-        );
-        painter.rect_filled(bar, CornerRadius::same(1), theme::ACCENT.gamma_multiply(sel_t));
-    } else if hover_t > 0.001 {
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(theme::RADIUS_ROW),
-            theme::hover_fill().gamma_multiply(hover_t),
-        );
-    }
-
-    // 左：40×40 类型徽标 / 缩略图
-    let icon_rect = Rect::from_center_size(
-        Pos2::new(
-            rect.left() + theme::GAP_S + theme::THUMB_SIZE / 2.0,
-            rect.center().y,
-        ),
-        Vec2::splat(theme::THUMB_SIZE),
-    );
-    if row.item.kind == ClipKind::Image {
-        if let Some(tex) = row.thumb {
-            painter.rect_filled(
-                icon_rect,
-                CornerRadius::same(theme::RADIUS_THUMB),
-                theme::CARD_ACTIVE,
-            );
-            let size = icon_rect.size();
-            ui.put(
-                icon_rect,
-                egui::Image::new(egui::load::SizedTexture::new(tex.id(), size))
-                    .fit_to_exact_size(size)
-                    .corner_radius(CornerRadius::same(theme::RADIUS_THUMB)),
-            );
-        } else {
-            paint::paint_thumb_placeholder(&painter, icon_rect);
-        }
-    } else {
-        painter.rect_filled(
-            icon_rect,
-            CornerRadius::same(theme::RADIUS_THUMB),
-            theme::kind_soft(row.item.kind),
-        );
-        paint::paint_kind_icon(
-            &painter,
-            icon_rect.shrink(11.0),
-            row.item.kind,
-            theme::kind_color(row.item.kind),
-        );
-    }
-
-    // 中：标题 + 预览（各单行省略）
-    let text_left = icon_rect.right() + 10.0;
-    let text_right = rect.right() - 96.0;
-    let title = row.item.title();
-    paint::paint_elided(
-        ui,
-        Pos2::new(text_left, rect.top() + 11.0),
-        title,
-        theme::font_row_title(),
-        theme::TEXT,
-        text_right - text_left,
-    );
-    let subtitle = row.item.subtitle();
-    paint::paint_elided(
-        ui,
-        Pos2::new(text_left, rect.top() + 34.0),
-        subtitle,
-        FontId::new(theme::SIZE_AUX, egui::FontFamily::Proportional),
-        theme::TEXT_SECONDARY,
-        text_right - text_left,
-    );
-
-    // 右：相对时间（上）+ 星标（下）
-    painter.text(
-        Pos2::new(rect.right() - 12.0, rect.top() + 12.0),
-        Align2::RIGHT_TOP,
-        fmt_relative_time(row.item.last_used_at),
-        theme::font_aux(),
-        theme::TEXT_WEAK,
-    );
-    let star_center = Pos2::new(rect.right() - 20.0, rect.bottom() - 19.0);
-    let star_rect = Rect::from_center_size(star_center, Vec2::splat(18.0));
-    let star_resp = ui.interact(star_rect, response.id.with("star"), Sense::click());
-    let show_star = row.item.pinned || row.selected || star_resp.hovered() || response.hovered();
-    if show_star {
-        paint::paint_star(
-            &painter,
-            star_center,
-            7.0,
-            if row.item.pinned {
-                theme::PINNED
-            } else if star_resp.hovered() {
-                theme::PINNED.gamma_multiply(0.8)
-            } else {
-                theme::TEXT_WEAK
-            },
-            row.item.pinned,
-        );
-    }
-
-    if response.hovered() || star_resp.hovered() {
-        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-
-    // 悬停预览完整内容（截断时才有意义）
-    let response = response.on_hover_ui(|ui| {
-        tooltip_item(ui, row.item);
-    });
-    ClipRowOutput {
-        response,
-        rect,
-        star_clicked: star_resp.clicked(),
-    }
-}
-
-/// 列表项的 tooltip 内容（标题截断/文件多时展示详情）。
-fn tooltip_item(ui: &mut egui::Ui, item: &ClipItem) {
-    ui.set_max_width(460.0);
-    ui.label(theme::row_title(item.title()));
-    ui.add_space(2.0);
-    match item.kind {
-        ClipKind::Text => {
-            let text = item.text.as_deref().unwrap_or(item.preview.as_str());
-            let preview: String = text.chars().take(600).collect();
-            ui.add(
-                egui::Label::new(theme::mono(preview))
-                    .wrap_mode(egui::TextWrapMode::Wrap),
-            );
-        }
-        ClipKind::Image => {
-            ui.label(theme::aux(format!(
-                "{} · {}×{}",
-                crate::model::fmt_size(item.byte_len),
-                item.width.unwrap_or(0),
-                item.height.unwrap_or(0)
-            )));
-        }
-        ClipKind::Files => {
-            for file in item.files.iter().take(6) {
-                ui.label(theme::aux(format!(
-                    "{} · {}",
-                    file.display_name(),
-                    crate::model::fmt_size(file.size)
-                )));
-            }
-            if item.files.len() > 6 {
-                ui.label(theme::weak(format!("… 共 {} 个文件", item.files.len())));
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

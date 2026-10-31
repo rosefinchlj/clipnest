@@ -10,6 +10,10 @@
 //! clipnest.exe --version / --help
 //! ```
 
+// release 为 Windows GUI 子系统：从资源管理器双击不会弹控制台；
+// CLI 模式在 main 里 AttachConsole 到调用方终端以保留输出（见 attach_parent_console）。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod clipboard;
 mod config;
@@ -97,8 +101,38 @@ clipnest.exe --help                 显示本帮助\n\n\
     );
 }
 
+/// 单实例：命名互斥体。返回 true 表示本进程是第一个实例（可继续启动）；
+/// false 表示已有实例，调用方应尝试唤起它并退出。
+///
+/// 互斥体句柄故意不关闭（进程生命周期内有效，退出时系统回收）。
+fn ensure_single_instance() -> bool {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+
+    let name: Vec<u16> = "Local\\ClipNest.SingleInstance\0".encode_utf16().collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        // 无法创建互斥体时允许启动，避免因权限等问题打不开程序。
+        return true;
+    }
+    let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    !already_exists
+}
+
+/// release 为 GUI 子系统（无控制台）；CLI 模式尝试附加到父进程控制台，让输出可见。
+/// 必须在任何 stdout/stderr 输出之前调用（Rust 的 stdout 句柄是惰性获取的）。
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 fn main() {
     let mode = parse_args();
+    if !matches!(mode, Mode::Normal) {
+        attach_parent_console();
+    }
 
     match mode {
         Mode::Help => print_help(),
@@ -149,6 +183,20 @@ fn main() {
             }
         }
         Mode::Normal => {
+            if !ensure_single_instance() {
+                logging::init(&config::logs_dir(), "info");
+                logging::log("检测到已有 ClipNest 实例，尝试唤起后退出");
+                let activated = sys::activate_existing_instance();
+                eprintln!(
+                    "ClipNest 已在运行（{}），本实例退出",
+                    if activated {
+                        "已唤起现有窗口"
+                    } else {
+                        "唤起现有实例失败"
+                    }
+                );
+                return;
+            }
             if let Err(err) = run_native(None) {
                 eprintln!("ClipNest 启动失败: {err}");
                 std::process::exit(1);

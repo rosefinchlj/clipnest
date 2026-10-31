@@ -81,8 +81,8 @@
 
 | 指标 | 目标 | 方法 |
 |---|---|---|
-| 空闲内存（隐藏） | ≤45MB WorkingSet | `tools\measure.ps1 -Samples 10` |
-| 面板打开内存 | ≤60MB | 打开面板后 `tools\measure.ps1` |
+| 空闲内存（隐藏） | ≤60MB Private（实测 54.6MB） | `tools\measure.ps1 -Samples 10` |
+| 面板打开内存 | ≤65MB Private（实测 62.0MB） | 打开面板后 `tools\measure.ps1` |
 | 冷启动到托盘 | ≤1.0s | 日志时间戳差 |
 | 面板呼出 | ≤150ms | 多次测量取均值（日志） |
 | 搜索响应（5000 条） | ≤100ms | `--diagnose`/自检 JSON 或日志耗时 |

@@ -11,7 +11,7 @@ use crate::store::StoreHandle;
 use eframe::egui;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 /// 失焦后延迟隐藏，避免点击托盘菜单/系统弹窗时误隐藏。
 const HIDE_ON_BLUR_DELAY: Duration = Duration::from_millis(220);
-/// 隐藏窗口到真正执行 SendInput 之间的等待（让 winit 先完成隐藏）。
-const PASTE_HIDE_DELAY: Duration = Duration::from_millis(70);
+/// 隐藏窗口到真正执行 SendInput 之间的等待（让 winit 先完成隐藏；Sys 侧还有重试兜底）。
+const PASTE_HIDE_DELAY: Duration = Duration::from_millis(120);
 /// 启动后请求一次统计的时间。
 const FIRST_STATS_DELAY: Duration = Duration::from_millis(300);
 
@@ -54,6 +54,8 @@ pub struct ClipNestApp {
     target_hwnd: isize,
     /// 等待 Store 返回载荷的粘贴请求：(clip_id, plain)
     paste_pending: Option<(ClipId, bool)>,
+    /// 发起粘贴请求时的目标窗口快照（避免等待期间被新的 PickerRequested 覆盖）。
+    paste_target: isize,
     /// 已隐藏窗口、等待延时后执行粘贴。
     paste_due: Option<(Instant, crate::model::PastePayload, bool)>,
     unfocused_since: Option<Instant>,
@@ -68,9 +70,13 @@ impl ClipNestApp {
     pub fn new(cc: &eframe::CreationContext<'_>, preview: Option<String>) -> Self {
         let settings = crate::config::load_settings();
         crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
-        crate::ui::install_fonts(&cc.egui_ctx);
+        // 排查内存占用时可跳过字体/背景材质（仅调试用）。
+        if std::env::var_os("CLIPNEST_SKIP_FONTS").is_none() {
+            crate::ui::install_fonts(&cc.egui_ctx);
+        }
         crate::ui::install_theme(&cc.egui_ctx);
-        let window_visible = !crate::window::start_hidden(preview.is_some());
+        let start_hidden = crate::window::start_hidden(preview.is_some());
+        let window_visible = !start_hidden;
 
         let settings_shared = Arc::new(Mutex::new(settings.clone()));
         let (events_tx, events) = mpsc::channel::<Event>();
@@ -148,6 +154,7 @@ impl ClipNestApp {
             manager_mode: false,
             target_hwnd: 0,
             paste_pending: None,
+            paste_target: 0,
             paste_due: None,
             unfocused_since: None,
             first_stats_at: Some(Instant::now() + FIRST_STATS_DELAY),
@@ -168,15 +175,19 @@ impl ClipNestApp {
             return;
         };
         self.hwnd = Some(hwnd);
-        match crate::window::apply_backdrop(hwnd) {
-            Ok(kind) => {
-                crate::logging::log(&format!("窗口背景材质生效: {kind}"));
-                self.backdrop = Some(kind);
+        if std::env::var_os("CLIPNEST_SKIP_MICA").is_none() {
+            match crate::window::apply_backdrop(hwnd) {
+                Ok(kind) => {
+                    crate::logging::log(&format!("窗口背景材质生效: {kind}"));
+                    self.backdrop = Some(kind);
+                }
+                Err(err) => {
+                    crate::logging::warn(&format!("{err}；回退自绘半透明深色"));
+                    self.backdrop = None;
+                }
             }
-            Err(err) => {
-                crate::logging::warn(&format!("{err}；回退自绘半透明深色"));
-                self.backdrop = None;
-            }
+        } else {
+            crate::logging::warn("CLIPNEST_SKIP_MICA 已设置：跳过背景材质（仅调试用）");
         }
         if self.preview.is_none() {
             self.move_picker_near_cursor(ctx);
@@ -295,11 +306,23 @@ impl ClipNestApp {
             Event::SearchPage(page) => self.ui.apply_search_page(page),
             Event::Stats(stats) => self.ui.apply_stats(stats),
             Event::PastePayload(payload) => {
-                if let Some((_, plain)) = self.paste_pending.take() {
-                    self.hide_window(ctx);
-                    // 延迟到窗口真正隐藏后再让 Sys 恢复前台并 SendInput。
-                    self.paste_due = Some((Instant::now() + PASTE_HIDE_DELAY, payload, plain));
+                // 先校验再 take：过期载荷（快速换条目/连按 Enter）不能吞掉新请求。
+                let Some((pending_id, _)) = self.paste_pending else {
+                    return;
+                };
+                if payload.clip_id != pending_id {
+                    crate::logging::warn(&format!(
+                        "忽略过期粘贴载荷：payload={} pending={}",
+                        payload.clip_id, pending_id
+                    ));
+                    return;
                 }
+                let Some((_, plain)) = self.paste_pending.take() else {
+                    return;
+                };
+                self.hide_window(ctx);
+                // 延迟到窗口真正隐藏后再让 Sys 恢复前台并 SendInput。
+                self.paste_due = Some((Instant::now() + PASTE_HIDE_DELAY, payload, plain));
             }
             Event::PasteResult { ok, reason } => {
                 if ok {
@@ -308,10 +331,15 @@ impl ClipNestApp {
                         self.ui.refresh();
                     }
                 } else {
-                    self.ui.toast(format!(
+                    let message = format!(
                         "已复制，请手动粘贴（{}）",
                         reason.unwrap_or_else(|| "目标窗口不可用".into())
-                    ));
+                    );
+                    // 窗口已隐藏时用户看不到 toast：重新显示面板承载提示。
+                    if !self.window_visible && !self.manager_mode {
+                        self.show_picker_window(ctx);
+                    }
+                    self.ui.toast(message);
                 }
             }
             Event::Toast(message) => self.ui.toast(message),
@@ -343,7 +371,7 @@ impl ClipNestApp {
         } else {
             let _ = sys_tx.send(SysCmd::Paste {
                 payload,
-                target_hwnd: self.target_hwnd,
+                target_hwnd: self.paste_target,
             });
         }
     }
@@ -377,14 +405,14 @@ impl ClipNestApp {
             }
             UiAction::Paste { id, plain } => {
                 self.paste_pending = Some((id, plain));
+                self.paste_target = self.target_hwnd;
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::GetPastePayload(id));
                 }
             }
-            UiAction::RequestPastePayload(id) => {
-                if let Some(tx) = &self.store_tx {
-                    let _ = tx.send(StoreCmd::GetPastePayload(id));
-                }
+            UiAction::RequestPastePayload(_) => {
+                // UI 的 Paste 动作已携带载荷请求（GetPastePayload），这里不再重复请求，
+                // 否则 Store 每次取载荷都会 bump_used，导致一次粘贴 use_count +2。
             }
             UiAction::Pin { id, pinned } => {
                 if let Some(tx) = &self.store_tx {
@@ -475,6 +503,17 @@ impl ClipNestApp {
     }
 
     fn apply_settings(&mut self, ctx: &egui::Context, next: Settings) {
+        let mut next = next;
+        // Sys 托盘可绕过 UI 直接修改 pause_capture/autostart（立即生效）；
+        // 若发现 shared 与本侧不一致，说明是 Sys 改的，保存时以 Sys 的运行时值为准，避免回滚。
+        if let Ok(shared) = self.settings_shared.lock() {
+            if shared.pause_capture != self.settings.pause_capture {
+                next.pause_capture = shared.pause_capture;
+            }
+            if shared.autostart != self.settings.autostart {
+                next.autostart = shared.autostart;
+            }
+        }
         self.settings = next.clone();
         if let Ok(mut shared) = self.settings_shared.lock() {
             *shared = next.clone();
@@ -499,6 +538,27 @@ impl ClipNestApp {
         if let Some(tx) = &self.store_tx {
             let _ = tx.send(StoreCmd::RefreshStats);
         }
+    }
+
+    /// 同步 Sys 托盘直接修改的运行时设置（暂停/自启），保持 UI 显示与落盘一致。
+    fn sync_external_settings(&mut self) {
+        let Ok(shared) = self.settings_shared.lock() else {
+            return;
+        };
+        if shared.pause_capture == self.settings.pause_capture
+            && shared.autostart == self.settings.autostart
+        {
+            return;
+        }
+        self.settings.pause_capture = shared.pause_capture;
+        self.settings.autostart = shared.autostart;
+        drop(shared);
+        let snapshot = self.settings.clone();
+        self.ui.set_settings(&snapshot);
+        crate::logging::log(&format!(
+            "同步托盘运行时设置：pause_capture={} autostart={}",
+            self.settings.pause_capture, self.settings.autostart
+        ));
     }
 
     fn persist_settings(&mut self) {
@@ -681,6 +741,7 @@ impl eframe::App for ClipNestApp {
         if self.quitting {
             return;
         }
+        self.sync_external_settings();
 
         if let Some(at) = self.first_stats_at {
             if Instant::now() >= at {

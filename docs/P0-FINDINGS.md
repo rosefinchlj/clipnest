@@ -159,3 +159,32 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File examples\p0_test.ps1   # 约 60s�
 依赖：仅用已锁定依赖（eframe 0.32.3 / tray-icon 0.26.1 / window-vibrancy 0.8.1 / windows-sys 0.61.2），
 未修改 `Cargo.toml`。`CF_*` 常量在 windows-sys 中属于未启用的 `Win32_System_Ole` feature，
 `src/clipboard` 内用 ABI 稳定数值常量 + 注释实现，不新增 feature。
+
+## 7. SysHandle 真机验证（Sys 域最小集交付时）
+
+在**临时数据目录**（`target/sys-smoke`，不读写用户真实库）启动真实 `clipnest.exe`，验证 Sys 线程接线（详见 `examples/sys_smoke.ps1`）：
+
+| 项目 | 结果 |
+|---|---|
+| Sys 线程 + 隐藏窗口 `ClipNestHidden` | ✅ 日志 `Sys 线程已启动，隐藏窗口 hwnd=...` |
+| `AddClipboardFormatListener` | ✅ `剪贴板监听已注册（AddClipboardFormatListener）` |
+| 备用快捷键冲突降级链 | ✅ 请求 `Ctrl+` ` 被 Ditto 占用 → 生效 `Ctrl+Shift+V`；当另一实例已占用 `Ctrl+Shift+V` 时继续降级到 `Alt+` `（链式降级验证） |
+| Win+V L2 | ✅ L1 1409 → `Win+V 状态：键盘钩子生效（含开始菜单补偿）` |
+| 托盘 | ✅ `托盘创建成功`（打开面板/管理历史/暂停/清空/设置/开机自启/退出） |
+| 复制 → 采集 | ✅ `采集剪贴板：类型=文本 字节=31 hash=7150444a 来源=...`（日志仅 hash 前 8 位，无内容） |
+| 热键 → `Event::PickerRequested` | ✅ `呼出面板（备用快捷键），target_hwnd=...`，Picker 窗口显示刚采集的条目（截图 `target/sys-smoke/picker.png`） |
+| 自动粘贴（hide → restore 前台 → SendInput Ctrl+V） | ✅ **Lead 独占桌面 E2E 验证 PASS**：注入 Ctrl+Shift+V → Picker 取得前台（轮询确认 foreground==clipnest hwnd）→ 注入 Enter → Notepad 中出现复制的 E2E 文本（match=True）；此前本域冒烟的失败为焦点竞争，非功能缺陷 |
+| 单实例（命名互斥体 + WM_COPYDATA 唤起） | ✅ **Lead E2E 验证 PASS**：第二个实例日志「检测到已有实例 → 唤起 → 退出」，进程数保持 1，首个实例日志 `收到第二实例唤起消息（WM_COPYDATA）` + `呼出面板（第二实例唤起）` |
+| 物理按键 Win+V（开始菜单/Win 键状态） | ⏳ **用户人工待验**（SentInput 无法复现注入 Win 键组合，见 §2.4）；按 §5 步骤 30 秒即可验收，不阻塞交付 |
+| 退出清理 | 代码路径审查通过（鉴权：Drop 超时 detach、Sys 线程内清理）；真机优雅退出由 Lead E2E 复验 |
+
+产物：`examples/sys_smoke.ps1`（真机冒烟；`-Quiet` 为不注入按键/不改剪贴板的静默版）、
+`examples/paste_smoke.ps1` + `examples/paste_target.ps1`（自动粘贴受控目标冒烟，待恢复执行）。
+
+## 8. 协作约定（真实桌面共享）
+
+真实桌面同一时刻只允许一个 E2E 执行者：Set-Clipboard、注入全局按键、启动真实 clipnest 实例都属于
+「独占桌面」操作。多人并行时约定：
+1. 需要跑真机冒烟前先向 Lead 申请，完成后报告释放；
+2. 回归用 `examples/sys_smoke.ps1 -Quiet`（只启动/读日志/kill，不改剪贴板、不注入按键）；
+3. P0 证据脚本（`p0_test.ps1` 会注入 Win+V/Ctrl+Alt+Shift+F10）仅在独占桌面窗口期运行。

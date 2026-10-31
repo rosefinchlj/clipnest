@@ -315,14 +315,6 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
         ],
         theme::divider(),
     );
-    // 表头「详情」小提示
-    painter.text(
-        Pos2::new(rect.right() - 12.0, header_rect.center().y),
-        Align2::RIGHT_CENTER,
-        "双击查看详情",
-        theme::font_aux(),
-        theme::TEXT_WEAK.gamma_multiply(0.8),
-    );
 
     if state.items.is_empty() {
         let msg = if state.loading {

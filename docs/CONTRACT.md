@@ -17,6 +17,8 @@
   （含：改了哪些文件、测试结果、遗留问题）。
 - 日志用 `crate::logging::{log,warn,error,debug}`；**不得记录剪贴板内容全文**。
 - 跨线程只允许 `std::sync::mpsc` 通道与 `Arc<Mutex<Settings>>`；禁止 `static mut`、全局可变状态。
+  （实现中允许有界的 `Arc<Atomic*>` 计数/诊断快照、`Arc<Mutex<Settings>>` 只读共享与日志内部锁；
+  这些只能用于计数/诊断/日志，不得用于业务数据同步——业务数据仍必须走 mpsc。）
 - 中文注释/中文 UI 文案；任何线程内 panic 必须捕获并写日志，不得传播到 UI 线程。
 - 文件建议 ≤800 行；公共函数要有简短中文文档注释。
 - 真实数据目录 `%APPDATA%\ClipNest`：测试/自检必须用 `CLIPNEST_DATA_DIR` 指向临时目录，

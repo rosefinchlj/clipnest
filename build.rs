@@ -9,10 +9,11 @@ fn main() {
 
     #[cfg(target_os = "windows")]
     {
-        if let Err(err) = std::panic::catch_unwind(|| {
-            embed_resource::compile("assets/app.rc", embed_resource::NONE);
-        }) {
-            println!("cargo:warning=嵌入 exe 图标失败（不影响功能）: {err:?}");
+        let result = std::panic::catch_unwind(|| {
+            let _ = embed_resource::compile("assets/app.rc", embed_resource::NONE);
+        });
+        if result.is_err() {
+            println!("cargo:warning=嵌入 exe 图标失败（不影响功能）");
         }
     }
 }
