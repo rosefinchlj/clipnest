@@ -1,284 +1,297 @@
-//! 应用外壳：窗口生命周期、模式切换（Picker / Manager）、后台事件泵、动作调度。
+//! UI 会话进程：按需启动的候选窗（`--ui-picker`）或管理台（`--ui-manager`）。
 //!
-//! 线程模型（spec §9.1）：
-//! - 本文件运行在 UI 线程：唯一创建窗口/调用 egui 的地方；
-//! - `StoreHandle` 在独立线程独占 SQLite，`SysHandle` 在独立线程跑 Win32 消息循环；
-//! - UI 与两个后台线程只通过 `mpsc` 通道（Event 收、StoreCmd/SysCmd 发）通信，
-//!   `Settings` 用 `Arc<Mutex<Settings>>` 共享给后台读取。
-//!
-//! `--ui-preview <mode>` 模式走独立的假数据预览入口，不启动 Store/Sys。
+//! 架构（低内存关键）：
+//! - 常驻部分在 [`crate::daemon`]：托盘/热键/剪贴板监听/SQLite 采集，**不加载 GUI**；
+//! - 本模块只在用户唤出界面时由守护进程 spawn 成子进程；关闭/粘贴后进程退出，
+//!   eframe/OpenGL/字体等内存全部归还系统；
+//! - 子进程自己打开 SQLite（WAL 多进程安全）做搜索/收藏/删除，粘贴时直接调用
+//!   [`crate::clipboard::write_clipboard`] + [`crate::sys::paste::restore_and_paste`]；
+//! - 设置保存写 settings.json，守护进程 1s 内轮询应用（快捷键/暂停）。
 
-use crate::model::{ClipId, Event, SearchQuery, Settings, StoreCmd, SysCmd};
+use crate::daemon::UiKind;
+use crate::model::{ClipId, Event, SearchQuery, Settings, StoreCmd};
 use crate::store::StoreHandle;
-use crate::sys::SysHandle;
 use crate::ui::{ManagerPage, ThumbCache, UiAction, UiState, WindowMode};
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// 失焦后延迟隐藏，避免点击托盘菜单/系统弹窗时误隐藏。
+/// 显示后抢前台的第二次尝试延迟。
+const FOCUS_RETRY: Duration = Duration::from_millis(60);
+/// 失焦后关闭候选窗的延迟。
 const HIDE_ON_BLUR_DELAY: Duration = Duration::from_millis(220);
-/// 隐藏窗口到真正执行 SendInput 之间的等待（让 winit 先完成隐藏；Sys 侧还有重试兜底）。
-const PASTE_HIDE_DELAY: Duration = Duration::from_millis(120);
-/// 启动后请求一次统计的时间。
-const FIRST_STATS_DELAY: Duration = Duration::from_millis(300);
+/// 显示后多久内不因失焦关闭（避免抢焦点/窗口切换竞态）。
+const FOCUS_GRACE: Duration = Duration::from_millis(500);
+/// 仅复制（Ctrl+Enter）后停留展示 toast 的时间。
+const PLAIN_COPY_LINGER: Duration = Duration::from_millis(420);
+/// 粘贴前让窗口先隐藏的等待（避免 SendInput 打到自身）。
+const PRE_PASTE_HIDE: Duration = Duration::from_millis(90);
+
+/// UI 子进程启动参数。
+pub struct UiSessionOptions {
+    pub kind: UiKind,
+    pub target_hwnd: isize,
+    pub page: ManagerPage,
+}
+
+/// 启动一次 UI 会话（阻塞直到窗口关闭；返回后进程即可退出）。
+pub fn run_ui_session(opts: UiSessionOptions) -> eframe::Result<()> {
+    let settings = crate::config::load_settings();
+    let is_picker = opts.kind == UiKind::Picker;
+    let size = if is_picker {
+        settings.picker_size
+    } else {
+        settings.manager_size
+    };
+    let title = if is_picker {
+        crate::model::APP_TITLE.to_string()
+    } else {
+        format!("{} · 管理", crate::model::APP_TITLE)
+    };
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size(size)
+        .with_min_inner_size(if is_picker {
+            size
+        } else {
+            [880.0, 560.0]
+        })
+        .with_title(title)
+        .with_transparent(true)
+        .with_decorations(false)
+        .with_taskbar(false)
+        .with_resizable(!is_picker)
+        // 先隐藏，首帧定位/抢前台后再显示，避免窗口在默认位置闪一下。
+        .with_visible(false);
+    viewport = if is_picker {
+        viewport.with_always_on_top()
+    } else {
+        viewport.with_window_level(egui::WindowLevel::Normal)
+    };
+
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+    eframe::run_native(
+        "ClipNestUI",
+        options,
+        Box::new(move |cc| Ok(Box::new(ClipNestApp::new(cc, opts)))),
+    )
+}
+
+/// `--ui-preview <mode>`：纯 UI 预览，不启动 Store、不读写真实数据。
+pub fn run_preview(mode: String) -> eframe::Result<()> {
+    struct PreviewApp {
+        mode: String,
+    }
+    impl eframe::App for PreviewApp {
+        fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            crate::ui::preview::show(ctx, &self.mode);
+        }
+    }
+    let is_picker = mode == "picker";
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size(if is_picker {
+            [660.0, 620.0]
+        } else {
+            [1100.0, 720.0]
+        })
+        .with_title(format!("{} · UI 预览", crate::model::APP_NAME))
+        .with_transparent(true)
+        .with_visible(true)
+        .with_decorations(!is_picker)
+        .with_taskbar(!is_picker)
+        .with_resizable(!is_picker);
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+    eframe::run_native(
+        "ClipNestPreview",
+        options,
+        Box::new(move |cc| {
+            crate::ui::install_fonts(&cc.egui_ctx);
+            crate::ui::install_theme(&cc.egui_ctx);
+            Ok(Box::new(PreviewApp { mode }))
+        }),
+    )
+}
 
 pub struct ClipNestApp {
-    // ---- 配置 ----
+    kind: UiKind,
     settings: Settings,
     settings_shared: Arc<Mutex<Settings>>,
-    preview: Option<String>,
-
-    // ---- 后台 ----
     store: Option<StoreHandle>,
-    sys: Option<SysHandle>,
     store_tx: Option<Sender<StoreCmd>>,
-    sys_tx: Option<Sender<SysCmd>>,
     events: Receiver<Event>,
-
-    // ---- UI ----
     ui: UiState,
     thumbs: ThumbCache,
 
-    // ---- 原生窗口 ----
     hwnd: Option<isize>,
-    backdrop: Option<&'static str>,
     positioned: bool,
-    window_visible: bool,
-
-    // ---- 流程状态 ----
-    init_error: Option<String>,
-    manager_mode: bool,
-    /// 呼出面板前的前台窗口（粘贴目标）。
-    target_hwnd: isize,
-    /// 等待 Store 返回载荷的粘贴请求：(clip_id, plain)
-    paste_pending: Option<(ClipId, bool)>,
-    /// 发起粘贴请求时的目标窗口快照（避免等待期间被新的 PickerRequested 覆盖）。
-    paste_target: isize,
-    /// 已隐藏窗口、等待延时后执行粘贴。
-    paste_due: Option<(Instant, crate::model::PastePayload, bool)>,
+    focus_due: Option<Instant>,
+    shown_at: Option<Instant>,
     unfocused_since: Option<Instant>,
-    first_stats_at: Option<Instant>,
-    /// App 创建时刻（调试用：隐藏启动后延时显示）。
-    #[allow(dead_code)]
-    started_at: Instant,
-    quitting: bool,
+
+    target_hwnd: isize,
+    paste_pending: Option<(ClipId, bool)>,
+    closing_at: Option<Instant>,
+    closed: bool,
+    init_error: Option<String>,
 }
 
 impl ClipNestApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, preview: Option<String>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, opts: UiSessionOptions) -> Self {
         let settings = crate::config::load_settings();
         crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
-        // 排查内存占用时可跳过字体/背景材质（仅调试用）。
-        if std::env::var_os("CLIPNEST_SKIP_FONTS").is_none() {
-            crate::ui::install_fonts(&cc.egui_ctx);
-        }
+        crate::ui::install_fonts(&cc.egui_ctx);
         crate::ui::install_theme(&cc.egui_ctx);
-        let start_hidden = crate::window::start_hidden(preview.is_some());
-        let window_visible = !start_hidden;
+        crate::logging::log(&format!(
+            "UI 会话启动：kind={:?} target_hwnd={} page={:?}",
+            opts.kind, opts.target_hwnd, opts.page
+        ));
 
         let settings_shared = Arc::new(Mutex::new(settings.clone()));
         let (events_tx, events) = mpsc::channel::<Event>();
-
-        let mut init_error = None;
         let mut store = None;
         let mut store_tx = None;
-        let mut sys = None;
-        let mut sys_tx = None;
-
-        if preview.is_none() {
-            match StoreHandle::spawn(
-                events_tx.clone(),
-                settings_shared.clone(),
-                cc.egui_ctx.clone(),
-            ) {
-                Ok(handle) => {
-                    store_tx = Some(handle.cmd_tx());
-                    store = Some(handle);
-                }
-                Err(err) => {
-                    crate::logging::error(&format!("Store 启动失败：{err}"));
-                    init_error = Some(format!(
-                        "剪贴板历史数据库启动失败：{err}\n\n数据目录：{}\n请检查磁盘权限或打开日志目录查看详情。",
-                        crate::config::data_dir().display()
-                    ));
-                }
+        let mut init_error = None;
+        match StoreHandle::spawn(
+            events_tx,
+            settings_shared.clone(),
+            cc.egui_ctx.clone(),
+        ) {
+            Ok(handle) => {
+                store_tx = Some(handle.cmd_tx());
+                store = Some(handle);
             }
-
-            // 允许在 Sys 域未就绪时单独联调 Store/UI（仅开发用）。
-            if std::env::var_os("CLIPNEST_NO_SYS").is_none() {
-                match SysHandle::spawn(
-                    events_tx.clone(),
-                    settings_shared.clone(),
-                    cc.egui_ctx.clone(),
-                ) {
-                    Ok(handle) => {
-                        sys_tx = Some(handle.cmd_tx());
-                        sys = Some(handle);
-                    }
-                    Err(err) => {
-                        crate::logging::error(&format!("Sys 启动失败：{err}"));
-                        if init_error.is_none() {
-                            init_error = Some(format!(
-                                "系统层启动失败：{err}\n\n剪贴板监听/快捷键可能不可用，详见日志。"
-                            ));
-                        }
-                    }
-                }
-            } else {
-                crate::logging::warn("CLIPNEST_NO_SYS 已设置：跳过 Sys 域（仅开发联调用）");
+            Err(err) => {
+                crate::logging::error(&format!("Store 启动失败：{err}"));
+                init_error = Some(format!(
+                    "数据库打开失败：{err}\n\n数据目录：{}",
+                    crate::config::data_dir().display()
+                ));
             }
         }
 
         let mut ui = UiState::new(&cc.egui_ctx, &settings);
-        ui.preview_mode(preview.is_some());
+        match opts.kind {
+            UiKind::Picker => {
+                ui.enter_picker();
+                ui.refresh();
+            }
+            UiKind::Manager => {
+                ui.enter_manager(opts.page);
+            }
+        }
+        if let Some(tx) = &store_tx {
+            let _ = tx.send(StoreCmd::RefreshStats);
+        }
         let thumbs = ThumbCache::new(&cc.egui_ctx);
 
         Self {
+            kind: opts.kind,
             settings,
             settings_shared,
-            preview,
             store,
-            sys,
             store_tx,
-            sys_tx,
             events,
             ui,
             thumbs,
             hwnd: None,
-            backdrop: None,
             positioned: false,
-            window_visible,
-            init_error,
-            manager_mode: false,
-            target_hwnd: 0,
-            paste_pending: None,
-            paste_target: 0,
-            paste_due: None,
+            focus_due: None,
+            shown_at: None,
             unfocused_since: None,
-            first_stats_at: Some(Instant::now() + FIRST_STATS_DELAY),
-            started_at: Instant::now(),
-            quitting: false,
+            target_hwnd: opts.target_hwnd,
+            paste_pending: None,
+            closing_at: None,
+            closed: false,
+            init_error,
         }
+    }
+
+    fn is_picker(&self) -> bool {
+        self.kind == UiKind::Picker
     }
 
     // -----------------------------------------------------------------------
     // 原生窗口
     // -----------------------------------------------------------------------
 
-    /// 首帧：取 HWND、应用背景材质、把面板放到鼠标所在屏幕中央。
     fn init_native_window(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let Some(hwnd) = crate::window::hwnd_of_frame(frame) else {
-            crate::logging::warn("无法取得原生窗口句柄，跳过背景材质与定位");
-            self.positioned = true;
-            return;
-        };
-        self.hwnd = Some(hwnd);
-        if std::env::var_os("CLIPNEST_SKIP_MICA").is_none() {
-            match crate::window::apply_backdrop(hwnd) {
-                Ok(kind) => {
-                    crate::logging::log(&format!("窗口背景材质生效: {kind}"));
-                    self.backdrop = Some(kind);
-                }
-                Err(err) => {
-                    crate::logging::warn(&format!("{err}；回退自绘半透明深色"));
-                    self.backdrop = None;
+        if let Some(hwnd) = crate::window::hwnd_of_frame(frame) {
+            self.hwnd = Some(hwnd);
+            if std::env::var_os("CLIPNEST_SKIP_MICA").is_none() {
+                match crate::window::apply_backdrop(hwnd) {
+                    Ok(kind) => crate::logging::log(&format!("窗口背景材质生效: {kind}")),
+                    Err(err) => crate::logging::warn(&format!("{err}；回退半透明深色")),
                 }
             }
+            if let Some(pos) = crate::window::picker_position(
+                if self.is_picker() {
+                    self.settings.picker_size.into()
+                } else {
+                    self.settings.manager_size.into()
+                },
+                ctx.pixels_per_point(),
+            ) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            crate::window::force_foreground(hwnd);
         } else {
-            crate::logging::warn("CLIPNEST_SKIP_MICA 已设置：跳过背景材质（仅调试用）");
-        }
-        if self.preview.is_none() {
-            self.move_picker_near_cursor(ctx);
+            crate::logging::warn("无法取得原生窗口句柄，跳过背景材质与定位");
         }
         self.positioned = true;
+        self.shown_at = Some(Instant::now());
+        self.focus_due = Some(Instant::now() + FOCUS_RETRY);
     }
 
-    fn move_picker_near_cursor(&self, ctx: &egui::Context) {
-        if let Some(pos) =
-            crate::window::picker_position(self.settings.picker_size.into(), ctx.pixels_per_point())
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+    fn request_close(&mut self, ctx: &egui::Context) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        // 窗口可能已被隐藏（粘贴前 Visible(false)）：直接给原生窗口发 WM_CLOSE，
+        // egui 的 ViewportCommand::Close 在隐藏窗口上不保证被事件循环处理。
+        if let Some(hwnd) = self.hwnd {
+            crate::window::request_close_window(hwnd);
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ctx.request_repaint();
+    }
+
+    fn close_after(&mut self, ctx: &egui::Context, delay: Duration) {
+        if self.closing_at.is_none() {
+            self.closing_at = Some(Instant::now() + delay);
+            ctx.request_repaint_after(delay);
         }
     }
 
-    /// 显示并聚焦候选窗。
-    fn show_picker_window(&mut self, ctx: &egui::Context) {
-        self.manager_mode = false;
-        self.ui.enter_picker();
-        self.ui.refresh();
-        self.window_visible = true;
-        self.unfocused_since = None;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-            egui::WindowLevel::AlwaysOnTop,
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            self.settings.picker_size.into(),
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-            crate::model::APP_TITLE.to_string(),
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        self.move_picker_near_cursor(ctx);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        ctx.request_repaint();
-    }
-
-    /// 隐藏窗口（保留进程与托盘）。
-    fn hide_window(&mut self, ctx: &egui::Context) {
-        self.window_visible = false;
-        self.unfocused_since = None;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        ctx.request_repaint();
-    }
-
-    /// 打开管理台（同一窗口切模式）。
-    fn open_manager_window(&mut self, ctx: &egui::Context, page: ManagerPage) {
-        self.manager_mode = true;
-        self.ui.enter_manager(page);
-        self.window_visible = true;
-        self.unfocused_since = None;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-            egui::WindowLevel::Normal,
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            self.settings.manager_size.into(),
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "{} · 管理",
-            crate::model::APP_TITLE
-        )));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        ctx.request_repaint();
-    }
-
-    /// 回到候选窗模式（管理台里点"返回"）。
-    fn back_to_picker(&mut self, ctx: &egui::Context) {
-        self.manager_mode = false;
-        self.ui.enter_picker();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-            egui::WindowLevel::AlwaysOnTop,
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            self.settings.picker_size.into(),
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-            crate::model::APP_TITLE.to_string(),
-        ));
-        self.move_picker_near_cursor(ctx);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        ctx.request_repaint();
+    fn spawn_manager(&self) -> bool {
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
+        let page = match self.ui.mode() {
+            WindowMode::Manager => "history",
+            WindowMode::Picker => "history",
+        };
+        crate::window::allow_set_foreground_any();
+        std::process::Command::new(exe)
+            .arg("--ui-manager")
+            .arg("--page")
+            .arg(page)
+            .spawn()
+            .is_ok()
     }
 
     // -----------------------------------------------------------------------
-    // 事件泵（后台 → UI）
+    // 事件
     // -----------------------------------------------------------------------
 
     fn pump_events(&mut self, ctx: &egui::Context) {
@@ -289,25 +302,19 @@ impl ClipNestApp {
 
     fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
         match event {
-            Event::PickerRequested { target_hwnd } => {
-                if target_hwnd != 0 && target_hwnd != self.hwnd.unwrap_or(0) {
-                    self.target_hwnd = target_hwnd;
-                }
-                self.show_picker_window(ctx);
-            }
-            Event::ManagerRequested => self.open_manager_window(ctx, ManagerPage::History),
-            Event::QuitRequested => self.request_quit(ctx),
+            Event::SearchPage(page) => self.ui.apply_search_page(page),
+            Event::Stats(stats) => self.ui.apply_stats(stats),
             Event::ClipsChanged { .. } => {
                 self.ui.refresh();
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::RefreshStats);
                 }
             }
-            Event::SearchPage(page) => self.ui.apply_search_page(page),
-            Event::Stats(stats) => self.ui.apply_stats(stats),
+            Event::Toast(message) => self.ui.toast(message),
+            Event::WinVStatus(status) => self.ui.apply_winv(status),
+            Event::HotkeyStatus { ok, reason } => self.ui.apply_hotkey_status(ok, reason),
             Event::PastePayload(payload) => {
-                // 先校验再 take：过期载荷（快速换条目/连按 Enter）不能吞掉新请求。
-                let Some((pending_id, _)) = self.paste_pending else {
+                let Some((pending_id, plain)) = self.paste_pending else {
                     return;
                 };
                 if payload.clip_id != pending_id {
@@ -317,67 +324,70 @@ impl ClipNestApp {
                     ));
                     return;
                 }
-                let Some((_, plain)) = self.paste_pending.take() else {
-                    return;
-                };
-                self.hide_window(ctx);
-                // 延迟到窗口真正隐藏后再让 Sys 恢复前台并 SendInput。
-                self.paste_due = Some((Instant::now() + PASTE_HIDE_DELAY, payload, plain));
+                self.paste_pending = None;
+                self.perform_paste(ctx, payload, plain);
             }
-            Event::PasteResult { ok, reason } => {
-                if ok {
-                    self.ui.toast("已粘贴");
-                    if self.settings.move_to_top_after_paste {
-                        self.ui.refresh();
-                    }
-                } else {
-                    let message = format!(
-                        "已复制，请手动粘贴（{}）",
-                        reason.unwrap_or_else(|| "目标窗口不可用".into())
-                    );
-                    // 窗口已隐藏时用户看不到 toast：重新显示面板承载提示。
-                    if !self.window_visible && !self.manager_mode {
-                        self.show_picker_window(ctx);
-                    }
-                    self.ui.toast(message);
-                }
-            }
-            Event::Toast(message) => self.ui.toast(message),
-            Event::WinVStatus(status) => self.ui.apply_winv(status),
-            Event::HotkeyStatus { ok, reason } => self.ui.apply_hotkey_status(ok, reason),
-            Event::Captured(input) => {
-                if let Some(tx) = &self.store_tx {
-                    let _ = tx.send(StoreCmd::Upsert(input));
-                }
-            }
+            _ => {}
         }
     }
 
-    /// 处理延时粘贴队列。
-    fn flush_paste_due(&mut self, _ctx: &egui::Context) {
-        let Some((due, payload, plain)) = self.paste_due.take() else {
-            return;
-        };
-        if Instant::now() < due {
-            self.paste_due = Some((due, payload, plain));
+    /// 写剪贴板 + 恢复目标窗口 + 模拟粘贴（在窗口先隐藏之后执行）。
+    fn perform_paste(
+        &mut self,
+        ctx: &egui::Context,
+        payload: crate::model::PastePayload,
+        plain: bool,
+    ) {
+        let data_dir = crate::config::data_dir();
+        if let Err(err) = crate::clipboard::write_clipboard(&payload, &data_dir) {
+            crate::logging::error(&format!("写剪贴板失败：{err}"));
+            self.ui.toast(format!("写剪贴板失败：{err}"));
             return;
         }
-        let Some(sys_tx) = &self.sys_tx else {
-            self.ui.toast("系统层未就绪，已复制到剪贴板");
-            return;
-        };
         if plain {
-            let _ = sys_tx.send(SysCmd::WriteClipboard(payload));
-        } else {
-            let _ = sys_tx.send(SysCmd::Paste {
-                payload,
-                target_hwnd: self.paste_target,
-            });
+            self.ui.toast("已复制到剪贴板");
+            self.close_after(ctx, PLAIN_COPY_LINGER);
+            return;
+        }
+        if self.target_hwnd == 0 || crate::sys::util::window_pid(self.target_hwnd) == 0 {
+            self.ui.toast("已复制，请手动粘贴（未找到原窗口）");
+            return;
+        }
+        // 把窗口移到屏幕外（保持 visible：隐藏窗口上执行 eframe/winit 退出流程会异常），
+        // 避免 SendInput 的 Ctrl+V 打到面板自身，然后恢复到目标窗口并粘贴。
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            -30000.0, -30000.0,
+        )));
+        std::thread::sleep(PRE_PASTE_HIDE);
+        match crate::sys::paste::restore_and_paste(self.target_hwnd, self.settings.paste_key) {
+            Ok(()) => {
+                crate::logging::log("自动粘贴完成，关闭 UI 会话");
+                self.request_close(ctx);
+            }
+            Err(err) => {
+                crate::logging::warn(&format!("自动粘贴失败：{err}"));
+                if let Some(pos) = crate::window::picker_position(
+                    if self.is_picker() {
+                        self.settings.picker_size.into()
+                    } else {
+                        self.settings.manager_size.into()
+                    },
+                    ctx.pixels_per_point(),
+                ) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                if let Some(hwnd) = self.hwnd {
+                    crate::window::force_foreground(hwnd);
+                }
+                self.ui
+                    .toast(format!("已复制，请手动粘贴（{}）", err.reason()));
+            }
         }
     }
 
     // -----------------------------------------------------------------------
-    // UI 动作（UI → 后台）
+    // UI 动作
     // -----------------------------------------------------------------------
 
     fn handle_ui_action(&mut self, ctx: &egui::Context, action: UiAction) {
@@ -405,14 +415,12 @@ impl ClipNestApp {
             }
             UiAction::Paste { id, plain } => {
                 self.paste_pending = Some((id, plain));
-                self.paste_target = self.target_hwnd;
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::GetPastePayload(id));
                 }
             }
             UiAction::RequestPastePayload(_) => {
-                // UI 的 Paste 动作已携带载荷请求（GetPastePayload），这里不再重复请求，
-                // 否则 Store 每次取载荷都会 bump_used，导致一次粘贴 use_count +2。
+                // Paste 动作已携带查询，避免重复 bump use_count。
             }
             UiAction::Pin { id, pinned } => {
                 if let Some(tx) = &self.store_tx {
@@ -439,34 +447,34 @@ impl ClipNestApp {
                     let _ = tx.send(StoreCmd::SaveFavoriteFiles(id));
                 }
             }
-            UiAction::OpenManager => self.open_manager_window(ctx, ManagerPage::History),
-            UiAction::OpenPicker => self.back_to_picker(ctx),
-            UiAction::HideWindow => {
-                if self.manager_mode {
-                    self.back_to_picker(ctx);
-                } else {
-                    self.hide_window(ctx);
-                }
+            UiAction::OpenManager => {
+                self.spawn_manager();
+                self.request_close(ctx);
             }
-            UiAction::Quit => self.request_quit(ctx),
+            UiAction::OpenPicker => {
+                // 当前会话已是候选窗；管理台里返回 = 关闭自己。
+                self.request_close(ctx);
+            }
+            UiAction::HideWindow => self.request_close(ctx),
+            UiAction::Quit => {
+                crate::sys::thread::request_daemon_quit();
+                self.request_close(ctx);
+            }
             UiAction::SetSettings(next) => self.apply_settings(ctx, *next),
             UiAction::SetAutostart(enabled) => {
                 self.settings.autostart = enabled;
-                if let Some(tx) = &self.sys_tx {
-                    let _ = tx.send(SysCmd::SetAutostart(enabled));
+                match crate::sys::autostart::set(enabled) {
+                    Ok(()) => self.ui.toast(if enabled {
+                        "已开启开机自启"
+                    } else {
+                        "已关闭开机自启"
+                    }),
+                    Err(err) => self.ui.toast(format!("设置开机自启失败：{err}")),
                 }
                 self.persist_settings();
-                self.ui.toast(if enabled {
-                    "已开启开机自启"
-                } else {
-                    "已关闭开机自启"
-                });
             }
             UiAction::SetPause(paused) => {
                 self.settings.pause_capture = paused;
-                if let Some(tx) = &self.sys_tx {
-                    let _ = tx.send(SysCmd::SetPause(paused));
-                }
                 self.persist_settings();
                 self.ui.toast(if paused {
                     "已暂停记录"
@@ -483,9 +491,8 @@ impl ClipNestApp {
                 }
             }
             UiAction::OpenDataDir => {
-                let dir = crate::config::data_dir();
                 let _ = std::process::Command::new("explorer.exe")
-                    .arg(dir.as_os_str())
+                    .arg(crate::config::data_dir().as_os_str())
                     .spawn();
             }
             UiAction::RefreshStats => {
@@ -503,62 +510,23 @@ impl ClipNestApp {
     }
 
     fn apply_settings(&mut self, ctx: &egui::Context, next: Settings) {
-        let mut next = next;
-        // Sys 托盘可绕过 UI 直接修改 pause_capture/autostart（立即生效）；
-        // 若发现 shared 与本侧不一致，说明是 Sys 改的，保存时以 Sys 的运行时值为准，避免回滚。
-        if let Ok(shared) = self.settings_shared.lock() {
-            if shared.pause_capture != self.settings.pause_capture {
-                next.pause_capture = shared.pause_capture;
-            }
-            if shared.autostart != self.settings.autostart {
-                next.autostart = shared.autostart;
-            }
-        }
         self.settings = next.clone();
         if let Ok(mut shared) = self.settings_shared.lock() {
             *shared = next.clone();
         }
-        if let Some(tx) = &self.sys_tx {
-            let _ = tx.send(SysCmd::SetHotkeys {
-                picker: next.hotkey_picker,
-                winv_mode: next.winv_mode,
-            });
-            let _ = tx.send(SysCmd::SetPause(next.pause_capture));
-        }
         self.ui.set_settings(&next);
         self.persist_settings();
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            if self.manager_mode {
-                next.manager_size.into()
-            } else {
+            if self.ui.mode() == WindowMode::Picker {
                 next.picker_size.into()
+            } else {
+                next.manager_size.into()
             },
         ));
-        self.ui.toast("设置已保存");
+        self.ui.toast("设置已保存（快捷键/暂停将在 1 秒内生效）");
         if let Some(tx) = &self.store_tx {
             let _ = tx.send(StoreCmd::RefreshStats);
         }
-    }
-
-    /// 同步 Sys 托盘直接修改的运行时设置（暂停/自启），保持 UI 显示与落盘一致。
-    fn sync_external_settings(&mut self) {
-        let Ok(shared) = self.settings_shared.lock() else {
-            return;
-        };
-        if shared.pause_capture == self.settings.pause_capture
-            && shared.autostart == self.settings.autostart
-        {
-            return;
-        }
-        self.settings.pause_capture = shared.pause_capture;
-        self.settings.autostart = shared.autostart;
-        drop(shared);
-        let snapshot = self.settings.clone();
-        self.ui.set_settings(&snapshot);
-        crate::logging::log(&format!(
-            "同步托盘运行时设置：pause_capture={} autostart={}",
-            self.settings.pause_capture, self.settings.autostart
-        ));
     }
 
     fn persist_settings(&mut self) {
@@ -571,39 +539,31 @@ impl ClipNestApp {
         }
     }
 
-    fn request_quit(&mut self, ctx: &egui::Context) {
-        if self.quitting {
-            return;
-        }
-        self.quitting = true;
-        crate::logging::log("退出 ClipNest");
-        self.persist_settings();
-        if let Some(tx) = &self.sys_tx {
-            let _ = tx.send(SysCmd::Shutdown);
-        }
-        // Drop 会发送 Shutdown 并 join Store 线程。
-        self.store = None;
-        self.store_tx = None;
-        self.sys = None;
-        self.sys_tx = None;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-
     // -----------------------------------------------------------------------
-    // 失焦自动隐藏
+    // 焦点 / 失焦关闭
     // -----------------------------------------------------------------------
 
-    fn handle_focus_autohide(&mut self, ctx: &egui::Context) {
-        if self.manager_mode || !self.settings.hide_on_blur || !self.window_visible {
-            self.unfocused_since = None;
+    fn handle_focus(&mut self, ctx: &egui::Context) {
+        if let Some(due) = self.focus_due {
+            if Instant::now() >= due {
+                self.focus_due = None;
+                if let Some(hwnd) = self.hwnd {
+                    crate::window::force_foreground(hwnd);
+                }
+            } else {
+                ctx.request_repaint_after(due.saturating_duration_since(Instant::now()));
+            }
+        }
+        if !self.is_picker() || !self.settings.hide_on_blur || self.closed {
             return;
         }
-        let focused = ctx.input(|i| i.focused);
-        if focused {
-            self.unfocused_since = None;
-            return;
+        if let Some(shown) = self.shown_at {
+            if shown.elapsed() < FOCUS_GRACE {
+                ctx.request_repaint_after(Duration::from_millis(120));
+                return;
+            }
         }
-        if self.ui.is_capturing_input() {
+        if ctx.input(|i| i.focused) || self.ui.is_capturing_input() {
             self.unfocused_since = None;
             return;
         }
@@ -613,73 +573,10 @@ impl ClipNestApp {
                 ctx.request_repaint_after(HIDE_ON_BLUR_DELAY);
             }
             Some(since) if since.elapsed() >= HIDE_ON_BLUR_DELAY => {
-                self.hide_window(ctx);
-                self.unfocused_since = None;
+                crate::logging::log("候选窗失焦，关闭 UI 会话");
+                self.request_close(ctx);
             }
             Some(_) => ctx.request_repaint_after(HIDE_ON_BLUR_DELAY / 2),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // 调试辅助（仅 debug）
-    // -----------------------------------------------------------------------
-
-    #[cfg(debug_assertions)]
-    fn dev_hotkeys(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.key_pressed(egui::Key::F8)) {
-            self.hide_window(ctx);
-            crate::logging::log("dev: hide picker");
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
-            self.show_picker_window(ctx);
-            crate::logging::log("dev: show picker");
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
-            if self.manager_mode {
-                self.back_to_picker(ctx);
-                crate::logging::log("dev: enter picker mode");
-            } else {
-                self.open_manager_window(ctx, ManagerPage::History);
-                crate::logging::log("dev: enter manager mode");
-            }
-        }
-    }
-
-    /// 自动化窗口模式测试（仅 debug，环境变量 `CLIPNEST_DEV_SWITCH=1` 时启用）：
-    /// 启动 1.5s 切 Manager、4s 切回 Picker，供脚本定时截图验证窗口命令链路。
-    #[cfg(debug_assertions)]
-    fn dev_auto_switch(&mut self, ctx: &egui::Context) {
-        if std::env::var_os("CLIPNEST_DEV_SWITCH").is_none() {
-            return;
-        }
-        ctx.request_repaint_after(Duration::from_millis(100));
-        let t = ctx.input(|i| i.time);
-        if (1.5..4.0).contains(&t) && !self.manager_mode {
-            self.open_manager_window(ctx, ManagerPage::History);
-            crate::logging::log("dev-switch: enter manager mode");
-        } else if t >= 4.0 && self.manager_mode {
-            self.back_to_picker(ctx);
-            crate::logging::log("dev-switch: enter picker mode");
-        }
-    }
-
-    /// 调试用：隐藏启动后 `CLIPNEST_DEV_SHOW_MS` 毫秒自动显示候选窗，
-    /// 验证"隐藏窗口仍然运行 update、可被事件唤起"这条链路。
-    #[cfg(debug_assertions)]
-    fn dev_show_after(&mut self, ctx: &egui::Context) {
-        if self.window_visible {
-            return;
-        }
-        let Some(ms) = std::env::var("CLIPNEST_DEV_SHOW_MS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-        else {
-            return;
-        };
-        ctx.request_repaint_after(Duration::from_millis(50));
-        if self.started_at.elapsed().as_millis() as u64 >= ms {
-            crate::logging::log("dev: show picker from hidden startup");
-            self.show_picker_window(ctx);
         }
     }
 
@@ -702,15 +599,6 @@ impl ClipNestApp {
                         .size(13.0)
                         .color(egui::Color32::from_rgb(230, 237, 243)),
                 );
-                ui.add_space(16.0);
-                if ui
-                    .button(egui::RichText::new("打开数据目录").size(13.0))
-                    .clicked()
-                {
-                    let _ = std::process::Command::new("explorer.exe")
-                        .arg(crate::config::data_dir().as_os_str())
-                        .spawn();
-                }
             });
     }
 }
@@ -724,51 +612,26 @@ impl eframe::App for ClipNestApp {
         if !self.positioned {
             self.init_native_window(ctx, frame);
         }
-
-        #[cfg(debug_assertions)]
-        self.dev_hotkeys(ctx);
-        #[cfg(debug_assertions)]
-        self.dev_auto_switch(ctx);
-        #[cfg(debug_assertions)]
-        self.dev_show_after(ctx);
-
-        if let Some(mode) = self.preview.clone() {
-            crate::ui::preview::show(ctx, &mode);
-            return;
+        if let Some(due) = self.closing_at {
+            if Instant::now() >= due {
+                self.request_close(ctx);
+                return;
+            }
+            ctx.request_repaint_after(due.saturating_duration_since(Instant::now()));
         }
-
+        self.handle_focus(ctx);
         self.pump_events(ctx);
-        if self.quitting {
+        if self.closed {
             return;
         }
-        self.sync_external_settings();
-
-        if let Some(at) = self.first_stats_at {
-            if Instant::now() >= at {
-                self.first_stats_at = None;
-                if let Some(tx) = &self.store_tx {
-                    let _ = tx.send(StoreCmd::RefreshStats);
-                }
-            } else {
-                ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));
+        if let Some(err) = self.init_error.clone() {
+            if !self.positioned {
+                return;
             }
-        }
-
-        if self.init_error.is_some() {
-            // 启动异常必须让用户看到，即使默认隐藏启动。
-            if !self.window_visible {
-                self.window_visible = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
+            let _ = err;
             self.render_init_error(ctx);
             return;
         }
-
-        self.handle_focus_autohide(ctx);
-        self.flush_paste_due(ctx);
-
         let actions = self.ui.show(ctx, &mut self.thumbs);
         for action in actions {
             self.handle_ui_action(ctx, action);
@@ -778,12 +641,10 @@ impl eframe::App for ClipNestApp {
 
 impl Drop for ClipNestApp {
     fn drop(&mut self) {
-        // 由 request_quit 显式关闭；异常退出兜底：Drop 顺序保证 Sys→Store 都发 Shutdown。
-        if let Some(tx) = &self.sys_tx {
-            let _ = tx.send(SysCmd::Shutdown);
-        }
         if let Some(tx) = &self.store_tx {
             let _ = tx.send(StoreCmd::Shutdown);
         }
+        self.store = None;
+        self.store_tx = None;
     }
 }

@@ -11,7 +11,8 @@ use crate::logging;
 use crate::model::Settings;
 use std::path::PathBuf;
 use tray_icon::menu::{
-    accelerator::Accelerator, CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem,
+    accelerator::Accelerator, CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuItem,
+    PredefinedMenuItem,
 };
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use windows_sys::Win32::Foundation::HWND;
@@ -30,11 +31,17 @@ pub const MENU_QUIT: u32 = 7;
 
 /// 托盘左键单击动作编码（通过 `WM_APP_TRAY` 的 wparam 传递）。
 pub const TRAY_LEFT_CLICK: u32 = 1;
+/// 托盘右键单击动作编码（由 Sys 线程自己弹出菜单，见 [`TrayState::show_menu`]）。
+pub const TRAY_RIGHT_CLICK: u32 = 2;
 
 /// 托盘句柄集合（必须在 Sys 线程创建、持有、drop）。
 pub struct TrayState {
     /// 图标本体；drop 时自动从通知区移除。
     _tray: TrayIcon,
+    /// 菜单本体：不由 tray-icon 自动弹出（它内部 TrackPopupMenu 不产生 MenuEvent），
+    /// 而是右键时在 Sys 线程调用 `show_context_menu_for_hwnd`，这样点击项会通过
+    /// muda 的 MenuEvent handler 回到 `install_event_handlers`。
+    menu: Menu,
     /// 暂停记录勾选项（需要动态更新勾选状态）。
     pause_item: CheckMenuItem,
     /// 开机自启勾选项。
@@ -48,6 +55,14 @@ impl TrayState {
 
     pub fn set_autostart(&self, enabled: bool) {
         self.autostart_item.set_checked(enabled);
+    }
+
+    /// 在指定 owner 窗口上弹出托盘菜单（阻塞式 TrackPopupMenu，但事件循环正常）。
+    /// 必须由 Sys 线程调用（菜单归属创建线程）。
+    pub fn show_menu(&self, owner: HWND) {
+        unsafe {
+            self.menu.show_context_menu_for_hwnd(owner as isize, None);
+        }
     }
 }
 
@@ -87,21 +102,21 @@ pub fn install_event_handlers(hwnd: HWND) {
     }));
 
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-        // 托盘左键「抬起」→ 打开面板（单击动作）
-        if let TrayIconEvent::Click {
-            button: MouseButton::Left,
-            button_state: MouseButtonState::Up,
-            ..
-        } = event
-        {
-            unsafe {
-                PostMessageW(
-                    target as HWND,
-                    WM_APP_TRAY,
-                    TRAY_LEFT_CLICK as usize,
-                    0,
-                );
-            }
+        let code = match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } => TRAY_LEFT_CLICK,
+            TrayIconEvent::Click {
+                button: MouseButton::Right,
+                button_state: MouseButtonState::Up,
+                ..
+            } => TRAY_RIGHT_CLICK,
+            _ => return,
+        };
+        unsafe {
+            PostMessageW(target as HWND, WM_APP_TRAY, code as usize, 0);
         }
     }));
 }
@@ -198,19 +213,19 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
         .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
 
     let icon = load_icon().ok_or_else(|| "托盘图标创建失败（assets/icon.png 缺失且内置图标构造失败）".to_string())?;
+    // 注意：不要把 menu 交给 tray-icon（它内部 TrackPopupMenu 没有 TPM_RETURNCMD，
+    // 选中项只会发 WM_COMMAND 到无人处理的窗口，MenuEvent 永远不会触发）。
+    // 菜单保存在 TrayState，右键时由 Sys 线程用 muda 的 show_context_menu_for_hwnd 弹出。
     let tray = TrayIconBuilder::new()
         .with_tooltip("ClipNest · 剪贴匣")
         .with_icon(icon)
-        .with_menu(Box::new(menu))
-        // 左键单击打开面板、右键弹菜单（spec §20.B）
-        .with_menu_on_left_click(false)
-        .with_menu_on_right_click(true)
         .build()
         .map_err(|e| format!("托盘创建失败：{e}"))?;
 
     logging::log("托盘创建成功（打开面板/管理历史/暂停/清空/设置/开机自启/退出）");
     Ok(TrayState {
         _tray: tray,
+        menu,
         pause_item: item_pause,
         autostart_item: item_autostart,
     })

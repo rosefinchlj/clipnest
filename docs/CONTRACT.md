@@ -337,3 +337,23 @@ pub fn install_fonts(ctx: &egui::Context);  // 中文字体回退
 - Lead 负责最终 `cargo test`/`cargo build --release`/截图/验收；teammate 不跑 git、不动 release。
 - P0 优先级：win32 先做 Win+V/亚克力/托盘的能力 spike（`examples/p0_spike.rs`）并发结论；
   ui 先做 theme+widgets+picker 静态预览；store 先做 schema+CRUD 测试。
+
+## 7. v1.1 进程模型（守护进程 + 按需 UI 子进程）
+
+> 2026-10-31 晚修复轮新增。目的：把 eframe/OpenGL/CJK 字体等 GUI 依赖从常驻进程中剥离，
+> 让空闲内存接近原生程序（本机实测专用工作集 7.6MB / Private 10.6MB）。
+
+- `clipnest.exe`（默认，无参数）= **守护进程**：单实例互斥体；Sys 线程（托盘/热键/Win+V 钩子/剪贴板监听/
+  自动粘贴）+ Store 线程（SQLite 采集/搜索/容量治理）；主线程事件循环，**不创建 GUI 窗口、不初始化 eframe**。
+- 收到 `Event::PickerRequested{target_hwnd}` / `ManagerRequested` / `SettingsRequested` 时：
+  `std::process::Command` spawn 自身 exe：`--ui-picker --target <hwnd>` 或 `--ui-manager --page <page>`，
+  并按类型只保留一个 UI 子进程；同类型重复请求只聚焦已有窗口。
+- UI 子进程（`src/app.rs`）：创建单窗口 eframe（候选窗 620×560 置顶/管理台 1060×700），
+  自己打开同一个 SQLite（WAL 多进程安全）；粘贴时直接调用 `clipboard::write_clipboard` +
+  `sys::paste::restore_and_paste`；关闭/粘贴完成后以原生 `WM_CLOSE` 退出进程。
+- 跨进程设置同步：UI 保存 `settings.json`；守护进程每 250ms 检查 mtime，变化即重载并
+  `SysCmd::SetHotkeys`/`SetPause` 应用（≤1s 生效）。托盘"暂停/自启"由 Sys 直接写设置文件。
+- 退出：托盘"退出"→ `Event::QuitRequested` → 守护进程 kill 子进程、drop Sys/Store；UI 里的"退出"
+  通过 `WM_COPYDATA("CLNQ")` 请求守护进程退出。
+- 开发调试：`--ui-picker/--ui-manager` 可手工启动 UI 子进程；`CLIPNEST_SKIP_FONTS`/`CLIPNEST_SKIP_MICA`
+  仅用于 UI 内存对比实验。

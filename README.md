@@ -13,7 +13,8 @@
 现有剪贴板工具常见问题：侧栏常驻占屏、界面粗糙、内存占用偏高（100MB+）、历史容量不可控。
 ClipNest 的目标是**低占用、键盘优先、视觉克制**：
 
-- 纯 Rust + OpenGL（egui），无 WebView，空闲内存目标 ≤60MB（release 实测约 55MB）；
+- 纯 Rust，无 WebView；**守护进程不加载 GUI**，空闲内存约 **8MB（专用工作集）/ 10.6MB（Private）**；
+  界面按需以子进程启动、用完退出（详见「架构」）。
 - 托盘常驻，默认**不占任务栏**；按快捷键在光标屏幕中央弹出候选窗，选完即粘贴回原窗口；
 - Ctrl+C 即入库，SQLite 持久化，重启/关机不丢；默认 5000 条 / 图片 200MB，可调、可改无限；
 - 文本、图片（截图）、文件列表三类内容都支持；文件默认只记路径，**收藏时**才复制实体进库；
@@ -80,8 +81,11 @@ ClipNest 按以下顺序自动降级（设置页显示实际状态）：
 
 ```powershell
 cargo build --release
-.\target\release\clipnest.exe
+.\target\release\clipnest.exe     # 启动守护进程：托盘常驻、无窗口（双击也不弹控制台）
 ```
+
+启动后：**托盘图标**常驻；按 `Win+V`（或实际生效的备用键，默认 `Ctrl+``，冲突时自动降级）
+呼出候选窗；选中后自动粘贴回原窗口。右键托盘图标可打开管理台/设置/暂停/退出。
 
 开发与自检：
 
@@ -91,32 +95,56 @@ cargo run -- --ui-preview picker        # 只预览 UI（假数据，开发用�
 .\target\release\clipnest.exe --selftest  target\selftest.json   # 无界面全链路自检
 .\target\release\clipnest.exe --diagnose  target\diagnose.json   # 环境/能力诊断
 .\target\release\clipnest.exe --demo-seed 300 --yes              # 写入演示数据
+.\target\release\clipnest.exe --ui-picker --target 0             # 手动打开候选窗（调试）
+.\target\release\clipnest.exe --ui-manager --page settings       # 手动打开管理台（调试）
 ```
 
-开发环境变量：`CLIPNEST_START_VISIBLE=1`（启动即显示窗口）、`CLIPNEST_NO_SYS=1`（跳过系统层联调 UI/Store）、
-`CLIPNEST_DEV_SWITCH=1`（调试：自动切换 Picker/Manager 模式）。
+开发环境变量：`CLIPNEST_DATA_DIR`（数据目录覆盖）、`CLIPNEST_SKIP_FONTS=1` / `CLIPNEST_SKIP_MICA=1`
+（UI 子进程调试：跳过字体/背景材质，用于内存对比）。
 
-## 架构
+## 架构（v1.1：守护进程 + 按需 UI 子进程）
 
 ```
-UI 线程 (eframe/egui)  ←Event─┐
-   │ StoreCmd / SysCmd        │
-   ├──────────────→ Store 线程（SQLite 独占、去重、搜索、容量治理、blob）
-   └──────────────→ Sys 线程（隐藏消息窗口：剪贴板监听、全局热键、Win+V 钩子、托盘、粘贴）
+clipnest.exe（守护进程，常驻，无 GUI）
+├─ Sys 线程：隐藏消息窗口 / 全局热键 / Win+V 钩子 / 托盘 / 剪贴板监听 / 自动粘贴
+├─ Store 线程：SQLite（WAL、FTS5、去重、容量治理、blob）
+└─ 主线程：事件循环；收到呼出请求时 spawn 子进程 ↓
+        clipnest.exe --ui-picker --target <hwnd>   （eframe 候选窗，粘贴后退出）
+        clipnest.exe --ui-manager --page <page>    （eframe 管理台，关闭后退出）
 ```
 
-- 单根窗口在 Picker（620×560 无边框、置顶、磨砂）与 Manager（1060×700、自定义标题栏）两模式间运行时切换；
-- 列表虚拟化 + 缩略图 LRU + SQLite 2MB 页缓存，控制内存；
+- **为什么这样做**：v1.0 把 eframe/OpenGL/中文字体都放在常驻进程里，即使隐藏窗口也要 ~55MB
+  Private；现在守护进程完全不初始化 GUI，空闲只有 **8MB 专用工作集 / 10.6MB Private**
+  （对比 Ditto 的 ~10MB），启动更快、也不再有"隐藏窗口收不到事件"的问题。
+- **界面是短命子进程**：候选窗/管理台关闭或粘贴完成后立即退出，UI 相关内存全部释放；
+  子进程直接打开同一个 SQLite（WAL 多进程安全）做搜索/收藏/删除，粘贴时直接调用
+  `clipboard::write_clipboard` + `sys::paste::restore_and_paste`。
+- **设置同步**：UI 里保存设置后写 `settings.json`，守护进程 1 秒内轮询并重新注册快捷键/暂停状态。
+- **单实例**：命名互斥体保护守护进程；再次双击 exe 会唤起已运行实例的候选窗。
+- 候选窗/管理台 UI 仍由 egui 渲染（深色磨砂、自定义标题栏），列表虚拟化 + 缩略图 LRU + SQLite 2MB 页缓存。
 - 模块边界与接口见 [`docs/CONTRACT.md`](docs/CONTRACT.md)，设计与实施计划见
   [`docs/superpowers/specs/`](docs/superpowers/specs/) 与 [`docs/superpowers/plans/`](docs/superpowers/plans/)。
+
+> 注：界面子进程在部分机器上会因显卡/OpenGL 驱动（例如 NVIDIA 的 `nvgpucomp64.dll`）占用较多内存，
+> 本机实测约 120–135MB；它只在面板打开期间存在，关闭/粘贴后即退出。守护进程常驻部分不受影响。
 
 ## 已知限制
 
 - 仅支持 Windows（10 1809+ / 11），暂不做跨平台；
+- 面板/管理台为按需子进程：首次打开约有 0.3–0.5s 启动延迟；界面进程会加载 OpenGL 驱动，
+  在部分显卡机器上瞬态内存较高（本机 NVIDIA 驱动约 120–135MB），关闭后释放；
 - 富文本（HTML/RTF）暂不保留格式，只按纯文本处理；
-- 图片/文件导入导出暂不内嵌二进制（v1.1 计划）；
+- 图片/文件导入导出暂不内嵌二进制（后续版本计划）；
 - `Win+V` 的最终接管方式取决于系统/安全软件，若被占用会在设置页提示并回退备用快捷键；
 - 以管理员权限运行的窗口会被 UIPI 拦截模拟按键，此时保留剪贴板内容供手动粘贴。
+
+## 更新记录
+
+- **v1.1.0**：修复托盘右键菜单点击无响应（tray-icon 内置菜单不产生 MenuEvent，改为 muda 直接弹菜单）；
+  修复自动粘贴失败（托盘唤起时目标窗口被误判为自身、面板未抢到前台、隐藏窗口关闭异常）；
+  修复"启动即 70MB"：改为**低内存守护进程 + 按需 UI 子进程**，空闲 ~8MB 专用工作集 / 10.6MB Private；
+  设置保存后 1 秒内热键/暂停状态生效；托盘"设置"直达设置页。
+- **v1.0.0**：首个可交付版本（Picker/Manager、Win+V 钩子、文本/图片/文件采集、SQLite 持久化）。
 
 ## 开发文档
 

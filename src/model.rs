@@ -598,6 +598,8 @@ pub enum Event {
     PickerRequested { target_hwnd: isize },
     /// 请求打开管理台。
     ManagerRequested,
+    /// 请求打开管理台并定位到「设置」页（托盘菜单「设置」）。
+    SettingsRequested,
     /// 请求退出程序（托盘菜单）。
     QuitRequested,
     /// 历史列表发生变化（Store 处理完一次写入/删除后发送）。

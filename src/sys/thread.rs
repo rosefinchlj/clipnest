@@ -47,9 +47,13 @@ pub(crate) const WM_APP_CMD: u32 = WM_APP + 1;
 pub(crate) const WM_APP_MENU: u32 = WM_APP + 2;
 /// 托盘图标事件（wparam = `tray::TRAY_*`）。
 pub(crate) const WM_APP_TRAY: u32 = WM_APP + 3;
+/// 前台窗口轮询定时器（记录"最近一个非本进程的前台窗口"，供托盘/热键唤起时作为粘贴目标）。
+pub(crate) const FOREGROUND_POLL_TIMER_ID: usize = 0x434E;
 
 /// 单实例激活消息标识（`WM_COPYDATA.dwData`，即 "CLNS"）。
 pub const ACTIVATE_MAGIC: usize = 0x434C_4E53;
+/// UI 子进程请求守护进程退出（`WM_COPYDATA.dwData`，即 "CLNQ"）。
+pub const QUIT_MAGIC: usize = 0x434C_4E51;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -114,7 +118,13 @@ fn dispatch_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Opt
         }
         WM_APP_TRAY => {
             let code = wparam as u32;
-            with_state(hwnd, |state| state.on_tray_click(code));
+            with_state(hwnd, |state| {
+                if code == tray::TRAY_RIGHT_CLICK {
+                    state.on_tray_right_click();
+                } else {
+                    state.on_tray_click(code);
+                }
+            });
             Some(0)
         }
         winv::WM_APP_WINV_RESET => {
@@ -134,6 +144,10 @@ fn dispatch_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Opt
             }
             Some(0)
         }
+        WM_TIMER if wparam == FOREGROUND_POLL_TIMER_ID => {
+            with_state(hwnd, |state| state.update_foreground());
+            Some(0)
+        }
         WM_TIMER if wparam == winv::WINV_RESET_TIMER_ID => {
             unsafe {
                 KillTimer(hwnd, winv::WINV_RESET_TIMER_ID);
@@ -151,6 +165,9 @@ fn dispatch_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Opt
             if cds.dwData == ACTIVATE_MAGIC && cds.cbData == 0 {
                 logging::log("收到第二实例唤起消息（WM_COPYDATA）");
                 with_state(hwnd, |state| state.request_picker("第二实例唤起"));
+            } else if cds.dwData == QUIT_MAGIC && cds.cbData == 0 {
+                logging::log("收到 UI 子进程的退出请求（WM_COPYDATA）");
+                with_state(hwnd, |state| state.emit_quit_request());
             }
             Some(1) // TRUE：消息已处理
         }
@@ -227,6 +244,7 @@ pub(crate) fn run(
         shutdown: false,
         diag: diag.clone(),
         cmd_rx: cmd_rx_internal,
+        last_external_fg: 0,
     });
     let state_ptr = Box::into_raw(state);
     let title = wide("ClipNest");
@@ -257,6 +275,12 @@ pub(crate) fn run(
         return;
     }
     logging::log(&format!("Sys 线程已启动，隐藏窗口 hwnd={hwnd:?}"));
+
+    // 周期记录"最近一个非本进程的前台窗口"：托盘菜单/热键唤起时，
+    // 当前前台可能是本进程的托盘隐藏窗口或自己，不能作为粘贴目标。
+    unsafe {
+        SetTimer(hwnd, FOREGROUND_POLL_TIMER_ID, 300, None);
+    }
 
     // 1) 剪贴板监听
     let listener_ok = unsafe { AddClipboardFormatListener(hwnd) } != 0;
@@ -450,6 +474,28 @@ pub fn activate_existing_instance() -> bool {
     }
     let mut data = COPYDATASTRUCT {
         dwData: ACTIVATE_MAGIC,
+        cbData: 0,
+        lpData: std::ptr::null_mut(),
+    };
+    let result = unsafe {
+        SendMessageW(
+            hwnd as HWND,
+            WM_COPYDATA,
+            0,
+            &mut data as *mut _ as isize,
+        )
+    };
+    result != 0
+}
+
+/// UI 子进程请求守护进程退出（"退出 ClipNest" 菜单/管理器动作使用）。
+pub fn request_daemon_quit() -> bool {
+    let hwnd = find_existing_instance();
+    if hwnd == 0 || unsafe { IsWindow(hwnd as HWND) } == 0 {
+        return false;
+    }
+    let mut data = COPYDATASTRUCT {
+        dwData: QUIT_MAGIC,
         cbData: 0,
         lpData: std::ptr::null_mut(),
     };

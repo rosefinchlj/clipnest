@@ -120,6 +120,81 @@ pub fn picker_position(size: egui::Vec2, pixels_per_point: f32) -> Option<egui::
     }
 }
 
+/// 请求关闭本进程某个窗口（发 WM_CLOSE；比 egui `ViewportCommand::Close` 更可靠，
+/// 尤其是窗口已被隐藏时——隐藏窗口的 viewport close 命令可能不会被事件循环处理）。
+pub fn request_close_window(hwnd: isize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    if hwnd == 0 {
+        return;
+    }
+    unsafe {
+        PostMessageW(hwnd as _, WM_CLOSE, 0, 0);
+    }
+}
+
+/// 允许任意进程把窗口切到前台：守护进程在 spawn UI 子进程前调用一次，
+/// 子进程随后才能可靠地 SetForegroundWindow（否则会被前台锁拒绝）。
+pub fn allow_set_foreground_any() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
+    unsafe {
+        AllowSetForegroundWindow(0xFFFF_FFFF); // ASFW_ANY
+    }
+}
+
+/// 按标题查找顶层窗口（守护进程用于唤起已打开的 UI 子进程窗口）。
+pub fn find_window_by_title(title: &str) -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+    let wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let hwnd = unsafe { FindWindowW(std::ptr::null(), wide.as_ptr()) };
+    if hwnd.is_null() {
+        None
+    } else {
+        Some(hwnd as isize)
+    }
+}
+
+/// 强制把窗口切到前台并聚焦（托盘菜单/热键从隐藏状态唤起时，
+/// 仅靠 egui `ViewportCommand::Focus` 在部分场景会被前台锁拒绝）。
+/// 用 AttachThreadInput 绕过前台锁定；失败静默（只是得不到焦点，不影响功能）。
+pub fn force_foreground(hwnd: isize) {
+    if hwnd == 0 {
+        return;
+    }
+    use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        ShowWindow, SW_SHOW,
+    };
+
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground as isize == hwnd {
+            return;
+        }
+        let current_thread = GetCurrentThreadId();
+        let mut fg_pid: u32 = 0;
+        let fg_thread = if foreground.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(foreground, &mut fg_pid)
+        };
+
+        let attached = fg_thread != 0 && fg_thread != current_thread;
+        if attached {
+            AttachThreadInput(current_thread, fg_thread, 1);
+        }
+        ShowWindow(hwnd as _, SW_SHOW);
+        BringWindowToTop(hwnd as _);
+        SetForegroundWindow(hwnd as _);
+        SetActiveWindow(hwnd as _);
+        SetFocus(hwnd as _);
+        if attached {
+            AttachThreadInput(current_thread, fg_thread, 0);
+        }
+    }
+}
+
 /// 诊断/能力判断用：真实 OS 版本 (major, build)。
 /// `GetVersionExW` 会受应用兼容性清单影响（无清单时返回 6.1/9200），
 /// 因此优先用 ntdll 的 `RtlGetVersion`，失败再回退 `GetVersionExW`。

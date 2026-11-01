@@ -15,6 +15,7 @@ use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 /// Sys 线程内部状态（Box 后挂在窗口的 GWLP_USERDATA 上，仅本线程访问）。
 pub(crate) struct SysState {
@@ -37,6 +38,8 @@ pub(crate) struct SysState {
     /// 内部命令队列：bridge 线程转投递，`WM_APP_CMD` 只作为唤醒信号。
     /// 不把指针放进 wparam，避免其它进程向隐藏窗口 PostMessage 伪造指针导致崩溃。
     pub(crate) cmd_rx: Receiver<SysCmd>,
+    /// 最近一个不属于本进程的前台窗口（粘贴目标兜底；托盘菜单/已唤出面板时使用）。
+    pub(crate) last_external_fg: isize,
 }
 
 impl SysState {
@@ -145,9 +148,41 @@ impl SysState {
     // -----------------------------------------------------------------------
 
     pub(crate) fn request_picker(&mut self, source: &str) {
-        let target_hwnd = util::foreground_window_handle();
+        let mut target_hwnd = util::foreground_window_handle();
+        let self_pid = unsafe { GetCurrentProcessId() };
+        // 托盘菜单/面板已打开等场景，当前前台可能是本进程窗口（托盘隐藏窗口、Picker 本身），
+        // 不能作为粘贴目标：退回最近一次记录的外部前台窗口。
+        if target_hwnd == 0 || util::window_pid(target_hwnd) == self_pid {
+            target_hwnd = self.last_external_fg;
+        }
         logging::log(&format!("呼出面板（{source}），target_hwnd={target_hwnd}"));
         self.emit(Event::PickerRequested { target_hwnd });
+    }
+
+    /// 周期记录外部前台窗口（由 `WM_TIMER` 每 300ms 调用）。
+    pub(crate) fn update_foreground(&mut self) {
+        let fg = util::foreground_window_handle();
+        if fg == 0 {
+            return;
+        }
+        let self_pid = unsafe { GetCurrentProcessId() };
+        if util::window_pid(fg) != self_pid {
+            self.last_external_fg = fg;
+        }
+    }
+
+    /// 右键托盘图标：在 Sys 线程用 muda 弹出菜单（点击项会触发 MenuEvent → WM_APP_MENU）。
+    pub(crate) fn on_tray_right_click(&mut self) {
+        if let Some(tray) = &self.tray {
+            tray.show_menu(self.hwnd);
+        } else {
+            logging::warn("托盘菜单不可用：托盘未创建");
+        }
+    }
+
+    /// UI 子进程通过 WM_COPYDATA 请求守护进程退出。
+    pub(crate) fn emit_quit_request(&mut self) {
+        self.emit(Event::QuitRequested);
     }
 
     pub(crate) fn on_hotkey(&mut self, id: i32) {
@@ -173,8 +208,7 @@ impl SysState {
             }
             tray::MENU_SETTINGS => {
                 logging::log("托盘：打开设置");
-                self.emit(Event::ManagerRequested);
-                self.toast("请在管理台左侧打开「设置」");
+                self.emit(Event::SettingsRequested);
             }
             tray::MENU_AUTOSTART => self.toggle_autostart(),
             tray::MENU_QUIT => {
@@ -409,6 +443,10 @@ impl SysState {
             windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
                 self.hwnd,
                 winv::WINV_RESET_TIMER_ID,
+            );
+            windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
+                self.hwnd,
+                crate::sys::thread::FOREGROUND_POLL_TIMER_ID,
             );
         }
         logging::log("Sys 线程清理完成");
