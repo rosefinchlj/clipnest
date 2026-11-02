@@ -281,6 +281,7 @@ fn render_list(
                             item: &item,
                             thumb: thumb.as_ref(),
                             selected,
+                            ordinal: i + 1,
                         },
                     );
                     if row.response.clicked() {

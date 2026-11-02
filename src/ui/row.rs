@@ -16,6 +16,8 @@ pub struct ClipRow<'a> {
     /// 图片缩略图（懒加载完成才有）。
     pub thumb: Option<&'a egui::TextureHandle>,
     pub selected: bool,
+    /// 当前列表中的序号（从 1 开始，不是数据库 id）。
+    pub ordinal: usize,
 }
 
 /// 列表行输出。
@@ -31,10 +33,8 @@ pub struct ClipRowOutput {
 /// 右侧相对时间与星标；选中态强调色 12% + 左侧 2px 竖条，悬停 6%。
 pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(width, theme::ROW_HEIGHT),
-        Sense::click(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, theme::ROW_HEIGHT), Sense::click());
     let ctx = ui.ctx().clone();
     // 选中态必须瞬时切换：用 80ms 淡入淡出时，每次上下移动都会同时淡出旧行/淡入新行，
     // 看起来像整块列表闪一下。hover 仍保留轻微动画。
@@ -53,7 +53,11 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
             Pos2::new(rect.left() + 1.0, rect.top() + 12.0),
             Pos2::new(rect.left() + 3.0, rect.bottom() - 12.0),
         );
-        painter.rect_filled(bar, CornerRadius::same(1), theme::accent().gamma_multiply(sel_t));
+        painter.rect_filled(
+            bar,
+            CornerRadius::same(1),
+            theme::accent().gamma_multiply(sel_t),
+        );
     } else if hover_t > 0.001 {
         painter.rect_filled(
             rect,
@@ -62,10 +66,27 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         );
     }
 
-    // 左：40×40 类型徽标 / 缩略图
+    // 左：列表序号 + 40×40 类型徽标 / 缩略图
+    // 序号按当前列表顺序从 1 开始，只用于视觉定位，不暴露数据库 id。
+    let ordinal_width = 28.0;
+    let ordinal_center = Pos2::new(
+        rect.left() + theme::GAP_S + ordinal_width / 2.0,
+        rect.center().y,
+    );
+    painter.text(
+        ordinal_center,
+        Align2::CENTER_CENTER,
+        row.ordinal.to_string(),
+        theme::font_mono(),
+        if row.selected {
+            theme::accent()
+        } else {
+            theme::text_secondary()
+        },
+    );
     let icon_rect = Rect::from_center_size(
         Pos2::new(
-            rect.left() + theme::GAP_S + theme::THUMB_SIZE / 2.0,
+            rect.left() + theme::GAP_S + ordinal_width + theme::THUMB_SIZE / 2.0,
             rect.center().y,
         ),
         Vec2::splat(theme::THUMB_SIZE),
@@ -175,10 +196,7 @@ fn tooltip_item(ui: &mut egui::Ui, item: &ClipItem) {
         ClipKind::Text => {
             let text = item.text.as_deref().unwrap_or(item.preview.as_str());
             let preview: String = text.chars().take(600).collect();
-            ui.add(
-                egui::Label::new(theme::mono(preview))
-                    .wrap_mode(egui::TextWrapMode::Wrap),
-            );
+            ui.add(egui::Label::new(theme::mono(preview)).wrap_mode(egui::TextWrapMode::Wrap));
         }
         ClipKind::Image => {
             ui.label(theme::aux(format!(
@@ -202,4 +220,3 @@ fn tooltip_item(ui: &mut egui::Ui, item: &ClipItem) {
         }
     }
 }
-

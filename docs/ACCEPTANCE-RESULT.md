@@ -422,3 +422,20 @@
 - `cargo build --release` 0 warnings；`--selftest` PASS。
 - 实测：管理台删除 → 回收站出现；恢复后行消失、历史恢复；彻底删除/清空确认可执行；2 天到期保留逻辑由单测覆盖。
 - 截图：`docs/screenshots/manager-trash.png`。
+
+
+---
+
+## 19. v1.9.1（2026-11-02，候选窗列表序号）
+
+### 用户需求
+- 粘贴列表中显示序号，而不是数据库 id。
+
+### 实现
+- `src/ui/row.rs::ClipRow` 新增 `ordinal: usize`；`clip_row` 在行左侧绘制 1 起始的序号，使用等宽字体，选中行用强调色、普通行用次文本色。
+- 类型图标/缩略图与标题区整体右移 28px，为序号留出固定列；序号按当前查询/筛选后的列表位置计算，不读取 `ClipItem.id`。
+- `src/ui/picker.rs` 传给行组件 `ordinal: i + 1`，滚动、筛选、搜索后序号随可见结果重新排序。
+
+### 校验
+- `cargo test --release` **149 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
+- 截图：`target/ui-picker.png`，已更新 `docs/screenshots/picker.png`。
