@@ -8,7 +8,7 @@ use eframe::egui::{self, Pos2, Rect, UiBuilder, Vec2};
 
 /// 快捷键帮助表（spec 附录 B）。
 const SHORTCUTS: &[(&str, &str)] = &[
-    ("Win+V / Ctrl+`", "呼出/隐藏候选面板（Win+V 可被接管）"),
+    ("Ctrl+` / 自定义", "呼出/隐藏候选面板（快捷键可在设置里修改，立即生效）"),
     ("↑ / ↓", "选择上/下一条"),
     ("PgUp / PgDn", "翻页"),
     ("Home / End", "跳到首条/末条"),
@@ -74,7 +74,7 @@ fn brand_card(ui: &mut egui::Ui) {
         });
         ui.add_space(10.0);
         ui.label(theme::body_secondary(
-            "深色磨砂玻璃剪贴板管理器：复制即入库、Win+V 呼出、文本/图片/文件持久化保存，\
+            "深色磨砂玻璃剪贴板管理器：复制即入库、快捷键呼出、文本/图片/文件持久化保存，\
              全本地运行、不联网、不上传任何内容。",
         ));
         ui.add_space(6.0);

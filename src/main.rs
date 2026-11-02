@@ -1,19 +1,22 @@
-//! ClipNest 入口：命令分发。
+//! ClipNest 入口：命令行分发 + 正常 GUI 启动。
 //!
-//! 进程模型（低内存关键）：
-//! - **默认（无参数）= 守护进程**：托盘/全局热键/剪贴板监听/SQLite 采集，不创建 GUI 窗口；
-//! - `--ui-picker --target <hwnd>` / `--ui-manager --page <page>`：由守护进程按需 spawn 的
-//!   UI 子进程（eframe 窗口），关闭后退出、内存全部释放；
-//! - `--selftest` / `--diagnose` / `--demo-seed` / `--ui-preview`：诊断与开发用。
-//!
-//! release 为 Windows GUI 子系统（双击不弹控制台）；CLI 模式会 AttachConsole 到调用方终端。
+//! 命令行（spec 附录 C）：
+//! ```text
+//! clipnest.exe                      正常启动
+//! clipnest.exe --selftest out.json  无界面全链路自检
+//! clipnest.exe --diagnose out.json  环境与能力诊断
+//! clipnest.exe --demo-seed 300 --yes 写入演示数据
+//! clipnest.exe --ui-preview picker  仅 UI 预览（开发/截图用）
+//! clipnest.exe --version / --help
+//! ```
 
+// release 为 Windows GUI 子系统：从资源管理器双击不会弹控制台；
+// CLI 模式在 main 里 AttachConsole 到调用方终端以保留输出（见 attach_parent_console）。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
 mod clipboard;
 mod config;
-mod daemon;
 mod diag;
 mod logging;
 mod model;
@@ -23,12 +26,9 @@ mod ui;
 mod window;
 
 use eframe::egui;
-use ui::ManagerPage;
 
 enum Mode {
-    Daemon,
-    UiPicker { target_hwnd: isize },
-    UiManager { page: ManagerPage },
+    Normal,
     UiPreview(String),
     Selftest(String),
     Diagnose(String),
@@ -44,37 +44,6 @@ fn parse_args() -> Mode {
         match args[i].as_str() {
             "--help" | "-h" => return Mode::Help,
             "--version" | "-V" => return Mode::Version,
-            "--ui-picker" => {
-                let mut target = 0isize;
-                if let Some(value) = args.get(i + 1) {
-                    if value == "--target" {
-                        target = args
-                            .get(i + 2)
-                            .and_then(|s| s.parse::<isize>().ok())
-                            .unwrap_or(0);
-                    } else if let Ok(parsed) = value.parse::<isize>() {
-                        target = parsed;
-                    }
-                }
-                return Mode::UiPicker {
-                    target_hwnd: target,
-                };
-            }
-            "--ui-manager" => {
-                let page = args
-                    .get(i + 1)
-                    .filter(|s| !s.starts_with("--"))
-                    .map(|s| parse_page(s))
-                    .unwrap_or(ManagerPage::History);
-                if args.get(i + 1).map(|s| s == "--page").unwrap_or(false) {
-                    let page = args
-                        .get(i + 2)
-                        .map(|s| parse_page(s))
-                        .unwrap_or(ManagerPage::History);
-                    return Mode::UiManager { page };
-                }
-                return Mode::UiManager { page };
-            }
             "--selftest" => {
                 let path = args
                     .get(i + 1)
@@ -104,37 +73,28 @@ fn parse_args() -> Mode {
                     .unwrap_or_else(|| "picker".to_string());
                 return Mode::UiPreview(mode);
             }
-            other => eprintln!("未知参数：{other}（使用 --help 查看用法）"),
+            other => {
+                eprintln!("未知参数：{other}（使用 --help 查看用法）");
+            }
         }
         i += 1;
     }
-    Mode::Daemon
-}
-
-fn parse_page(value: &str) -> ManagerPage {
-    match value {
-        "favorites" | "收藏" => ManagerPage::Favorites,
-        "settings" | "设置" => ManagerPage::Settings,
-        "about" | "关于" => ManagerPage::About,
-        _ => ManagerPage::History,
-    }
+    Mode::Normal
 }
 
 fn print_help() {
     println!(
         "ClipNest 剪贴匣 {}\n\n\
 用法:\n  \
-clipnest.exe                             启动守护进程（托盘常驻，无窗口）\n  \
-clipnest.exe --ui-picker --target HWND   打开候选窗（内部使用）\n  \
-clipnest.exe --ui-manager [--page P]     打开管理台（内部使用；P=history/favorites/settings/about）\n  \
-clipnest.exe --selftest [out.json]       无界面全链路自检\n  \
-clipnest.exe --diagnose [out.json]       环境与能力诊断\n  \
-clipnest.exe --demo-seed N --yes         写入 N 条演示数据\n  \
-clipnest.exe --ui-preview <mode>         UI 预览（picker/manager/favorites/settings/about）\n  \
-clipnest.exe --version                   显示版本\n  \
-clipnest.exe --help                      显示本帮助\n\n\
+clipnest.exe                        正常启动（托盘常驻）\n  \
+clipnest.exe --selftest [out.json]  无界面全链路自检\n  \
+clipnest.exe --diagnose [out.json]  环境与能力诊断\n  \
+clipnest.exe --demo-seed N --yes    写入 N 条演示数据\n  \
+clipnest.exe --ui-preview <mode>    UI 预览（picker / manager）\n  \
+clipnest.exe --version              显示版本\n  \
+clipnest.exe --help                 显示本帮助\n\n\
 数据目录: %APPDATA%\\ClipNest（可用 CLIPNEST_DATA_DIR 覆盖）\n\
-默认面板 {}×{}，备用快捷键 Ctrl+`（冲突时自动降级），Win+V 自动接管。",
+默认面板 {}×{}，快捷键 Ctrl+`（可在设置中修改，立即生效；v1.2 起不再接管 Win+V）。",
         env!("CARGO_PKG_VERSION"),
         model::Settings::default().picker_size[0] as u32,
         model::Settings::default().picker_size[1] as u32,
@@ -152,6 +112,7 @@ fn ensure_single_instance() -> bool {
     let name: Vec<u16> = "Local\\ClipNest.SingleInstance\0".encode_utf16().collect();
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
+        // 无法创建互斥体时允许启动，避免因权限等问题打不开程序。
         return true;
     }
     let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
@@ -159,6 +120,7 @@ fn ensure_single_instance() -> bool {
 }
 
 /// release 为 GUI 子系统（无控制台）；CLI 模式尝试附加到父进程控制台，让输出可见。
+/// 必须在任何 stdout/stderr 输出之前调用（Rust 的 stdout 句柄是惰性获取的）。
 fn attach_parent_console() {
     use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
     unsafe {
@@ -168,11 +130,7 @@ fn attach_parent_console() {
 
 fn main() {
     let mode = parse_args();
-    // 只有纯 CLI 模式需要控制台；GUI 模式（守护进程/子进程/预览）不附加。
-    if matches!(
-        mode,
-        Mode::Selftest(_) | Mode::Diagnose(_) | Mode::DemoSeed { .. } | Mode::Help | Mode::Version
-    ) {
+    if !matches!(mode, Mode::Normal) {
         attach_parent_console();
     }
 
@@ -219,34 +177,12 @@ fn main() {
             std::process::exit(code);
         }
         Mode::UiPreview(preview) => {
-            if let Err(err) = app::run_preview(preview) {
+            if let Err(err) = run_native(Some(preview)) {
                 eprintln!("UI 预览启动失败: {err}");
                 std::process::exit(1);
             }
         }
-        Mode::UiPicker { target_hwnd } => {
-            let opts = app::UiSessionOptions {
-                kind: daemon::UiKind::Picker,
-                target_hwnd,
-                page: ManagerPage::History,
-            };
-            if let Err(err) = app::run_ui_session(opts) {
-                eprintln!("候选窗启动失败: {err}");
-                std::process::exit(1);
-            }
-        }
-        Mode::UiManager { page } => {
-            let opts = app::UiSessionOptions {
-                kind: daemon::UiKind::Manager,
-                target_hwnd: 0,
-                page,
-            };
-            if let Err(err) = app::run_ui_session(opts) {
-                eprintln!("管理台启动失败: {err}");
-                std::process::exit(1);
-            }
-        }
-        Mode::Daemon => {
+        Mode::Normal => {
             if !ensure_single_instance() {
                 logging::init(&config::logs_dir(), "info");
                 logging::log("检测到已有 ClipNest 实例，尝试唤起后退出");
@@ -261,8 +197,7 @@ fn main() {
                 );
                 return;
             }
-            if let Err(err) = daemon::run() {
-                logging::error(&format!("守护进程启动失败：{err}"));
+            if let Err(err) = run_native(None) {
                 eprintln!("ClipNest 启动失败: {err}");
                 std::process::exit(1);
             }
@@ -270,8 +205,58 @@ fn main() {
     }
 }
 
-/// 保留给其它模块使用（避免 `use eframe::egui` 未使用告警）。
-#[allow(dead_code)]
-fn _egui_marker() -> egui::Vec2 {
-    egui::Vec2::ZERO
+fn run_native(preview: Option<String>) -> eframe::Result<()> {
+    let settings = config::load_settings();
+    let _ = config::ensure_dirs();
+    logging::init(&config::logs_dir(), &settings.log_level);
+    logging::log(&format!(
+        "ClipNest {} 启动（preview={preview:?}，数据目录={})",
+        env!("CARGO_PKG_VERSION"),
+        config::data_dir().display()
+    ));
+
+    let is_picker_preview = preview.as_deref() == Some("picker");
+    let size = if preview.is_some() {
+        [1100.0, 720.0]
+    } else {
+        settings.picker_size
+    };
+
+    // v1.2：回到单进程常驻方案——窗口在启动时就创建（OpenGL/字体已就绪，面板秒开），
+    // 但先放在屏幕外；收到快捷键/托盘唤醒时再移回光标屏幕并抢前台。
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size(if is_picker_preview {
+            [660.0, 620.0]
+        } else {
+            size
+        })
+        .with_title(model::APP_TITLE)
+        .with_transparent(true)
+        .with_visible(true);
+    if preview.is_none() {
+        viewport = viewport
+            .with_position([-30000.0, -30000.0])
+            // 屏幕外窗口不能抢焦点（否则启动瞬间会把用户当前窗口的前台抢走）。
+            .with_active(false)
+            .with_decorations(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            .with_resizable(false);
+    } else if is_picker_preview {
+        viewport = viewport
+            .with_decorations(false)
+            .with_taskbar(false)
+            .with_resizable(false);
+    }
+
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        model::APP_NAME,
+        options,
+        Box::new(move |cc| Ok(Box::new(app::ClipNestApp::new(cc, preview)))),
+    )
 }

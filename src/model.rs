@@ -455,15 +455,15 @@ pub fn vk_label(vk: u32) -> String {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WinVMode {
-    /// 自动探测：优先直接注册，失败再用键盘钩子。
+    /// 默认关闭：v1.2 起不再接管 Win+V（保留枚举用于兼容旧配置）。
     #[default]
-    Auto,
-    /// 只尝试 RegisterHotKey。
-    RegisterOnly,
-    /// 只安装键盘钩子。
-    HookOnly,
-    /// 不接管 Win+V。
     Off,
+    /// 自动探测：优先直接注册，失败再用键盘钩子（历史模式，v1.2 不再使用）。
+    Auto,
+    /// 只尝试 RegisterHotKey（历史模式）。
+    RegisterOnly,
+    /// 只安装键盘钩子（历史模式）。
+    HookOnly,
 }
 
 impl WinVMode {
@@ -527,7 +527,7 @@ impl PasteKey {
 }
 
 /// 用户设置（持久化到 settings.json；未知字段忽略、缺失字段取默认值）。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// 备用全局快捷键（Win+V 被接管时仍保留）。

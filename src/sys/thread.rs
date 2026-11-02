@@ -336,12 +336,13 @@ pub(crate) fn run(
     });
 
     // 4) Win+V 接管（L1 → L2 钩子 + 补偿）
-    let winv_mode = match settings.lock() {
-        Ok(s) => s.winv_mode,
-        Err(poisoned) => poisoned.into_inner().winv_mode,
+    // v1.2：按用户要求移除 Win+V 接管——不再安装低级键盘钩子，也不注册 Win+V。
+    // 保留 WinVHandle 字段用于生命周期/诊断兼容，状态固定为"已移除"。
+    let winv_handle = winv::WinVHandle::default();
+    let winv_status = WinVStatus::Unavailable {
+        reason: "v1.2 起已移除 Win+V 接管（请使用备用快捷键）".to_string(),
     };
-    let winv_handle = winv::WinVHandle::apply(hwnd, winv_mode, events.clone(), ctx.clone());
-    let winv_status = winv_handle.status.clone();
+    logging::log("Win+V 接管：已移除（不安装键盘钩子）");
     let _ = events.send(Event::WinVStatus(winv_status.clone()));
     ctx.request_repaint();
 
@@ -352,7 +353,7 @@ pub(crate) fn run(
         state.picker_hotkey = Some(registration);
         state.winv = winv_handle;
         state.tray = tray_state;
-        state.winv_mode = winv_mode;
+        state.winv_mode = crate::model::WinVMode::Off;
         state.update_diag(|d| {
             d.tray_ok = tray_ok;
             d.hotkey_requested = Some(requested);

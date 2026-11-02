@@ -338,8 +338,10 @@ impl SysState {
     fn apply_hotkeys(
         &mut self,
         picker: crate::model::HotkeyChord,
-        winv_mode: crate::model::WinVMode,
+        _winv_mode: crate::model::WinVMode,
     ) {
+        // v1.2：Win+V 接管已移除，忽略传入的 winv_mode（字段仅保留兼容）。
+        let winv_mode = crate::model::WinVMode::Off;
         self.with_settings(|s| {
             s.hotkey_picker = picker;
             s.winv_mode = winv_mode;
@@ -374,17 +376,11 @@ impl SysState {
         self.picker_hotkey = Some(registration);
         self.emit(Event::HotkeyStatus { ok, reason });
 
-        // Win+V：卸载旧策略后重新应用（仅模式变化时）
-        if winv_changed {
-            self.winv.reapply(
-                self.hwnd,
-                winv_mode,
-                self.events.clone(),
-                self.ctx.clone(),
-            );
-        }
+        // v1.2：Win+V 接管已移除，不再装卸键盘钩子，仅上报固定状态。
         self.winv_mode = winv_mode;
-        let winv_status = self.winv.status.clone();
+        let winv_status = crate::model::WinVStatus::Unavailable {
+            reason: "v1.2 起已移除 Win+V 接管（请使用备用快捷键）".to_string(),
+        };
         self.update_diag(|d| d.winv_status = Some(winv_status.clone()));
         self.emit(Event::WinVStatus(winv_status));
     }

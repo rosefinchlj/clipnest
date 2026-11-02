@@ -357,3 +357,11 @@ pub fn install_fonts(ctx: &egui::Context);  // 中文字体回退
   通过 `WM_COPYDATA("CLNQ")` 请求守护进程退出。
 - 开发调试：`--ui-picker/--ui-manager` 可手工启动 UI 子进程；`CLIPNEST_SKIP_FONTS`/`CLIPNEST_SKIP_MICA`
   仅用于 UI 内存对比实验。
+
+## 8. v1.2 进程模型修订（2026-11-02）
+
+> 用户反馈"打开界面慢"，要求回到 v1.0 方式、内存暂不考虑。**§7 的守护进程 + UI 子进程设计已撤销**，
+> 实现回到单进程：eframe 窗口启动即创建（屏幕外、不抢前台），Store/Sys 线程常驻；
+> 快捷键/托盘唤起只做窗口移入屏幕 + 强制前台（实测 20–80ms）。
+> Win+V 接管同步移除（不注册、不装钩子）。设置改动由 UI 直接下发 SysCmd 立即生效，
+> settings.json 监听作为兜底。以本节为准，§7 仅保留为历史。

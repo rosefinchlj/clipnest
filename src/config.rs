@@ -67,18 +67,28 @@ pub fn ensure_dirs() -> std::io::Result<()> {
 
 /// 读取设置；文件缺失/损坏时返回默认值，损坏文件备份为 `settings.json.bad`。
 pub fn load_settings() -> Settings {
-    let path = settings_path();
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return Settings::default();
-    };
-    match serde_json::from_str::<Settings>(&raw) {
-        Ok(s) => s,
+    match load_settings_strict() {
+        Ok(settings) => settings,
         Err(err) => {
-            crate::logging::warn(&format!("settings.json 解析失败（{err}），使用默认设置"));
-            let _ = fs::copy(&path, path.with_extension("json.bad"));
+            // 首次运行没有 settings.json 属于正常情况，不刷警告。
+            if !err.contains("os error 2") {
+                crate::logging::warn(&format!("settings.json 读取失败（{err}），使用默认设置"));
+            }
+            let path = settings_path();
+            if path.exists() {
+                let _ = fs::copy(&path, path.with_extension("json.bad"));
+            }
             Settings::default()
         }
     }
+}
+
+/// 严格读取设置：允许调用方区分「文件不存在」与「解析失败」（设置监听用，
+/// 避免读到正在写入的半截文件时把默认值误判为用户修改）。
+pub fn load_settings_strict() -> Result<Settings, String> {
+    let path = settings_path();
+    let raw = fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
+    serde_json::from_str::<Settings>(&raw).map_err(|e| format!("解析失败: {e}"))
 }
 
 /// 原子写设置：先写 `.tmp`，再 rename 覆盖。

@@ -4,7 +4,7 @@
 //! [`UiAction::SetSettings`] 交给 Lead 落盘；开自启/暂停/导出/清空等即时动作
 //! 通过对应 [`UiAction`] 发送。**UI 不直接写设置文件**。
 
-use crate::model::{fmt_size, PasteKey, Settings, WinVMode, WinVStatus};
+use crate::model::{fmt_size, PasteKey, Settings};
 use crate::ui::{theme, widgets, UiAction, UiState};
 use eframe::egui::{self, Pos2, Rect, UiBuilder, Vec2};
 
@@ -155,7 +155,7 @@ fn path_row(ui: &mut egui::Ui, label: &str, path: &str) {
 // ---------------------------------------------------------------------------
 
 fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
-    section(ui, "快捷键与 Win+V", |ui| {
+    section(ui, "快捷键", |ui| {
         // 备用全局快捷键（录制）
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
@@ -164,7 +164,7 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
                 |ui| {
                     ui.label(theme::body("备用全局快捷键"));
                     ui.label(theme::weak(
-                        "Win+V 接管失效时仍可用；支持 Ctrl/Alt/Shift + 键或 F1–F24",
+                        "点击「录制」设置组合键（Ctrl/Alt/Shift + 键或 F1–F24），保存后立即生效",
                     ));
                 },
             );
@@ -183,10 +183,17 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
         ui.add_space(4.0);
         // 备用快捷键注册状态
         match &state.hotkey_status {
-            Some((true, _)) => {
+            Some((true, Some(note))) => {
+                ui.label(
+                    egui::RichText::new(format!("快捷键已生效：{note}"))
+                        .size(theme::SIZE_AUX)
+                        .color(theme::SUCCESS),
+                );
+            }
+            Some((true, None)) => {
                 ui.label(
                     egui::RichText::new(format!(
-                        "备用快捷键当前生效：{}",
+                        "快捷键当前生效：{}",
                         state.settings.hotkey_picker.label()
                     ))
                     .size(theme::SIZE_AUX)
@@ -196,7 +203,7 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
             Some((false, reason)) => {
                 ui.label(
                     egui::RichText::new(format!(
-                        "注册失败：{}（可能被其他程序占用）",
+                        "注册失败：{}（可能被其他程序占用，请换一个组合）",
                         reason.clone().unwrap_or_else(|| "未知原因".into())
                     ))
                     .size(theme::SIZE_AUX)
@@ -209,62 +216,14 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
         }
         ui.add_space(14.0);
 
-        // Win+V 接管方式
-        setting_row(
-            ui,
-            "Win+V 接管方式",
-            "自动：先尝试系统热键注册，失败再用键盘钩子；关闭后只用备用快捷键",
-            |ui| {
-                let mut mode = state.settings_draft.winv_mode;
-                egui::ComboBox::from_id_salt("winv_mode_combo")
-                    .selected_text(mode.label())
-                    .width(196.0)
-                    .show_ui(ui, |ui| {
-                        for candidate in [
-                            WinVMode::Auto,
-                            WinVMode::RegisterOnly,
-                            WinVMode::HookOnly,
-                            WinVMode::Off,
-                        ] {
-                            ui.selectable_value(&mut mode, candidate, candidate.label());
-                        }
-                    });
-                if mode != state.settings_draft.winv_mode {
-                    state.settings_draft.winv_mode = mode;
-                }
-            },
-        );
-        // 当前状态诊断
-        let (text, color) = match &state.winv_status {
-            WinVStatus::Unknown => ("状态：未知（等待 Sys 线程回传）".to_string(), theme::TEXT_WEAK),
-            WinVStatus::Registered => (
-                "状态：系统热键注册成功（最干净，无键盘钩子）".to_string(),
-                theme::SUCCESS,
-            ),
-            WinVStatus::HookActive { compensated } => (
-                format!(
-                    "状态：键盘钩子生效{}",
-                    if *compensated {
-                        "（含开始菜单补偿）"
-                    } else {
-                        ""
-                    }
-                ),
-                theme::SUCCESS,
-            ),
-            WinVStatus::Unavailable { reason } => (
-                format!("状态：不可用 —— {reason}（备用快捷键仍可用）"),
-                theme::DANGER,
-            ),
-        };
+        // v1.2：Win+V 接管已移除，不再提供接管选项。
         ui.label(
-            egui::RichText::new(text)
-                .size(theme::SIZE_AUX)
-                .color(color),
+            egui::RichText::new("Win+V 接管：已移除")
+                .size(theme::SIZE_BODY)
+                .color(theme::TEXT),
         );
-        ui.add_space(6.0);
         ui.label(theme::weak(
-            "提示：若系统剪贴板历史与 Win+V 冲突，可在 Windows 设置 → 系统 → 剪贴板 中关闭「剪贴板历史记录」。",
+            "本版本起不再拦截 Win+V（系统剪贴板历史保持 Windows 原生行为），请使用上面的备用快捷键呼出面板。",
         ));
         let _ = actions;
     });
