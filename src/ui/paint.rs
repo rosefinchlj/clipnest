@@ -13,11 +13,7 @@ use std::sync::Arc;
 
 /// 测量单行文本宽度。
 pub fn text_width(ui: &egui::Ui, text: impl Into<String>, font: FontId) -> f32 {
-    ui.fonts(|f| {
-        f.layout_no_wrap(text.into(), font, Color32::WHITE)
-            .size()
-            .x
-    })
+    ui.fonts(|f| f.layout_no_wrap(text.into(), font, Color32::WHITE).size().x)
 }
 
 /// 单行省略排版：超宽用 `…` 截断（`max_width <= 0` 时不截断）。
@@ -85,8 +81,14 @@ pub fn paint_search(painter: &egui::Painter, rect: Rect, color: Color32) {
 /// 清除 ✕。
 pub fn paint_close(painter: &egui::Painter, rect: Rect, color: Color32) {
     let r = rect.shrink(rect.width() * 0.32);
-    painter.line_segment([r.left_top(), r.right_bottom()], Stroke::new(1.4_f32, color));
-    painter.line_segment([r.right_top(), r.left_bottom()], Stroke::new(1.4_f32, color));
+    painter.line_segment(
+        [r.left_top(), r.right_bottom()],
+        Stroke::new(1.4_f32, color),
+    );
+    painter.line_segment(
+        [r.right_top(), r.left_bottom()],
+        Stroke::new(1.4_f32, color),
+    );
 }
 
 /// 最小化「—」。
@@ -125,7 +127,13 @@ pub fn paint_chevron(painter: &egui::Painter, rect: Rect, points_right: bool, co
 }
 
 /// 五角星（收藏），`filled` 为实心/描边。
-pub fn paint_star(painter: &egui::Painter, center: Pos2, radius: f32, color: Color32, filled: bool) {
+pub fn paint_star(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    color: Color32,
+    filled: bool,
+) {
     let mut points = Vec::with_capacity(10);
     for i in 0..10 {
         let r = if i % 2 == 0 { radius } else { radius * 0.44 };
@@ -133,11 +141,7 @@ pub fn paint_star(painter: &egui::Painter, center: Pos2, radius: f32, color: Col
         points.push(center + Vec2::angled(angle) * r);
     }
     if filled {
-        painter.add(Shape::convex_polygon(
-            points,
-            color,
-            Stroke::NONE,
-        ));
+        painter.add(Shape::convex_polygon(points, color, Stroke::NONE));
     } else {
         let stroke = Stroke::new(1.4_f32, color);
         for i in 0..10 {
@@ -156,7 +160,10 @@ pub fn paint_check(painter: &egui::Painter, rect: Rect, color: Color32) {
         stroke,
     );
     painter.line_segment(
-        [c + Vec2::new(-s * 0.25, s * 0.75), c + Vec2::new(s, -s * 0.7)],
+        [
+            c + Vec2::new(-s * 0.25, s * 0.75),
+            c + Vec2::new(s, -s * 0.7),
+        ],
         stroke,
     );
 }
@@ -190,12 +197,7 @@ pub fn paint_kind_icon(painter: &egui::Painter, rect: Rect, kind: ClipKind, colo
         }
         ClipKind::Image => {
             let frame = Rect::from_center_size(rect.center(), Vec2::splat(rect.width() * 0.62));
-            painter.rect_stroke(
-                frame,
-                CornerRadius::same(2),
-                stroke,
-                StrokeKind::Inside,
-            );
+            painter.rect_stroke(frame, CornerRadius::same(2), stroke, StrokeKind::Inside);
             // 太阳
             painter.circle_filled(
                 frame.left_top() + Vec2::splat(frame.width() * 0.26),
@@ -207,13 +209,19 @@ pub fn paint_kind_icon(painter: &egui::Painter, rect: Rect, kind: ClipKind, colo
             painter.line_segment(
                 [
                     Pos2::new(frame.left() + frame.width() * 0.12, base_y),
-                    Pos2::new(frame.left() + frame.width() * 0.40, frame.top() + frame.height() * 0.38),
+                    Pos2::new(
+                        frame.left() + frame.width() * 0.40,
+                        frame.top() + frame.height() * 0.38,
+                    ),
                 ],
                 stroke,
             );
             painter.line_segment(
                 [
-                    Pos2::new(frame.left() + frame.width() * 0.40, frame.top() + frame.height() * 0.38),
+                    Pos2::new(
+                        frame.left() + frame.width() * 0.40,
+                        frame.top() + frame.height() * 0.38,
+                    ),
                     Pos2::new(frame.left() + frame.width() * 0.66, base_y),
                 ],
                 stroke,
@@ -221,20 +229,29 @@ pub fn paint_kind_icon(painter: &egui::Painter, rect: Rect, kind: ClipKind, colo
             painter.line_segment(
                 [
                     Pos2::new(frame.left() + frame.width() * 0.52, base_y),
-                    Pos2::new(frame.left() + frame.width() * 0.72, frame.top() + frame.height() * 0.52),
+                    Pos2::new(
+                        frame.left() + frame.width() * 0.72,
+                        frame.top() + frame.height() * 0.52,
+                    ),
                 ],
                 stroke,
             );
             painter.line_segment(
                 [
-                    Pos2::new(frame.left() + frame.width() * 0.72, frame.top() + frame.height() * 0.52),
+                    Pos2::new(
+                        frame.left() + frame.width() * 0.72,
+                        frame.top() + frame.height() * 0.52,
+                    ),
                     Pos2::new(frame.right() - frame.width() * 0.10, base_y),
                 ],
                 stroke,
             );
         }
         ClipKind::Files => {
-            let doc = Rect::from_center_size(rect.center(), Vec2::new(rect.width() * 0.52, rect.height() * 0.64));
+            let doc = Rect::from_center_size(
+                rect.center(),
+                Vec2::new(rect.width() * 0.52, rect.height() * 0.64),
+            );
             let fold = doc.width() * 0.30;
             let pts = vec![
                 doc.left_top(),
@@ -276,7 +293,11 @@ pub fn paint_kind_icon(painter: &egui::Painter, rect: Rect, kind: ClipKind, colo
 
 /// 缩略图占位（浅色山形 + 相框），解码中/失败时使用。
 pub fn paint_thumb_placeholder(painter: &egui::Painter, rect: Rect) {
-    painter.rect_filled(rect, CornerRadius::same(theme::RADIUS_THUMB), theme::card_active());
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(theme::RADIUS_THUMB),
+        theme::card_active(),
+    );
     let frame = rect.shrink(rect.width() * 0.22);
     paint_kind_icon(painter, frame, ClipKind::Image, theme::text_weak());
 }
@@ -302,6 +323,58 @@ pub fn paint_clipboard_big(painter: &egui::Painter, center: Pos2, size: f32, col
                 Pos2::new(board.right() - board.width() * 0.18, y),
             ],
             Stroke::new(1.4_f32, color),
+        );
+    }
+}
+
+/// 回收站图标：桶身 + 桶盖 + 两条竖线。
+pub fn paint_trash(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let stroke = Stroke::new(1.4_f32, color);
+    let body = Rect::from_min_max(
+        Pos2::new(
+            rect.left() + rect.width() * 0.24,
+            rect.top() + rect.height() * 0.30,
+        ),
+        Pos2::new(
+            rect.right() - rect.width() * 0.24,
+            rect.bottom() - rect.height() * 0.08,
+        ),
+    );
+    painter.rect_stroke(body, CornerRadius::same(2), stroke, StrokeKind::Inside);
+    let lid_y = rect.top() + rect.height() * 0.24;
+    painter.line_segment(
+        [
+            Pos2::new(rect.left() + rect.width() * 0.16, lid_y),
+            Pos2::new(rect.right() - rect.width() * 0.16, lid_y),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            Pos2::new(
+                rect.center().x - rect.width() * 0.12,
+                lid_y - rect.height() * 0.10,
+            ),
+            Pos2::new(
+                rect.center().x + rect.width() * 0.12,
+                lid_y - rect.height() * 0.10,
+            ),
+        ],
+        stroke,
+    );
+    for dx in [-0.12_f32, 0.12] {
+        painter.line_segment(
+            [
+                Pos2::new(
+                    rect.center().x + rect.width() * dx,
+                    body.top() + body.height() * 0.22,
+                ),
+                Pos2::new(
+                    rect.center().x + rect.width() * dx,
+                    body.bottom() - body.height() * 0.20,
+                ),
+            ],
+            Stroke::new(1.2_f32, color),
         );
     }
 }

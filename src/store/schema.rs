@@ -1,4 +1,4 @@
-//! schema v1：建表、索引、FTS5（trigram 分词）与同步触发器。
+//! schema v2：建表、索引、FTS5（trigram 分词）、回收站列与同步触发器。
 //!
 //! 设计要点：
 //! - 所有 DDL 都带 `IF NOT EXISTS`，`migrate` 幂等（spec §10.2）；
@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS clips (
   use_count    INTEGER NOT NULL DEFAULT 1,
   pinned       INTEGER NOT NULL DEFAULT 0,
   source_app   TEXT,
-  source_title TEXT
+  source_title TEXT,
+  deleted_at   INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_clips_order  ON clips(pinned DESC, last_used_at DESC);
@@ -79,7 +80,7 @@ pub struct MigrateOutcome {
     pub fts_error: Option<String>,
 }
 
-/// 执行 schema v1 迁移（幂等）。
+/// 执行 schema 迁移（幂等）。
 pub fn migrate(conn: &mut Connection, options: DbOptions) -> StoreResult<MigrateOutcome> {
     conn.execute_batch(CORE_SCHEMA)?;
 
@@ -90,6 +91,7 @@ pub fn migrate(conn: &mut Connection, options: DbOptions) -> StoreResult<Migrate
         )));
     }
 
+    ensure_trash_schema(conn)?;
     let outcome = ensure_fts(conn, options)?;
 
     if current < SCHEMA_VERSION {
@@ -109,6 +111,23 @@ pub fn trigram_available() -> bool {
     };
     conn.execute_batch("CREATE VIRTUAL TABLE probe_fts USING fts5(x, tokenize='trigram');")
         .is_ok()
+}
+
+/// v2 回收站列：老库通过 `ALTER TABLE` 补齐，并补建回收站索引。
+fn ensure_trash_schema(conn: &Connection) -> StoreResult<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = 'deleted_at'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? > 0;
+    if !has_column {
+        conn.execute("ALTER TABLE clips ADD COLUMN deleted_at INTEGER", [])?;
+        crate::logging::log("Store: schema v2 已为 clips 添加 deleted_at 列");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_clips_trash ON clips(deleted_at) WHERE deleted_at IS NOT NULL;",
+    )?;
+    Ok(())
 }
 
 /// 建/校验 FTS 索引；失败时回退 LIKE 并写 `meta.fts_enabled=0`。
@@ -184,9 +203,11 @@ fn ensure_fts(conn: &mut Connection, options: DbOptions) -> StoreResult<MigrateO
 
 pub(crate) fn read_meta(conn: &Connection, key: &str) -> StoreResult<Option<String>> {
     let value = conn
-        .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
         .optional()?;
     Ok(value)
 }

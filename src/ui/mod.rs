@@ -26,9 +26,7 @@ pub use fonts::install_fonts;
 pub use theme::install_theme;
 pub use thumbs::ThumbCache;
 
-use crate::model::{
-    ClipFilter, ClipId, ClipItem, Settings, SearchPage, Stats,
-};
+use crate::model::{ClipFilter, ClipId, ClipItem, SearchPage, Settings, Stats};
 use eframe::egui;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -56,6 +54,7 @@ pub enum WindowMode {
 pub enum ManagerPage {
     History,
     Favorites,
+    Trash,
     Settings,
     About,
 }
@@ -66,6 +65,7 @@ impl ManagerPage {
         match self {
             ManagerPage::History => "history",
             ManagerPage::Favorites => "favorites",
+            ManagerPage::Trash => "trash",
             ManagerPage::Settings => "settings",
             ManagerPage::About => "about",
         }
@@ -76,6 +76,7 @@ impl ManagerPage {
         match self {
             ManagerPage::History => "历史",
             ManagerPage::Favorites => "收藏",
+            ManagerPage::Trash => "回收站",
             ManagerPage::Settings => "设置",
             ManagerPage::About => "关于",
         }
@@ -90,6 +91,7 @@ pub enum UiAction {
         text: String,
         filter: ClipFilter,
         offset: usize,
+        trash: bool,
         gen: u64,
     },
     /// 粘贴选中项（`plain=true` 只复制到剪贴板）。
@@ -98,8 +100,14 @@ pub enum UiAction {
     RequestPastePayload(ClipId),
     /// 收藏/取消收藏。
     Pin { id: ClipId, pinned: bool },
-    /// 删除一批记录。
+    /// 删除一批记录（移入回收站）。
     Delete { ids: Vec<ClipId> },
+    /// 从回收站恢复。
+    RestoreTrash { ids: Vec<ClipId> },
+    /// 永久删除回收站中的记录。
+    PurgeTrash { ids: Vec<ClipId> },
+    /// 清空回收站。
+    EmptyTrash,
     /// 清空历史。
     Clear { delete_blobs: bool },
     /// 把文件条目实体复制进数据目录（收藏时）。
@@ -150,6 +158,8 @@ struct ToastState {
 /// 确认框要执行的动作。
 enum ConfirmKind {
     Delete(Vec<ClipId>),
+    PurgeTrash(Vec<ClipId>),
+    EmptyTrash,
     Clear,
 }
 
@@ -336,7 +346,10 @@ impl UiState {
         self.manager_page = page;
         self.manager_search_focus = false;
         self.search_focus = false;
-        if matches!(page, ManagerPage::History | ManagerPage::Favorites) {
+        if matches!(
+            page,
+            ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
+        ) {
             self.schedule_search(true);
         }
     }
@@ -437,11 +450,7 @@ impl UiState {
     }
 
     /// 渲染到指定 `Ui`（预览模式用：外层窗口由 preview 控制）。
-    pub fn render_into(
-        &mut self,
-        ui: &mut egui::Ui,
-        thumbs: &mut ThumbCache,
-    ) -> Vec<UiAction> {
+    pub fn render_into(&mut self, ui: &mut egui::Ui, thumbs: &mut ThumbCache) -> Vec<UiAction> {
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         self.begin_frame(&ctx, &mut actions);
@@ -469,6 +478,7 @@ impl UiState {
                     text: self.search_text.clone(),
                     filter: self.effective_filter(),
                     offset: pending.offset,
+                    trash: self.search_trash(),
                     gen: pending.gen,
                 });
             }
@@ -505,9 +515,14 @@ impl UiState {
             WindowMode::Picker => self.picker_filter,
             WindowMode::Manager => match self.manager_page {
                 ManagerPage::Favorites => ClipFilter::Pinned,
+                ManagerPage::Trash => ClipFilter::All,
                 _ => self.manager_filter,
             },
         }
+    }
+
+    pub(crate) fn search_trash(&self) -> bool {
+        self.mode == WindowMode::Manager && self.manager_page == ManagerPage::Trash
     }
 
     /// 单次查询条数：候选窗 200 / 管理台 500（spec §11）。
@@ -556,6 +571,7 @@ impl UiState {
             text: self.search_text.clone(),
             filter: self.effective_filter(),
             offset: self.items.len(),
+            trash: self.search_trash(),
             gen,
         });
     }
@@ -570,12 +586,7 @@ impl UiState {
     }
 
     /// 请求粘贴第 `index` 条：先要载荷，再发粘贴动作（Lead 按 plain 标志执行）。
-    pub(crate) fn paste_item(
-        &mut self,
-        index: usize,
-        plain: bool,
-        actions: &mut Vec<UiAction>,
-    ) {
+    pub(crate) fn paste_item(&mut self, index: usize, plain: bool, actions: &mut Vec<UiAction>) {
         let Some(item) = self.items.get(index) else {
             return;
         };
@@ -597,7 +608,11 @@ impl UiState {
             // 收藏文件时把实体复制进数据目录（spec §12.2）
             actions.push(UiAction::SaveFavoriteFiles(id));
         }
-        self.toast(if pinned { "已收藏" } else { "已取消收藏" });
+        self.toast(if pinned {
+            "已收藏"
+        } else {
+            "已取消收藏"
+        });
     }
 
     /// 删除一批记录（乐观移除，Store 结果刷新时校准）。
@@ -616,7 +631,82 @@ impl UiState {
             self.selected = Some(sel.min(self.items.len() - 1));
         }
         actions.push(UiAction::Delete { ids });
-        self.toast("已删除");
+        self.toast("已移入回收站，保留 2 天");
+    }
+
+    /// 从回收站恢复：乐观移除当前回收站行，Store 结果刷新时校准。
+    pub(crate) fn restore_ids(&mut self, ids: Vec<ClipId>, actions: &mut Vec<UiAction>) {
+        if ids.is_empty() {
+            return;
+        }
+        let set: HashSet<ClipId> = ids.iter().copied().collect();
+        let before = self.items.len();
+        self.items.retain(|it| !set.contains(&it.id));
+        self.total = self.total.saturating_sub(before - self.items.len());
+        if self.items.is_empty() {
+            self.selected = None;
+        } else if let Some(sel) = self.selected {
+            self.selected = Some(sel.min(self.items.len() - 1));
+        }
+        actions.push(UiAction::RestoreTrash { ids });
+        self.toast("已从回收站恢复");
+    }
+
+    /// 彻底删除回收站条目（乐观移除；Store 负责释放文件实体）。
+    fn purge_ids(&mut self, ids: Vec<ClipId>, actions: &mut Vec<UiAction>) {
+        if ids.is_empty() {
+            return;
+        }
+        let set: HashSet<ClipId> = ids.iter().copied().collect();
+        let before = self.items.len();
+        self.items.retain(|it| !set.contains(&it.id));
+        self.total = self.total.saturating_sub(before - self.items.len());
+        if self.items.is_empty() {
+            self.selected = None;
+        } else if let Some(sel) = self.selected {
+            self.selected = Some(sel.min(self.items.len() - 1));
+        }
+        actions.push(UiAction::PurgeTrash { ids });
+        self.toast("正在彻底删除…");
+    }
+
+    /// 请求彻底删除回收站条目（不可恢复，二次确认）。
+    pub(crate) fn request_purge_ids(&mut self, ids: Vec<ClipId>, actions: &mut Vec<UiAction>) {
+        if ids.is_empty() {
+            return;
+        }
+        self.confirm = Some(Confirm {
+            state: widgets::ConfirmState {
+                title: "彻底删除记录".to_string(),
+                message: format!(
+                    "将永久删除选中的 {} 条记录，并释放对应文件实体，操作不可恢复。确定继续吗？",
+                    ids.len()
+                ),
+                confirm_label: "彻底删除".to_string(),
+                danger: true,
+            },
+            kind: ConfirmKind::PurgeTrash(ids),
+        });
+        let _ = actions;
+    }
+
+    /// 请求清空回收站。
+    pub(crate) fn request_empty_trash(&mut self) {
+        if self.total == 0 {
+            return;
+        }
+        self.confirm = Some(Confirm {
+            state: widgets::ConfirmState {
+                title: "清空回收站".to_string(),
+                message: format!(
+                    "将永久删除回收站中的全部 {} 条记录，并释放对应文件实体，操作不可恢复。",
+                    self.total
+                ),
+                confirm_label: "清空回收站".to_string(),
+                danger: true,
+            },
+            kind: ConfirmKind::EmptyTrash,
+        });
     }
 
     /// 删除当前选中（收藏项二次确认，spec §6.1）。
@@ -639,7 +729,7 @@ impl UiState {
                 state: widgets::ConfirmState {
                     title: "删除收藏项".to_string(),
                     message: format!(
-                        "选中的 {} 条记录里有收藏项，删除后不可恢复。确定删除吗？",
+                        "选中的 {} 条记录里有收藏项；删除后会移入回收站保留 2 天，可在回收站恢复。确定删除吗？",
                         ids.len()
                     ),
                     confirm_label: "删除".to_string(),
@@ -653,15 +743,14 @@ impl UiState {
     }
 
     /// 打开管理台某页（Picker 齿轮 / Ctrl+, 等）。
-    pub(crate) fn request_manager(
-        &mut self,
-        page: ManagerPage,
-        actions: &mut Vec<UiAction>,
-    ) {
+    pub(crate) fn request_manager(&mut self, page: ManagerPage, actions: &mut Vec<UiAction>) {
         self.mode = WindowMode::Manager;
         self.manager_page = page;
         self.search_focus = false;
-        if matches!(page, ManagerPage::History | ManagerPage::Favorites) {
+        if matches!(
+            page,
+            ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
+        ) {
             self.schedule_search(true);
         }
         actions.push(UiAction::OpenManager);
@@ -669,17 +758,16 @@ impl UiState {
     }
 
     /// 管理台内部切页（不请求 Lead 切窗口，只同步页面）。
-    pub(crate) fn go_manager_page(
-        &mut self,
-        page: ManagerPage,
-        actions: &mut Vec<UiAction>,
-    ) {
+    pub(crate) fn go_manager_page(&mut self, page: ManagerPage, actions: &mut Vec<UiAction>) {
         if self.manager_page == page {
             return;
         }
         self.manager_page = page;
         self.multi_selected.clear();
-        if matches!(page, ManagerPage::History | ManagerPage::Favorites) {
+        if matches!(
+            page,
+            ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
+        ) {
             self.schedule_search(true);
         }
         actions.push(UiAction::SelectManagerPage(page));
@@ -695,6 +783,16 @@ impl UiState {
                 let confirm = self.confirm.take().expect("确认框存在");
                 match confirm.kind {
                     ConfirmKind::Delete(ids) => self.delete_ids(ids, actions),
+                    ConfirmKind::PurgeTrash(ids) => self.purge_ids(ids, actions),
+                    ConfirmKind::EmptyTrash => {
+                        let count = self.total;
+                        self.items.clear();
+                        self.total = 0;
+                        self.selected = None;
+                        self.multi_selected.clear();
+                        actions.push(UiAction::EmptyTrash);
+                        self.toast(format!("正在清空回收站（{count} 条）…"));
+                    }
                     ConfirmKind::Clear => {
                         actions.push(UiAction::Clear {
                             delete_blobs: self.clear_delete_blobs,
@@ -716,10 +814,10 @@ impl UiState {
             state: widgets::ConfirmState {
                 title: "清空剪贴板历史".to_string(),
                 message: if self.clear_delete_blobs {
-                    "将删除全部历史记录，并同时删除图片/文件副本，操作不可恢复。确定继续吗？"
+                    "将删除全部历史记录（含回收站），并同时删除图片/文件副本，操作不可恢复。确定继续吗？"
                         .to_string()
                 } else {
-                    "将删除全部历史记录（保留图片/文件副本文件）。操作不可恢复，确定继续吗？"
+                    "将删除全部历史记录（含回收站，保留图片/文件副本文件）。操作不可恢复，确定继续吗？"
                         .to_string()
                 },
                 confirm_label: "清空".to_string(),

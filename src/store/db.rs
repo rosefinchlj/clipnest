@@ -65,9 +65,7 @@ impl Db {
         match Self::open_inner(db_path, options) {
             Ok(db) => Ok(db),
             Err(err) if db_corrupted(&err) => {
-                crate::logging::error(&format!(
-                    "数据库损坏或无法识别（{err}），备份后将重建空库"
-                ));
+                crate::logging::error(&format!("数据库损坏或无法识别（{err}），备份后将重建空库"));
                 let backup = backup_database(db_path)?;
                 crate::logging::warn(&format!("原数据库已备份：{}", backup.display()));
                 Self::open_inner(db_path, options)
@@ -176,8 +174,15 @@ impl Db {
     /// 写入一条剪贴板内容：hash 已存在则更新 last_used_at/use_count（pinned 不变），
     /// 否则插入新行；图片内容寻址落盘并登记 blob。
     pub fn upsert(&self, input: &ClipInput) -> StoreResult<UpsertOutcome> {
-        if let Some(existing) = self.find_id_by_hash(&input.hash)? {
-            self.touch(existing)?;
+        if let Some((existing, deleted_at)) = self.find_id_by_hash(&input.hash)? {
+            if deleted_at.is_some() {
+                self.restore(&[existing])?;
+                crate::logging::log(&format!(
+                    "Store 重新复制命中回收站条目 id={existing}，已自动恢复"
+                ));
+            } else {
+                self.touch(existing)?;
+            }
             crate::logging::debug(&format!(
                 "Store 去重命中 id={existing} kind={:?} hash={}…",
                 input.kind,
@@ -216,8 +221,12 @@ impl Db {
         input: &ClipInput,
         blob_id: Option<String>,
     ) -> StoreResult<UpsertOutcome> {
-        if let Some(existing) = self.find_id_by_hash(&input.hash)? {
-            self.touch(existing)?;
+        if let Some((existing, deleted_at)) = self.find_id_by_hash(&input.hash)? {
+            if deleted_at.is_some() {
+                self.restore(&[existing])?;
+            } else {
+                self.touch(existing)?;
+            }
             return Ok(UpsertOutcome::Touched(existing));
         }
         self.insert_clip_row(input, blob_id)
@@ -276,29 +285,34 @@ impl Db {
     /// 命中已有 hash：更新 last_used_at 并累加 use_count（pinned 不变）。
     fn touch(&self, id: ClipId) -> StoreResult<()> {
         self.conn.execute(
-            "UPDATE clips SET last_used_at = ?1, use_count = use_count + 1 WHERE id = ?2",
+            "UPDATE clips SET last_used_at = ?1, use_count = use_count + 1
+             WHERE id = ?2 AND deleted_at IS NULL",
             params![now_ms(), id],
         )?;
         Ok(())
     }
 
-    fn find_id_by_hash(&self, hash: &str) -> StoreResult<Option<ClipId>> {
-        let id = self
+    fn find_id_by_hash(&self, hash: &str) -> StoreResult<Option<(ClipId, Option<i64>)>> {
+        let row = self
             .conn
-            .query_row("SELECT id FROM clips WHERE hash = ?1", params![hash], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT id, deleted_at FROM clips WHERE hash = ?1",
+                params![hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()?;
-        Ok(id)
+        Ok(row)
     }
 
     /// 按 id 查询条目类型（不存在 → None）。
     pub fn clip_kind(&self, id: ClipId) -> StoreResult<Option<ClipKind>> {
         let kind: Option<i32> = self
             .conn
-            .query_row("SELECT kind FROM clips WHERE id = ?1", params![id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT kind FROM clips WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| row.get(0),
+            )
             .optional()?;
         Ok(kind.and_then(ClipKind::from_i32))
     }
@@ -310,7 +324,7 @@ impl Db {
     /// 设置收藏标记；返回是否存在该条目。
     pub fn set_pinned(&self, id: ClipId, pinned: bool) -> StoreResult<bool> {
         let changed = self.conn.execute(
-            "UPDATE clips SET pinned = ?1 WHERE id = ?2",
+            "UPDATE clips SET pinned = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![i32::from(pinned), id],
         )?;
         Ok(changed > 0)
@@ -327,7 +341,7 @@ impl Db {
         let row: Option<(i32, Option<String>, Option<String>)> = self
             .conn
             .query_row(
-                "SELECT kind, files_json, blob_id FROM clips WHERE id = ?1",
+                "SELECT kind, files_json, blob_id FROM clips WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -344,9 +358,11 @@ impl Db {
             .unwrap_or_default();
         let hash: String = self
             .conn
-            .query_row("SELECT hash FROM clips WHERE id = ?1", params![id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT hash FROM clips WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| row.get(0),
+            )
             .unwrap_or_default();
         let copy = blob::copy_favorite_files(
             &self.conn,
@@ -376,6 +392,114 @@ impl Db {
         Ok(Some(copy))
     }
 
+    /// 手动删除：移入回收站，不释放 blob/文件实体，等待 2 天后清理。
+    pub fn soft_delete(&self, ids: &[ClipId]) -> StoreResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let now = now_ms();
+        let mut deleted = 0usize;
+        for id in ids {
+            deleted += tx.execute(
+                "UPDATE clips SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+                params![now, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(deleted)
+    }
+
+    /// 从回收站恢复，并把 `last_used_at` 推到当前历史顶部，恢复后立即可见。
+    pub fn restore(&self, ids: &[ClipId]) -> StoreResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let now = now_ms();
+        let mut clock: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(last_used_at), 0) FROM clips",
+            [],
+            |row| row.get(0),
+        )?;
+        clock = clock.max(now);
+        let mut restored = 0usize;
+        for id in ids {
+            let changed = tx.execute(
+                "UPDATE clips
+                 SET deleted_at = NULL, last_used_at = ?1
+                 WHERE id = ?2 AND deleted_at IS NOT NULL",
+                params![clock, id],
+            )?;
+            if changed > 0 {
+                restored += 1;
+                clock += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(restored)
+    }
+
+    /// 彻底删除回收站条目（只接受 deleted_at 非空的行），并释放 blob/文件实体。
+    pub fn purge(&self, ids: &[ClipId]) -> StoreResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let mut blob_ids: Vec<String> = Vec::new();
+        for id in ids {
+            let blob_id: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT blob_id FROM clips WHERE id = ?1 AND deleted_at IS NOT NULL",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(Some(blob_id)) = blob_id {
+                blob_ids.push(blob_id);
+            }
+        }
+        let mut purged = 0usize;
+        for id in ids {
+            purged += tx.execute(
+                "DELETE FROM clips WHERE id = ?1 AND deleted_at IS NOT NULL",
+                params![id],
+            )?;
+        }
+        blob_ids.sort();
+        blob_ids.dedup();
+        for blob_id in blob_ids {
+            blob::release_blob(&tx, &self.data_dir, &blob_id)?;
+        }
+        tx.commit()?;
+        Ok(purged)
+    }
+
+    /// 清空回收站。
+    pub fn empty_trash(&self) -> StoreResult<usize> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM clips WHERE deleted_at IS NOT NULL")?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, ClipId>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        self.purge(&ids)
+    }
+
+    /// 自动清理超过保留期的回收站条目（启动、统计刷新、定期 prune 时调用）。
+    pub fn purge_expired_trash(&self, now: i64, retention_ms: i64) -> StoreResult<usize> {
+        let cutoff = now.saturating_sub(retention_ms);
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM clips WHERE deleted_at IS NOT NULL AND deleted_at <= ?1")?;
+        let ids = stmt
+            .query_map(params![cutoff], |row| row.get::<_, ClipId>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        self.purge(&ids)
+    }
+
     /// 删除若干条目（FTS 触发器同步；引用计数归零的 blob 文件立即物理删除）。
     pub fn delete(&self, ids: &[ClipId]) -> StoreResult<usize> {
         if ids.is_empty() {
@@ -385,9 +509,11 @@ impl Db {
         let mut blob_ids: Vec<String> = Vec::new();
         for id in ids {
             let blob_id: Option<Option<String>> = tx
-                .query_row("SELECT blob_id FROM clips WHERE id = ?1", params![id], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT blob_id FROM clips WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
                 .optional()?;
             if let Some(Some(blob_id)) = blob_id {
                 blob_ids.push(blob_id);
@@ -462,10 +588,7 @@ fn backup_database(db_path: &Path) -> StoreResult<PathBuf> {
                     main_backup = dst;
                 }
             }
-            Err(err) => crate::logging::warn(&format!(
-                "备份损坏文件失败 {}：{err}",
-                src.display()
-            )),
+            Err(err) => crate::logging::warn(&format!("备份损坏文件失败 {}：{err}", src.display())),
         }
     }
     if main_backup.as_os_str().is_empty() {

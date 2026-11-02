@@ -50,14 +50,20 @@ fn image_blob_content_addressed_with_refcount() {
     let png_path = blob::image_path(&dir, &blob_id);
     assert!(png_path.exists());
     assert_eq!(std::fs::read(&png_path).unwrap(), png);
-    assert_eq!(count_files(&blob::images_dir(&dir)), 1, "相同图片只落盘一次");
+    assert_eq!(
+        count_files(&blob::images_dir(&dir)),
+        1,
+        "相同图片只落盘一次"
+    );
 
     // refs = 2
     let refs: i64 = db
         .conn
-        .query_row("SELECT refs FROM blobs WHERE id = ?1", params![blob_id], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT refs FROM blobs WHERE id = ?1",
+            params![blob_id],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(refs, 2);
 
@@ -65,8 +71,8 @@ fn image_blob_content_addressed_with_refcount() {
     let thumb_path = blob::thumb_path(&dir, &blob_id);
     assert!(thumb_path.exists(), "应生成缩略图");
     let thumb_bytes = std::fs::read(&thumb_path).unwrap();
-    let thumb =
-        image::load_from_memory_with_format(&thumb_bytes, image::ImageFormat::Jpeg).expect("缩略图应为合法 JPEG");
+    let thumb = image::load_from_memory_with_format(&thumb_bytes, image::ImageFormat::Jpeg)
+        .expect("缩略图应为合法 JPEG");
     use image::GenericImageView;
     let (width, height) = thumb.dimensions();
     assert!(width <= blob::THUMB_MAX_EDGE && height <= blob::THUMB_MAX_EDGE);
@@ -76,9 +82,11 @@ fn image_blob_content_addressed_with_refcount() {
     assert!(png_path.exists());
     let refs: i64 = db
         .conn
-        .query_row("SELECT refs FROM blobs WHERE id = ?1", params![blob_id], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT refs FROM blobs WHERE id = ?1",
+            params![blob_id],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(refs, 1);
     // 删除最后一个引用：blob 行与文件都删除
@@ -168,7 +176,10 @@ fn favorite_files_copy_and_restore() {
     assert_eq!(std::fs::read(&stored).unwrap(), b"beta content");
 
     // 幂等：再次保存不重复复制
-    let again = db.save_favorite_files(id, &Settings::default()).unwrap().unwrap();
+    let again = db
+        .save_favorite_files(id, &Settings::default())
+        .unwrap()
+        .unwrap();
     assert_eq!(again.copied, 0);
     assert_eq!(count_files(&stored_dir), 2);
 
@@ -180,8 +191,16 @@ fn favorite_files_copy_and_restore() {
     assert_eq!(payload.files.len(), 2);
     for file in &payload.files {
         assert!(file.exists, "恢复后 exists=true");
-        assert!(Path::new(&file.path).exists(), "恢复文件应存在：{}", file.path);
-        assert!(file.path.contains("restored"), "应位于恢复目录：{}", file.path);
+        assert!(
+            Path::new(&file.path).exists(),
+            "恢复文件应存在：{}",
+            file.path
+        );
+        assert!(
+            file.path.contains("restored"),
+            "应位于恢复目录：{}",
+            file.path
+        );
     }
     let mut contents: Vec<Vec<u8>> = payload
         .files
@@ -189,7 +208,10 @@ fn favorite_files_copy_and_restore() {
         .map(|file| std::fs::read(&file.path).unwrap())
         .collect();
     contents.sort();
-    assert_eq!(contents, vec![b"alpha content".to_vec(), b"beta content".to_vec()]);
+    assert_eq!(
+        contents,
+        vec![b"alpha content".to_vec(), b"beta content".to_vec()]
+    );
 
     // 恢复路径已持久化：再次取载荷不会重复复制（路径已存在）
     let payload_again = db.paste_payload(id).unwrap().unwrap();
@@ -286,6 +308,7 @@ fn export_import_roundtrip() {
             filter: ClipFilter::All,
             offset: 0,
             limit: 10,
+            trash: false,
             gen: 1,
         })
         .unwrap();
@@ -301,6 +324,7 @@ fn export_import_roundtrip() {
             filter: ClipFilter::All,
             offset: 0,
             limit: 10,
+            trash: false,
             gen: 2,
         })
         .unwrap();
@@ -326,7 +350,11 @@ fn export_import_roundtrip() {
 #[test]
 fn corrupt_database_is_backed_up_and_rebuilt() {
     let dir = temp_dir("corrupt");
-    std::fs::write(dir.join("data.db"), b"this is definitely not a sqlite database").unwrap();
+    std::fs::write(
+        dir.join("data.db"),
+        b"this is definitely not a sqlite database",
+    )
+    .unwrap();
     let db = db_open_recovered(&dir);
     assert_eq!(total_rows(&db), 0, "重建后应为空库");
     assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);

@@ -197,7 +197,11 @@ impl ClipNestApp {
         };
         self.hwnd = Some(hwnd);
         if std::env::var_os("CLIPNEST_SKIP_MICA").is_none() {
-            match crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light(), crate::ui::theme::glass_opacity()) {
+            match crate::window::apply_backdrop(
+                hwnd,
+                crate::ui::theme::is_light(),
+                crate::ui::theme::glass_opacity(),
+            ) {
                 Ok(kind) => {
                     crate::logging::log(&format!("窗口背景材质生效: {kind}"));
                     self.backdrop = Some(kind);
@@ -229,10 +233,9 @@ impl ClipNestApp {
     }
 
     fn move_picker_near_cursor(&self, ctx: &egui::Context) {
-        if let Some(pos) = crate::window::picker_position(
-            self.settings.picker_size.into(),
-            ctx.pixels_per_point(),
-        ) {
+        if let Some(pos) =
+            crate::window::picker_position(self.settings.picker_size.into(), ctx.pixels_per_point())
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
         }
     }
@@ -273,7 +276,10 @@ impl ClipNestApp {
         }
         self.shown_at = Some(Instant::now());
         self.focus_due = Some(Instant::now() + FOCUS_RETRY);
-        crate::logging::log(&format!("候选窗显示耗时 {}ms（已就绪，直接移入屏幕）", started.elapsed().as_millis()));
+        crate::logging::log(&format!(
+            "候选窗显示耗时 {}ms（已就绪，直接移入屏幕）",
+            started.elapsed().as_millis()
+        ));
         ctx.request_repaint();
     }
 
@@ -294,12 +300,7 @@ impl ClipNestApp {
     }
 
     /// 打开管理台：spawn 独立窗口进程；主窗口（候选窗）保留，不切模式。
-    fn open_manager_process(
-        &mut self,
-        ctx: &egui::Context,
-        page: ManagerPage,
-        target_hwnd: isize,
-    ) {
+    fn open_manager_process(&mut self, ctx: &egui::Context, page: ManagerPage, target_hwnd: isize) {
         let base = format!("{} · 管理", crate::model::APP_TITLE);
         let wanted = format!("{base} · {}", page.key());
         if let Some(hwnd) = crate::window::find_window_by_title(&wanted) {
@@ -501,6 +502,7 @@ impl ClipNestApp {
                 text,
                 filter,
                 offset,
+                trash,
                 gen,
             } => {
                 if let Some(tx) = &self.store_tx {
@@ -514,6 +516,7 @@ impl ClipNestApp {
                         filter,
                         offset,
                         limit,
+                        trash,
                         gen,
                     }));
                 }
@@ -528,11 +531,8 @@ impl ClipNestApp {
             UiAction::PreviewGlassOpacity(opacity) => {
                 crate::ui::theme::set_glass_opacity(opacity);
                 if let Some(hwnd) = self.hwnd {
-                    let _ = crate::window::apply_backdrop(
-                        hwnd,
-                        crate::ui::theme::is_light(),
-                        opacity,
-                    );
+                    let _ =
+                        crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light(), opacity);
                 }
                 ctx.request_repaint();
             }
@@ -551,6 +551,24 @@ impl ClipNestApp {
             UiAction::Delete { ids } => {
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::Delete(ids));
+                }
+                self.ui.refresh();
+            }
+            UiAction::RestoreTrash { ids } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::Restore(ids));
+                }
+                self.ui.refresh();
+            }
+            UiAction::PurgeTrash { ids } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::Purge(ids));
+                }
+                self.ui.refresh();
+            }
+            UiAction::EmptyTrash => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::EmptyTrash);
                 }
                 self.ui.refresh();
             }
@@ -662,9 +680,7 @@ impl ClipNestApp {
             ctx.request_repaint();
         }
         self.persist_settings();
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            next.picker_size.into(),
-        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(next.picker_size.into()));
         self.ui.toast("设置已保存，快捷键立即生效");
         if let Some(tx) = &self.store_tx {
             let _ = tx.send(StoreCmd::RefreshStats);

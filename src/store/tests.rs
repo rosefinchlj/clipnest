@@ -72,7 +72,10 @@ pub(crate) fn text_input(text: &str) -> ClipInput {
 
 /// 构造文件条目 ClipInput。
 pub(crate) fn files_input(paths: &[&Path], captured_at: i64) -> ClipInput {
-    let files: Vec<FileEntry> = paths.iter().map(|path| FileEntry::from_path(path)).collect();
+    let files: Vec<FileEntry> = paths
+        .iter()
+        .map(|path| FileEntry::from_path(path))
+        .collect();
     let key = paths
         .iter()
         .map(|path| path.to_string_lossy().to_string())
@@ -189,6 +192,7 @@ pub(crate) fn search_query(
         filter,
         offset,
         limit,
+        trash: false,
         gen,
     }
 }
@@ -402,9 +406,7 @@ fn search_filters() {
         (ClipFilter::Files, 2),
         (ClipFilter::Pinned, 1),
     ] {
-        let page = db
-            .search(&search_query("", filter, 0, 100, 1))
-            .unwrap();
+        let page = db.search(&search_query("", filter, 0, 100, 1)).unwrap();
         assert_eq!(page.total, expected, "过滤条件 {filter:?}");
         assert_eq!(page.items.len(), expected, "过滤条件 {filter:?}");
         match filter {
@@ -446,7 +448,13 @@ fn search_text_hit_and_elapsed() {
     assert_eq!(page.total, 1);
     // 不存在的词
     let page = db
-        .search(&search_query("绝不存在的关键词xyz", ClipFilter::All, 0, 10, 5))
+        .search(&search_query(
+            "绝不存在的关键词xyz",
+            ClipFilter::All,
+            0,
+            10,
+            5,
+        ))
         .unwrap();
     assert_eq!(page.total, 0);
     assert!(page.items.is_empty());
@@ -497,17 +505,35 @@ fn search_special_characters_are_safe() {
         db.upsert(&text_input(sample)).unwrap();
     }
     // 特殊字符查询不 panic、不报错
-    for query in ["%", "_", "'", "\"", "%_", "100%", "\\", "/", "'单引号'", "abc%_''"] {
+    for query in [
+        "%",
+        "_",
+        "'",
+        "\"",
+        "%_",
+        "100%",
+        "\\",
+        "/",
+        "'单引号'",
+        "abc%_''",
+    ] {
         let page = db
             .search(&search_query(query, ClipFilter::All, 0, 50, 1))
             .expect("特殊字符查询不应报错");
         assert!(page.total <= samples.len());
     }
     // 字面量 % 与 _ 精确匹配（不会被当通配符）
-    let page = db.search(&search_query("%", ClipFilter::All, 0, 50, 2)).unwrap();
+    let page = db
+        .search(&search_query("%", ClipFilter::All, 0, 50, 2))
+        .unwrap();
     assert_eq!(page.total, 1);
-    assert!(page.items.iter().all(|i| i.text.as_deref().unwrap_or("").contains('%')));
-    let page = db.search(&search_query("_", ClipFilter::All, 0, 50, 3)).unwrap();
+    assert!(page
+        .items
+        .iter()
+        .all(|i| i.text.as_deref().unwrap_or("").contains('%')));
+    let page = db
+        .search(&search_query("_", ClipFilter::All, 0, 50, 3))
+        .unwrap();
     assert_eq!(page.total, 1);
     // 路径分隔符 / 与 \ 等价（spec §11）
     let page = db
@@ -535,9 +561,13 @@ fn search_special_characters_on_like_path() {
         db.search(&search_query(query, ClipFilter::All, 0, 50, 1))
             .expect("LIKE 路径特殊字符查询不应报错");
     }
-    let page = db.search(&search_query("%", ClipFilter::All, 0, 50, 2)).unwrap();
+    let page = db
+        .search(&search_query("%", ClipFilter::All, 0, 50, 2))
+        .unwrap();
     assert_eq!(page.total, 1);
-    let page = db.search(&search_query("_", ClipFilter::All, 0, 50, 3)).unwrap();
+    let page = db
+        .search(&search_query("_", ClipFilter::All, 0, 50, 3))
+        .unwrap();
     assert_eq!(page.total, 1);
     // 中文 2 字符（<3）走 LIKE 也能命中
     let page = db
@@ -675,5 +705,122 @@ fn delete_and_clear_behaviour() {
     assert!(db.item(new_id).unwrap().unwrap().blob_id.is_some());
     db.clear(false).unwrap();
     assert_eq!(total_rows(&db), 0);
-    assert!(blob::images_dir(&dir).exists(), "delete_blobs=false 时保留物理文件");
+    assert!(
+        blob::images_dir(&dir).exists(),
+        "delete_blobs=false 时保留物理文件"
+    );
+}
+
+#[test]
+fn schema_v1_migrates_trash_column() {
+    let dir = temp_dir("schema-v1-trash");
+    let path = dir.join("data.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE clips (
+           id INTEGER PRIMARY KEY, kind INTEGER NOT NULL, hash TEXT NOT NULL UNIQUE,
+           text TEXT, preview TEXT NOT NULL DEFAULT '', blob_id TEXT, files_json TEXT,
+           byte_len INTEGER NOT NULL DEFAULT 0, width INTEGER, height INTEGER,
+           created_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL,
+           use_count INTEGER NOT NULL DEFAULT 1, pinned INTEGER NOT NULL DEFAULT 0,
+           source_app TEXT, source_title TEXT
+         );
+         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO meta(key, value) VALUES ('schema_version', '1');",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = Db::open_in_dir(&dir, DbOptions::default()).unwrap();
+    assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+    let has_column: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = 'deleted_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_column, 1, "老库应自动补齐 deleted_at 列");
+    let has_index: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_clips_trash'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_index, 1, "回收站索引应创建");
+}
+
+#[test]
+fn trash_soft_delete_search_restore_and_purge() {
+    let (_dir, db) = open_db("trash-lifecycle");
+    let id = db.upsert(&text_input("回收站生命周期")).unwrap().id();
+    let keep = db.upsert(&text_input("保留条目")).unwrap().id();
+
+    assert_eq!(db.soft_delete(&[id]).unwrap(), 1);
+    assert_eq!(db.soft_delete(&[id]).unwrap(), 0, "重复删除应为 0");
+    assert!(
+        db.item(id).unwrap().is_none(),
+        "回收站条目不应出现在活动查询"
+    );
+    let stats = db.counts().unwrap();
+    assert_eq!(stats.total, 1);
+
+    let page = db
+        .search(&SearchQuery {
+            text: String::new(),
+            filter: ClipFilter::All,
+            offset: 0,
+            limit: 10,
+            trash: true,
+            gen: 1,
+        })
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, id);
+    assert!(page.items[0].deleted_at.is_some());
+
+    assert_eq!(db.restore(&[id]).unwrap(), 1);
+    assert!(db.item(id).unwrap().is_some());
+    assert_eq!(db.purge(&[keep]).unwrap(), 0, "活动条目不能被彻底删除");
+
+    assert_eq!(db.soft_delete(&[id]).unwrap(), 1);
+    assert_eq!(db.purge(&[id]).unwrap(), 1);
+    assert_eq!(db.counts().unwrap().total, 1);
+}
+
+#[test]
+fn trashed_hash_upsert_restores_and_empty_trash_works() {
+    let (_dir, db) = open_db("trash-recopy");
+    let input = text_input("复制命中回收站");
+    let id = db.upsert(&input).unwrap().id();
+    assert_eq!(db.soft_delete(&[id]).unwrap(), 1);
+    let outcome = db.upsert(&input).unwrap();
+    assert_eq!(outcome, UpsertOutcome::Touched(id));
+    assert!(db.item(id).unwrap().is_some(), "重新复制应自动恢复");
+
+    assert_eq!(db.soft_delete(&[id]).unwrap(), 1);
+    assert_eq!(db.empty_trash().unwrap(), 1);
+    assert_eq!(db.counts().unwrap().total, 0);
+}
+
+#[test]
+fn expired_trash_is_purged_after_two_days() {
+    let (_dir, db) = open_db("trash-expiry");
+    let id = db.upsert(&text_input("过期回收站")).unwrap().id();
+    assert_eq!(db.soft_delete(&[id]).unwrap(), 1);
+    let now = now_ms();
+    assert_eq!(
+        db.purge_expired_trash(now, TRASH_RETENTION_MS).unwrap(),
+        0,
+        "未到期不应清理"
+    );
+    assert!(db.item(id).unwrap().is_none());
+    assert_eq!(
+        db.purge_expired_trash(now + TRASH_RETENTION_MS + 1, TRASH_RETENTION_MS)
+            .unwrap(),
+        1
+    );
 }

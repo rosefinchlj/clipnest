@@ -12,9 +12,7 @@
 //! 预览会真实运行 [`UiState`] 的渲染与交互（搜索过滤/选中/右键/设置页控件全部可用），
 //! 只是动作在本地消化（弹 toast 提示），不写数据库、不写设置、不动真实窗口。
 
-use crate::model::{
-    ClipFilter, ClipItem, ClipKind, FileEntry, SearchPage, Settings, Stats,
-};
+use crate::model::{ClipFilter, ClipItem, ClipKind, FileEntry, SearchPage, Settings, Stats};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{theme, ManagerPage, UiAction, UiState, WindowMode};
 use eframe::egui::{self, Color32, Rect, Vec2};
@@ -159,6 +157,7 @@ impl PreviewState {
         match mode {
             "manager" => state.enter_manager(ManagerPage::History),
             "favorites" => state.enter_manager(ManagerPage::Favorites),
+            "trash" => state.enter_manager(ManagerPage::Trash),
             "settings" => state.enter_manager(ManagerPage::Settings),
             "about" => state.enter_manager(ManagerPage::About),
             _ => state.enter_picker(),
@@ -267,8 +266,10 @@ impl PreviewState {
                     text,
                     filter,
                     offset,
+                    trash,
                     gen,
                 } => {
+                    let _ = trash;
                     let items = filter_items(&self.all_items, &text, filter);
                     let total = items.len();
                     let page_items = items.into_iter().skip(offset).take(500).collect();
@@ -281,8 +282,11 @@ impl PreviewState {
                 }
                 UiAction::RequestPastePayload(_) => {}
                 UiAction::Paste { plain, .. } => {
-                    self.state
-                        .toast(if plain { "（预览）仅复制到剪贴板" } else { "（预览）粘贴选中项" });
+                    self.state.toast(if plain {
+                        "（预览）仅复制到剪贴板"
+                    } else {
+                        "（预览）粘贴选中项"
+                    });
                 }
                 UiAction::Pin { id, pinned } => {
                     for item in &mut self.all_items {
@@ -295,21 +299,34 @@ impl PreviewState {
                             item.pinned = pinned;
                         }
                     }
-                    self.state
-                        .toast(if pinned { "（预览）已收藏" } else { "（预览）已取消收藏" });
+                    self.state.toast(if pinned {
+                        "（预览）已收藏"
+                    } else {
+                        "（预览）已取消收藏"
+                    });
                 }
                 UiAction::Delete { ids } => {
                     self.all_items.retain(|item| !ids.contains(&item.id));
                     self.state
                         .toast(format!("（预览）删除 {} 条记录", ids.len()));
                 }
+                UiAction::RestoreTrash { ids } => {
+                    let _ = ids;
+                    self.state.toast("（预览）从回收站恢复");
+                }
+                UiAction::PurgeTrash { ids } => {
+                    self.state
+                        .toast(format!("（预览）彻底删除 {} 条记录", ids.len()));
+                }
+                UiAction::EmptyTrash => self.state.toast("（预览）清空回收站"),
                 UiAction::Clear { .. } => self.state.toast("（预览）清空历史（未执行）"),
                 UiAction::SaveFavoriteFiles(_) => {}
                 UiAction::OpenManager => {
                     if self.mode == "picker" {
                         // 预览窗口尺寸固定为候选窗：回到 Picker，仅提示真实行为
                         self.state.mode = WindowMode::Picker;
-                        self.state.toast("（预览）打开管理台 → 实际会切换到管理窗口");
+                        self.state
+                            .toast("（预览）打开管理台 → 实际会切换到管理窗口");
                     }
                 }
                 UiAction::OpenPicker => {
@@ -394,13 +411,7 @@ fn ago(minutes: i64) -> i64 {
     crate::model::now_ms() - minutes * 60_000
 }
 
-fn text_item(
-    id: i64,
-    text: &str,
-    app: &str,
-    minutes_ago: i64,
-    pinned: bool,
-) -> ClipItem {
+fn text_item(id: i64, text: &str, app: &str, minutes_ago: i64, pinned: bool) -> ClipItem {
     ClipItem {
         id,
         kind: ClipKind::Text,
@@ -415,6 +426,7 @@ fn text_item(
         last_used_at: ago(minutes_ago),
         use_count: 3,
         pinned,
+        deleted_at: None,
         source_app: Some(app.to_string()),
         source_title: None,
     }
@@ -443,18 +455,14 @@ fn image_item(
         created_at: ago(minutes_ago),
         last_used_at: ago(minutes_ago),
         use_count: 1,
+        deleted_at: None,
         pinned,
         source_app: Some(app.to_string()),
         source_title: None,
     }
 }
 
-fn files_item(
-    id: i64,
-    files: &[(&str, &str, u64, bool)],
-    app: &str,
-    minutes_ago: i64,
-) -> ClipItem {
+fn files_item(id: i64, files: &[(&str, &str, u64, bool)], app: &str, minutes_ago: i64) -> ClipItem {
     let entries: Vec<FileEntry> = files
         .iter()
         .map(|(name, path, size, exists)| FileEntry {
@@ -483,6 +491,7 @@ fn files_item(
         created_at: ago(minutes_ago),
         last_used_at: ago(minutes_ago),
         use_count: 1,
+        deleted_at: None,
         pinned: false,
         source_app: Some(app.to_string()),
         source_title: None,
@@ -691,16 +700,15 @@ mod tests {
             );
         }
         assert!(items.iter().any(|i| i.pinned), "缺少收藏假数据");
-        assert!(items.iter().any(|i| i.source_app.as_deref() == Some("chrome.exe")));
+        assert!(items
+            .iter()
+            .any(|i| i.source_app.as_deref() == Some("chrome.exe")));
     }
 
     #[test]
     fn filter_items_supports_text_and_kind() {
         let items = fake_items();
-        assert_eq!(
-            filter_items(&items, "", ClipFilter::All).len(),
-            items.len()
-        );
+        assert_eq!(filter_items(&items, "", ClipFilter::All).len(), items.len());
         let images = filter_items(&items, "", ClipFilter::Image);
         assert!(!images.is_empty());
         assert!(images.iter().all(|i| i.kind == ClipKind::Image));

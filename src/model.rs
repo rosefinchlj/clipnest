@@ -13,7 +13,10 @@ pub const APP_NAME: &str = "ClipNest";
 /// 窗口标题。
 pub const APP_TITLE: &str = "ClipNest · 剪贴匣";
 /// 当前数据库 schema 版本。
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// 回收站保留时长：手动删除后 2 天自动彻底删除。
+pub const TRASH_RETENTION_MS: i64 = 2 * 24 * 60 * 60 * 1000;
 
 pub type ClipId = i64;
 
@@ -56,7 +59,6 @@ impl ClipKind {
             ClipKind::Files => "文件",
         }
     }
-
 }
 
 /// 文件列表中的一项。
@@ -116,6 +118,8 @@ pub struct ClipItem {
     pub pinned: bool,
     pub source_app: Option<String>,
     pub source_title: Option<String>,
+    /// 手动删除进入回收站的时间；`None` 表示仍在历史/收藏中。
+    pub deleted_at: Option<i64>,
 }
 
 impl ClipItem {
@@ -189,7 +193,6 @@ impl ClipItem {
             }
         }
     }
-
 }
 
 /// 采集后送入 Store 的归一化输入（由 Sys 线程构造）。
@@ -284,6 +287,8 @@ pub struct SearchQuery {
     pub filter: ClipFilter,
     pub offset: usize,
     pub limit: usize,
+    /// true 时查询回收站（deleted_at 非空）。
+    pub trash: bool,
     /// 请求代号：UI 丢弃过期代号的返回结果。
     pub gen: u64,
 }
@@ -295,6 +300,7 @@ impl Default for SearchQuery {
             filter: ClipFilter::All,
             offset: 0,
             limit: 200,
+            trash: false,
             gen: 0,
         }
     }
@@ -350,7 +356,6 @@ impl Default for HotkeyChord {
 }
 
 impl HotkeyChord {
-
     pub fn new(ctrl: bool, alt: bool, shift: bool, win: bool, vk: u32) -> Self {
         Self {
             ctrl,
@@ -581,6 +586,12 @@ pub enum StoreCmd {
         pinned: bool,
     },
     Delete(Vec<ClipId>),
+    /// 从回收站恢复。
+    Restore(Vec<ClipId>),
+    /// 永久删除回收站中的指定条目。
+    Purge(Vec<ClipId>),
+    /// 永久清空回收站。
+    EmptyTrash,
     Clear {
         delete_blobs: bool,
     },

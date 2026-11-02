@@ -31,10 +31,16 @@ use eframe::egui;
 enum Mode {
     Normal,
     UiPreview(String),
-    UiManager { page: ui::ManagerPage, target: isize },
+    UiManager {
+        page: ui::ManagerPage,
+        target: isize,
+    },
     Selftest(String),
     Diagnose(String),
-    DemoSeed { count: usize, confirmed: bool },
+    DemoSeed {
+        count: usize,
+        confirmed: bool,
+    },
     Help,
     Version,
 }
@@ -78,6 +84,7 @@ fn parse_args() -> Mode {
                             if let Some(value) = args.get(j + 1) {
                                 page = match value.as_str() {
                                     "favorites" => ui::ManagerPage::Favorites,
+                                    "trash" => ui::ManagerPage::Trash,
                                     "settings" => ui::ManagerPage::Settings,
                                     "about" => ui::ManagerPage::About,
                                     _ => ui::ManagerPage::History,
@@ -94,6 +101,7 @@ fn parse_args() -> Mode {
                         other if !other.starts_with("--") => {
                             page = match other {
                                 "favorites" => ui::ManagerPage::Favorites,
+                                "trash" => ui::ManagerPage::Trash,
                                 "settings" => ui::ManagerPage::Settings,
                                 "about" => ui::ManagerPage::About,
                                 _ => ui::ManagerPage::History,

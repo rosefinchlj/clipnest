@@ -100,6 +100,11 @@ impl ManagerApp {
         let mut ui = UiState::new(&cc.egui_ctx, &settings);
         ui.preview_mode(false);
         ui.enter_manager(page);
+        if let Some(tx) = &store_tx {
+            // 管理台独立进程没有主窗口的启动统计事件，主动拉一次，
+            // 否则侧栏「共 N 条 / 收藏 N 条」会一直是 0。
+            let _ = tx.send(StoreCmd::RefreshStats);
+        }
         let thumbs = ThumbCache::new(&cc.egui_ctx);
 
         Self {
@@ -160,9 +165,7 @@ impl ManagerApp {
         self.ui.set_settings(&next);
         self.persist_settings();
         self.notify_main_settings();
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-            next.manager_size.into(),
-        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(next.manager_size.into()));
         self.ui.toast("设置已保存，主程序立即同步");
         if let Some(tx) = &self.store_tx {
             let _ = tx.send(StoreCmd::RefreshStats);
@@ -244,6 +247,7 @@ impl ManagerApp {
                 text,
                 filter,
                 offset,
+                trash,
                 gen,
             } => {
                 if let Some(tx) = &self.store_tx {
@@ -252,6 +256,7 @@ impl ManagerApp {
                         filter,
                         offset,
                         limit: 500,
+                        trash,
                         gen,
                     }));
                 }
@@ -274,6 +279,24 @@ impl ManagerApp {
             UiAction::Delete { ids } => {
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::Delete(ids));
+                }
+                self.ui.refresh();
+            }
+            UiAction::RestoreTrash { ids } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::Restore(ids));
+                }
+                self.ui.refresh();
+            }
+            UiAction::PurgeTrash { ids } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::Purge(ids));
+                }
+                self.ui.refresh();
+            }
+            UiAction::EmptyTrash => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::EmptyTrash);
                 }
                 self.ui.refresh();
             }
@@ -320,7 +343,11 @@ impl ManagerApp {
                 self.settings.pause_capture = paused;
                 self.persist_settings();
                 self.notify_main_settings();
-                self.ui.toast(if paused { "已暂停记录" } else { "已恢复记录" });
+                self.ui.toast(if paused {
+                    "已暂停记录"
+                } else {
+                    "已恢复记录"
+                });
             }
             UiAction::ExportJson => {
                 let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
@@ -393,4 +420,3 @@ impl Drop for ManagerApp {
         }
     }
 }
-

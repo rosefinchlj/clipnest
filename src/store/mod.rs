@@ -120,10 +120,14 @@ impl Store {
         {
             let settings = self.settings_snapshot();
             match retention::prune(&self.db, &settings) {
-                Ok(report) if report.deleted_clips > 0 || report.deleted_blobs > 0 => {
+                Ok(report)
+                    if report.deleted_clips > 0
+                        || report.deleted_blobs > 0
+                        || report.purged_trash > 0 =>
+                {
                     crate::logging::log(&format!(
-                        "Store 启动清理：删除 {} 条记录、{} 个孤儿 blob",
-                        report.deleted_clips, report.deleted_blobs
+                        "Store 启动清理：删除 {} 条记录、{} 个孤儿 blob、{} 条过期回收站",
+                        report.deleted_clips, report.deleted_blobs, report.purged_trash
                     ));
                 }
                 Ok(_) => {}
@@ -176,11 +180,15 @@ impl Store {
                 writes = 0;
                 let settings = self.settings_snapshot();
                 match retention::prune(&self.db, &settings) {
-                    Ok(report) if report.deleted_clips > 0 || report.deleted_blobs > 0 => {
+                    Ok(report)
+                        if report.deleted_clips > 0
+                            || report.deleted_blobs > 0
+                            || report.purged_trash > 0 =>
+                    {
                         dirty = true;
                         crate::logging::log(&format!(
-                            "Store 周期清理：删除 {} 条记录、{} 个孤儿 blob",
-                            report.deleted_clips, report.deleted_blobs
+                            "Store 周期清理：删除 {} 条记录、{} 个孤儿 blob、{} 条过期回收站",
+                            report.deleted_clips, report.deleted_blobs, report.purged_trash
                         ));
                     }
                     Ok(_) => {}
@@ -207,7 +215,11 @@ impl Store {
             }
         }
         // 退出前把 WAL 落盘，避免 -wal 文件残留
-        if let Err(err) = self.db.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+        if let Err(err) = self
+            .db
+            .conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        {
             crate::logging::warn(&format!("Store 退出 checkpoint 失败：{err}"));
         }
         crate::logging::log("Store 线程退出");
@@ -265,9 +277,33 @@ impl Store {
                 Ok(false)
             }
             StoreCmd::Delete(ids) => {
-                let deleted = self.db.delete(&ids)?;
+                let deleted = self.db.soft_delete(&ids)?;
                 if deleted > 0 {
                     *dirty = true;
+                }
+                Ok(false)
+            }
+            StoreCmd::Restore(ids) => {
+                let restored = self.db.restore(&ids)?;
+                if restored > 0 {
+                    *dirty = true;
+                    *stats_due = true;
+                }
+                Ok(false)
+            }
+            StoreCmd::Purge(ids) => {
+                let purged = self.db.purge(&ids)?;
+                if purged > 0 {
+                    *dirty = true;
+                    *stats_due = true;
+                }
+                Ok(false)
+            }
+            StoreCmd::EmptyTrash => {
+                let purged = self.db.empty_trash()?;
+                if purged > 0 {
+                    *dirty = true;
+                    *stats_due = true;
                 }
                 Ok(false)
             }
@@ -306,7 +342,7 @@ impl Store {
                 let settings = self.settings_snapshot();
                 match retention::prune(&self.db, &settings) {
                     Ok(report) => {
-                        if report.deleted_clips > 0 {
+                        if report.deleted_clips > 0 || report.purged_trash > 0 {
                             *dirty = true;
                         }
                         if report.favorites_limit_hit {

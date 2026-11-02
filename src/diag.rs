@@ -56,10 +56,7 @@ pub fn selftest(out_path: &str) -> Result<String, String> {
 
 type CheckFn<'a> = dyn FnMut(&str, bool, String) + 'a;
 
-fn run_selftest_body(
-    dir: &Path,
-    check: &mut CheckFn<'_>,
-) -> Result<(), String> {
+fn run_selftest_body(dir: &Path, check: &mut CheckFn<'_>) -> Result<(), String> {
     let (events_tx, events) = mpsc::channel::<Event>();
     let settings = Arc::new(Mutex::new(Settings::default()));
     let ctx = egui::Context::default();
@@ -129,10 +126,7 @@ fn run_selftest_body(
                 .as_ref()
                 .map(|p| p.items.iter().any(|i| i.id == text_id && i.pinned))
                 .unwrap_or(false),
-            format!(
-                "total={}",
-                page3.as_ref().map(|p| p.total).unwrap_or(0)
-            ),
+            format!("total={}", page3.as_ref().map(|p| p.total).unwrap_or(0)),
         );
     }
 
@@ -152,7 +146,11 @@ fn run_selftest_body(
         source_title: None,
         captured_at: now_ms(),
     };
-    image_input.byte_len = image_input.image_png.as_ref().map(|p| p.len() as u64).unwrap_or(0);
+    image_input.byte_len = image_input
+        .image_png
+        .as_ref()
+        .map(|p| p.len() as u64)
+        .unwrap_or(0);
     tx.send(StoreCmd::Upsert(image_input))
         .map_err(|e| e.to_string())?;
     let _ = wait_clips_changed(&events, WAIT);
@@ -165,10 +163,7 @@ fn run_selftest_body(
     check(
         "图片写入",
         image_id > 0,
-        format!(
-            "total={}",
-            page_img.as_ref().map(|p| p.total).unwrap_or(0)
-        ),
+        format!("total={}", page_img.as_ref().map(|p| p.total).unwrap_or(0)),
     );
     let payload = get_payload(&events, &tx, image_id);
     let image_payload_ok = payload
@@ -281,13 +276,11 @@ fn run_selftest_body(
     })
     .map_err(|e| e.to_string())?;
     let export_ok = wait_for_duration(&events, WAIT, || {
-        std::fs::metadata(&export_path).map(|m| m.len() > 0).unwrap_or(false)
+        std::fs::metadata(&export_path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
     });
-    check(
-        "导出 JSON",
-        export_ok,
-        export_path.display().to_string(),
-    );
+    check("导出 JSON", export_ok, export_path.display().to_string());
 
     // 8) 删除 + 清空
     tx.send(StoreCmd::Delete(vec![text_id, image_id]))
@@ -298,21 +291,15 @@ fn run_selftest_body(
         "删除记录",
         page_after_delete
             .as_ref()
-            .map(|p| {
-                !p.items
-                    .iter()
-                    .any(|i| i.id == text_id || i.id == image_id)
-            })
+            .map(|p| !p.items.iter().any(|i| i.id == text_id || i.id == image_id))
             .unwrap_or(false),
         format!(
             "total={}",
             page_after_delete.as_ref().map(|p| p.total).unwrap_or(0)
         ),
     );
-    tx.send(StoreCmd::Clear {
-        delete_blobs: true,
-    })
-    .map_err(|e| e.to_string())?;
+    tx.send(StoreCmd::Clear { delete_blobs: true })
+        .map_err(|e| e.to_string())?;
     let _ = wait_clips_changed(&events, WAIT);
     let page_after_clear = search(&events, &tx, "", ClipFilter::All, 0, 50);
     check(
@@ -350,6 +337,7 @@ fn search(
             filter,
             offset,
             limit,
+            trash: false,
             gen,
         }))
         .is_err()

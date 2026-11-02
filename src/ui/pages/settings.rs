@@ -604,7 +604,7 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
         });
         ui.add_space(8.0);
         ui.label(theme::weak(
-            "提示：清空历史不可恢复；收藏项也会被清空。导出为 JSON；导入与重建索引计划在 v1.1 提供。",
+            "提示：清空历史不可恢复（含回收站）；收藏项也会被清空。导出为 JSON；导入与重建索引计划在 v1.1 提供。",
         ));
     });
 }

@@ -52,7 +52,15 @@ pub fn button(ui: &mut egui::Ui, text: &str, kind: ButtonKind) -> Response {
 
 /// 在指定矩形内画按钮（用于固定布局，如空状态/对话框）。
 pub fn button_at(ui: &mut egui::Ui, rect: Rect, text: &str, kind: ButtonKind) -> Response {
-    let mut resp = ui.interact(rect, ui.id().with(("btn", text)), Sense::click());
+    // 同一页面可能有多个同名按钮（如回收站每行的「恢复」）；只用文案做 id
+    // 会让 egui 把它们的交互合并，导致只有其中一个能收到点击。把位置纳入 id。
+    let id = ui.id().with((
+        "btn",
+        text,
+        rect.min.x.round() as i32,
+        rect.min.y.round() as i32,
+    ));
+    let mut resp = ui.interact(rect, id, Sense::click());
     let radius = CornerRadius::same(theme::RADIUS_INPUT);
     let hovered = resp.hovered();
     let pressed = resp.is_pointer_button_down_on();

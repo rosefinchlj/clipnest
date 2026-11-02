@@ -388,3 +388,37 @@
 ### 校验
 - `cargo test --release` **145 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
 - 截图：`target/mgr_fixed_fav.png` / `target/mgr_fixed_history.png`（方框消失）、`target/settings_fixed.png`（滑轨可见）、`target/settings_fixed_cleanup.png`（立即清理按钮）。
+
+
+---
+
+## 18. v1.9.0（2026-11-02，回收站：手动删除保留 2 天）
+
+### 用户需求
+- 手动删除的记录进入回收站，保留 2 天。
+
+### 设计决策（已与用户确认）
+- 仅**手动单条/批量删除**进入回收站；容量自动淘汰与「清空历史」保持永久删除。
+- 回收站保留 **2 天**，期间支持**恢复 / 彻底删除 / 清空回收站**；条目继续占用磁盘。
+- 重新复制回收站中的相同内容时，自动从回收站恢复。
+- 「清空历史」仍永久删除，并包含回收站（确认文案已明确）。
+
+### 实现
+- **Schema v2**：`clips` 新增 `deleted_at INTEGER NULL`；`src/store/schema.rs::ensure_trash_schema()` 对旧库做幂等 `ALTER TABLE`，并创建 `idx_clips_trash` 部分索引；`SCHEMA_VERSION = 2`。
+- **删除语义**：`Db::soft_delete()` 只标记 `deleted_at`；`Db::restore()` 清除标记并把 `last_used_at` 推到历史顶部；`Db::purge()` 只允许删除回收站行并释放 blob；`Db::empty_trash()`、`Db::purge_expired_trash()` 负责清空与到期清理。保留期常量 `TRASH_RETENTION_MS = 2 * 24 * 60 * 60 * 1000`。
+- **查询隔离**：`SearchQuery.trash` 控制 active / trash 范围；active 查询统一追加 `deleted_at IS NULL`，回收站按 `deleted_at DESC` 排序；`item()`、`paste_payload()`、`counts()`、`bump_used()` 等只作用于 active 行。
+- **自动恢复**：`upsert`/`import_upsert` 命中已删除 hash 时调用 `restore`，再按正常去重/使用计数处理。
+- **到期清理**：`retention::prune()` 开头调用 `purge_expired_trash`，启动、刷新统计与定期 prune 都会执行；`PruneReport.purged_trash` 记录数量。
+- **Store 命令**：`Delete` 改为 `soft_delete`；新增 `Restore / Purge / EmptyTrash`，成功后触发 dirty + stats。
+- **管理台**：`ManagerPage::Trash` + 新页 `src/ui/pages/trash.rs`；导航图标、搜索、清空按钮、每行「恢复 / 彻底删除」、删除时间与剩余时间、二次确认；`Ctrl+F` 搜索、`Delete` 彻底删除（确认）。
+- **UI 修复（实测发现）**：`widgets::button_at()` 的 egui id 原来只用按钮文案，回收站每行同名「恢复/彻底删除」会互相吞点击；改为把按钮坐标纳入 id。回收站列表遍历时执行恢复/删除会修改 `state.items` 导致越界 panic；改为先克隆列表再绘制。
+
+### 校验
+- `cargo test --release` **149 passed / 0 failed / 1 ignored**；新增：
+  - `schema_v1_migrates_trash_column`
+  - `trash_soft_delete_search_restore_and_purge`
+  - `trashed_hash_upsert_restores_and_empty_trash_works`
+  - `expired_trash_is_purged_after_two_days`
+- `cargo build --release` 0 warnings；`--selftest` PASS。
+- 实测：管理台删除 → 回收站出现；恢复后行消失、历史恢复；彻底删除/清空确认可执行；2 天到期保留逻辑由单测覆盖。
+- 截图：`docs/screenshots/manager-trash.png`。

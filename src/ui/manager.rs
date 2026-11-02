@@ -1,5 +1,5 @@
 //! Manager 管理台外壳：自定义标题栏（拖拽/最小化到托盘/关闭）+ 左侧 184px 导航 +
-//! 页面路由（历史/收藏/设置/关于）+ 边缘缩放请求。
+//! 页面路由（历史/收藏/回收站/设置/关于）+ 边缘缩放请求。
 //!
 //! 窗口尺寸/装饰/层级由 Lead 控制，这里只发 `ViewportCommand::StartDrag` /
 //! `BeginResize` 这类视图命令，以及 [`UiAction::HideWindow`]。
@@ -9,8 +9,8 @@ use crate::ui::pages;
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, ManagerPage, UiAction, UiState};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Pos2, Rect, ResizeDirection, Sense,
-    UiBuilder, Vec2, ViewportCommand,
+    self, Align2, Color32, CornerRadius, Pos2, Rect, ResizeDirection, Sense, UiBuilder, Vec2,
+    ViewportCommand,
 };
 
 /// 边缘缩放手柄厚度。
@@ -50,6 +50,7 @@ pub(crate) fn show(
     match state.manager_page {
         ManagerPage::History => pages::history::show(state, ui, content_rect, thumbs, actions),
         ManagerPage::Favorites => pages::favorites::show(state, ui, content_rect, thumbs, actions),
+        ManagerPage::Trash => pages::trash::show(state, ui, content_rect, thumbs, actions),
         ManagerPage::Settings => pages::settings::show(state, ui, content_rect, actions),
         ManagerPage::About => pages::about::show(state, ui, content_rect, actions),
     }
@@ -66,7 +67,7 @@ fn handle_command(state: &mut UiState, command: ManagerCommand, actions: &mut Ve
         ManagerCommand::FocusSearch => {
             if !matches!(
                 state.manager_page,
-                ManagerPage::History | ManagerPage::Favorites
+                ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
             ) {
                 state.go_manager_page(ManagerPage::History, actions);
             }
@@ -81,7 +82,11 @@ fn handle_command(state: &mut UiState, command: ManagerCommand, actions: &mut Ve
             } else {
                 state.multi_selected.iter().copied().collect()
             };
-            state.request_delete_ids(ids, actions);
+            if state.search_trash() {
+                state.request_purge_ids(ids, actions);
+            } else {
+                state.request_delete_ids(ids, actions);
+            }
         }
         ManagerCommand::Export => actions.push(UiAction::ExportJson),
         ManagerCommand::Escape => {
@@ -112,10 +117,7 @@ fn title_bar(state: &mut UiState, ui: &mut egui::Ui, full: Rect, actions: &mut V
         },
         theme::panel_base(),
     );
-    painter.line_segment(
-        [rect.left_bottom(), rect.right_bottom()],
-        theme::divider(),
-    );
+    painter.line_segment([rect.left_bottom(), rect.right_bottom()], theme::divider());
 
     // 标题栏空白区域可拖动窗口（右侧按钮区域除外）
     let drag_rect = Rect::from_min_size(
@@ -153,11 +155,7 @@ fn title_bar(state: &mut UiState, ui: &mut egui::Ui, full: Rect, actions: &mut V
         );
     }
     if min_resp.hovered() {
-        painter.rect_filled(
-            min_rect,
-            CornerRadius::same(0),
-            theme::hover_fill(),
-        );
+        painter.rect_filled(min_rect, CornerRadius::same(0), theme::hover_fill());
     }
     paint::paint_minus(
         &painter,
@@ -215,7 +213,7 @@ fn title_bar(state: &mut UiState, ui: &mut egui::Ui, full: Rect, actions: &mut V
     }
 }
 
-/// 左侧导航（184px）：历史 / 收藏 / 设置 / 关于 + 底部统计与「暂停记录」。
+/// 左侧导航（184px）：历史 / 收藏 / 回收站 / 设置 / 关于 + 底部统计与「暂停记录」。
 fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiAction>) {
     let painter = ui.painter().clone();
     painter.rect_filled(
@@ -228,23 +226,19 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
         },
         theme::panel_bg(),
     );
-    painter.line_segment(
-        [rect.right_top(), rect.right_bottom()],
-        theme::divider(),
-    );
+    painter.line_segment([rect.right_top(), rect.right_bottom()], theme::divider());
 
     let mut y = rect.top() + 14.0;
     let item_w = rect.width() - 24.0;
     for page in [
         ManagerPage::History,
         ManagerPage::Favorites,
+        ManagerPage::Trash,
         ManagerPage::Settings,
         ManagerPage::About,
     ] {
-        let item_rect = Rect::from_min_size(
-            Pos2::new(rect.left() + 12.0, y),
-            Vec2::new(item_w, 38.0),
-        );
+        let item_rect =
+            Rect::from_min_size(Pos2::new(rect.left() + 12.0, y), Vec2::new(item_w, 38.0));
         let resp = ui.interact(
             item_rect,
             ui.id().with(("nav", page.label())),
@@ -315,14 +309,15 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
         Pos2::new(rect.left() + 12.0, rect.bottom() - 118.0),
         Pos2::new(rect.right() - 12.0, rect.bottom() - 12.0),
     );
-    painter.line_segment(
-        [bottom.left_top(), bottom.right_top()],
-        theme::divider(),
-    );
+    painter.line_segment([bottom.left_top(), bottom.right_top()], theme::divider());
     painter.text(
         Pos2::new(bottom.left() + 2.0, bottom.top() + 14.0),
         Align2::LEFT_CENTER,
-        format!("共 {} 条 · 收藏 {} 条", keys::fmt_count(state.stats.total), keys::fmt_count(state.stats.pinned)),
+        format!(
+            "共 {} 条 · 收藏 {} 条",
+            keys::fmt_count(state.stats.total),
+            keys::fmt_count(state.stats.pinned)
+        ),
         theme::font_aux(),
         theme::text_weak(),
     );
@@ -347,7 +342,11 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
         state.settings_draft.pause_capture = paused;
         state.paused = paused;
         actions.push(UiAction::SetPause(paused));
-        state.toast(if paused { "已暂停记录" } else { "已恢复记录" });
+        state.toast(if paused {
+            "已暂停记录"
+        } else {
+            "已恢复记录"
+        });
     }
     painter.text(
         Pos2::new(bottom.left() + 2.0, bottom.bottom()),
@@ -359,18 +358,16 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
 }
 
 /// 导航图标（几何自绘）：历史=剪贴板、收藏=星、设置=齿轮、关于=信息。
-fn paint_nav_icon(
-    painter: &egui::Painter,
-    rect: Rect,
-    page: ManagerPage,
-    color: Color32,
-) {
+fn paint_nav_icon(painter: &egui::Painter, rect: Rect, page: ManagerPage, color: Color32) {
     match page {
         ManagerPage::History => {
             paint::paint_clipboard_big(painter, rect.center(), rect.height() * 0.92, color);
         }
         ManagerPage::Favorites => {
             paint::paint_star(painter, rect.center(), rect.height() * 0.46, color, false);
+        }
+        ManagerPage::Trash => {
+            paint::paint_trash(painter, rect, color);
         }
         ManagerPage::Settings => paint::paint_gear(painter, rect, color),
         ManagerPage::About => {
@@ -396,7 +393,10 @@ fn paint_nav_icon(
 fn edge_resize(ui: &mut egui::Ui, full: Rect) {
     let handles: [(Rect, ResizeDirection); 8] = [
         (
-            Rect::from_min_max(full.left_top(), Pos2::new(full.left() + EDGE, full.bottom())),
+            Rect::from_min_max(
+                full.left_top(),
+                Pos2::new(full.left() + EDGE, full.bottom()),
+            ),
             ResizeDirection::West,
         ),
         (
@@ -444,11 +444,7 @@ fn edge_resize(ui: &mut egui::Ui, full: Rect) {
         ),
     ];
     for (i, (rect, dir)) in handles.iter().enumerate() {
-        let resp = ui.interact(
-            *rect,
-            ui.id().with(("resize", i)),
-            Sense::drag(),
-        );
+        let resp = ui.interact(*rect, ui.id().with(("resize", i)), Sense::drag());
         if resp.drag_started() {
             ui.ctx()
                 .send_viewport_cmd(ViewportCommand::BeginResize(*dir));

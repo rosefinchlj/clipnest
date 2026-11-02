@@ -7,13 +7,13 @@
 //! - 更短、含路径分隔符或 FTS 关闭 → `LIKE '%'||?||'%' ESCAPE '\'`（转义 `% _ \`）；
 //! - 含 `/` 或 `\` 时额外用另一分隔符再匹配一次，路径分隔符等价（spec §11）。
 
-use rusqlite::types::Value;
 use rusqlite::params_from_iter;
+use rusqlite::types::Value;
 use std::time::Instant;
 
 use crate::model::{
-    now_ms, ClipFilter, ClipId, ClipItem, ClipKind, FileEntry, PastePayload, SearchPage, SearchQuery,
-    Stats,
+    now_ms, ClipFilter, ClipId, ClipItem, ClipKind, FileEntry, PastePayload, SearchPage,
+    SearchQuery, Stats,
 };
 use crate::store::blob;
 use crate::store::db::Db;
@@ -22,7 +22,8 @@ use crate::store::StoreResult;
 /// 条目列（顺序必须与 [`row_to_item`] 一致）。
 const ITEM_COLUMNS: &str = "clips.id, clips.kind, clips.preview, clips.text, clips.files_json, \
      clips.blob_id, clips.byte_len, clips.width, clips.height, clips.created_at, \
-     clips.last_used_at, clips.use_count, clips.pinned, clips.source_app, clips.source_title";
+     clips.last_used_at, clips.use_count, clips.pinned, clips.source_app, clips.source_title, \
+     clips.deleted_at";
 
 /// 统一排序：收藏优先、最近使用优先、id 兜底保证稳定分页。
 const ORDER_BY: &str = "ORDER BY clips.pinned DESC, clips.last_used_at DESC, clips.id DESC";
@@ -31,11 +32,10 @@ impl Db {
     /// 读取单条（含 files 解析）。
     pub fn item(&self, id: ClipId) -> StoreResult<Option<ClipItem>> {
         use rusqlite::OptionalExtension;
-        let sql = format!("SELECT {ITEM_COLUMNS} FROM clips WHERE clips.id = ?1");
-        let item = self
-            .conn
-            .query_row(&sql, [id], row_to_item)
-            .optional()?;
+        let sql = format!(
+            "SELECT {ITEM_COLUMNS} FROM clips WHERE clips.id = ?1 AND clips.deleted_at IS NULL"
+        );
+        let item = self.conn.query_row(&sql, [id], row_to_item).optional()?;
         Ok(item)
     }
 
@@ -44,6 +44,11 @@ impl Db {
         let started = Instant::now();
         let mut conditions: Vec<String> = Vec::new();
         let mut args: Vec<Value> = Vec::new();
+        conditions.push(if query.trash {
+            "clips.deleted_at IS NOT NULL".to_string()
+        } else {
+            "clips.deleted_at IS NULL".to_string()
+        });
 
         match query.filter {
             ClipFilter::All => {}
@@ -92,21 +97,22 @@ impl Db {
         } else {
             "clips"
         };
-        let where_sql = if conditions.is_empty() {
-            "1".to_string()
-        } else {
-            conditions.join(" AND ")
-        };
+        let where_sql = conditions.join(" AND ");
 
         let total_sql = format!("SELECT COUNT(*) FROM {from} WHERE {where_sql}");
-        let total: i64 = self
-            .conn
-            .query_row(&total_sql, params_from_iter(args.clone()), |row| row.get(0))?;
+        let total: i64 =
+            self.conn
+                .query_row(&total_sql, params_from_iter(args.clone()), |row| row.get(0))?;
 
         let limit = query.limit.clamp(1, 10_000) as i64;
         let offset = query.offset as i64;
+        let order_by = if query.trash {
+            "ORDER BY clips.deleted_at DESC, clips.id DESC"
+        } else {
+            ORDER_BY
+        };
         let items_sql = format!(
-            "SELECT {ITEM_COLUMNS} FROM {from} WHERE {where_sql} {ORDER_BY} LIMIT ? OFFSET ?"
+            "SELECT {ITEM_COLUMNS} FROM {from} WHERE {where_sql} {order_by} LIMIT ? OFFSET ?"
         );
         let mut item_args = args;
         item_args.push(Value::Integer(limit));
@@ -131,7 +137,7 @@ impl Db {
                     COALESCE(SUM(CASE WHEN kind = 1 THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN kind = 2 THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN pinned = 1 THEN 1 ELSE 0 END), 0)
-             FROM clips",
+             FROM clips WHERE deleted_at IS NULL",
             [],
             |row| {
                 Ok((
@@ -144,7 +150,7 @@ impl Db {
             },
         )?;
         let image_bytes: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(byte_len), 0) FROM clips WHERE kind = 1",
+            "SELECT COALESCE(SUM(byte_len), 0) FROM clips WHERE kind = 1 AND deleted_at IS NULL",
             [],
             |row| row.get(0),
         )?;
@@ -205,7 +211,8 @@ impl Db {
                 let mut files = item.files.clone();
                 let mut changed = false;
                 if let Some(blob_id) = item.blob_id.as_deref() {
-                    let restored = blob::restore_favorite_files(&self.data_dir, blob_id, &mut files)?;
+                    let restored =
+                        blob::restore_favorite_files(&self.data_dir, blob_id, &mut files)?;
                     changed = restored > 0;
                 }
                 if changed {
@@ -237,7 +244,7 @@ impl Db {
             "UPDATE clips
              SET last_used_at = MAX(?1, COALESCE((SELECT MAX(last_used_at) FROM clips), 0) + 1),
                  use_count = use_count + 1
-             WHERE id = ?2",
+             WHERE id = ?2 AND deleted_at IS NULL",
             rusqlite::params![now_ms(), id],
         )?;
         Ok(changed > 0)
@@ -272,6 +279,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipItem> {
         pinned: pinned != 0,
         source_app: row.get(13)?,
         source_title: row.get(14)?,
+        deleted_at: row.get(15)?,
     })
 }
 
