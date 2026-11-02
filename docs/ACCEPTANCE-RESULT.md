@@ -291,3 +291,28 @@
 - **底部提示条可读性**：候选窗 hint bar 增加 panel 底色 + 圆角，文字从 `text_weak` 提升为 `text_secondary`；
   浅色/白底/高透明下也能看清。
 - 校验：`cargo test` 142 passed；`cargo build` 0 warnings；截图确认 hint bar 底色与文字对比。
+
+---
+
+## 13. v1.7.1（2026-11-02，白底/浅色桌面候选窗文字可读性）
+
+### 用户反馈
+- 候选窗叠在白色/浅色窗口上时，整块面板被透成浅灰，标题、预览、时间、过滤胶囊都几乎看不清。
+
+### 根因
+- 磨砂透明度可低至 35%，窗口底与 `window_bg` 一起变透明后，列表行是**透明行**，白字直接叠在白/浅色背景上；
+  辅助文本（`text_weak`）本身对比度也偏低。
+
+### 修复
+- 新增 `theme::content_bg()`：候选窗内容区在窗口磨砂层之上再铺一层**最低不透明度底**
+  （深色 ≥ 200/255、浅色 ≥ 224/255），与用户滑杆值无关；外层边缘/圆角仍保留 Acrylic。
+- `src/ui/picker.rs` 在绘制拖拽点/搜索/列表前铺 `content_bg()`，所有列表行不再直接叠在桌面背景上。
+- 深色主题辅助文本整体提亮：`text_secondary #8B98A9 → #A5B2C4`、`text_weak #5C6878 → #7F8C9E`；
+  行相对时间、搜索占位、空状态/加载文案从 `text_weak` 提升为 `text_secondary`。
+- 设置页磨砂说明改为「外层越透，内容区自动保留最低不透明度」；截图更新 `docs/screenshots/picker.png`、
+  `picker-transparent.png`（实际在白色窗口上以 35% 透明度截图验证）。
+
+### 校验
+- `cargo test --release` 142 passed / 0 failed（连续 5 次全绿；主题用例用 `TEST_LOCK: Mutex<()>`
+  串行化全局主题状态，修复新增断言后的偶发并行失败）；`cargo build --release` 0 warnings；
+  实机截图：白色窗口背景 + 35% 磨砂下，标题/预览/时间/胶囊均可读。

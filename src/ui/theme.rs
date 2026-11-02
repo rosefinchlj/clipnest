@@ -3,7 +3,7 @@
 //! **严格对应设计文档 §7 视觉规范**（色板不可自创）：
 //! - 窗口底 `#0E1116` @82%（亚克力上叠层）；面板/侧栏 `#131820` @92%；
 //!   卡片/输入框 `#1A212B`；分隔线 `#2A3340`（1px、8% 白叠加）。
-//! - 主/次/弱文本 `#E6EDF3` / `#8B98A9` / `#5C6878`；强调 `#6E8BFF`（悬停 `#8AA2FF`）。
+//! - 主/次/弱文本 `#E6EDF3` / `#A5B2C4` / `#7F8C9E`；强调 `#6E8BFF`（悬停 `#8AA2FF`）。
 //! - 字号：标题 15、列表标题 13.5、正文 13、辅助 11.5、代码 Monospace 12。
 //! - 行高 64；搜索框 40；圆角：窗口 12 / 卡片 10 / 输入框 9 / 缩略图 8 / 胶囊全圆。
 //!
@@ -55,8 +55,9 @@ struct Palette {
 
 const DARK: Palette = Palette {
     text: Color32::from_rgb(0xE6, 0xED, 0xF3),
-    text_secondary: Color32::from_rgb(0x8B, 0x98, 0xA9),
-    text_weak: Color32::from_rgb(0x5C, 0x68, 0x78),
+    // 提高深色主题的辅助文字对比度：在磨砂/明亮桌面背景下仍能看清说明文字。
+    text_secondary: Color32::from_rgb(0xA5, 0xB2, 0xC4),
+    text_weak: Color32::from_rgb(0x7F, 0x8C, 0x9E),
     accent: Color32::from_rgb(0x6E, 0x8B, 0xFF),
     accent_hover: Color32::from_rgb(0x8A, 0xA2, 0xFF),
     danger: Color32::from_rgb(0xFF, 0x6B, 0x6B),
@@ -234,6 +235,22 @@ pub fn panel_bg() -> Color32 {
     let pct = glass_opacity() as u16;
     let alpha = ((pct * 255) / 100 + 20).clamp(60, 255) as u8;
     scale_alpha(palette().panel_base, alpha)
+}
+
+/// 候选窗内容区底色（磨砂层之上再铺一层）。
+///
+/// 用户的「磨砂透明度」可以调到很低，此时如果内容直接画在透出的白色/浅色
+/// 桌面上，白字会和桌面混在一起。这里给内容区一个与玻璃透明度无关的
+/// **最低不透明度**：外层仍保留磨砂边缘，内容区始终有足够深的底，保证
+/// 主文本/次文本的对比度。
+pub fn content_bg() -> Color32 {
+    if !glass_enabled() {
+        return palette().window_base;
+    }
+    let pct = glass_opacity() as u16;
+    let min_alpha = if is_light() { 224 } else { 200 };
+    let alpha = ((pct * 255) / 100).max(min_alpha).clamp(40, 255) as u8;
+    scale_alpha(palette().window_base, alpha)
 }
 
 pub fn divider() -> Stroke {
@@ -632,13 +649,20 @@ pub fn install_theme(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 主题状态是全局原子变量，cargo test 默认多线程并行；这里串行化会读写全局态
+    /// 的用例，避免 `dark_palette_matches_spec` 与 `alpha_layers_match_spec`
+    /// 互相把主题/透明度改掉导致偶发失败。
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn dark_palette_matches_spec() {
+        let _guard = TEST_LOCK.lock().unwrap();
         set_light(false);
         assert_eq!(text(), Color32::from_rgb(0xE6, 0xED, 0xF3));
-        assert_eq!(text_secondary(), Color32::from_rgb(0x8B, 0x98, 0xA9));
-        assert_eq!(text_weak(), Color32::from_rgb(0x5C, 0x68, 0x78));
+        assert_eq!(text_secondary(), Color32::from_rgb(0xA5, 0xB2, 0xC4));
+        assert_eq!(text_weak(), Color32::from_rgb(0x7F, 0x8C, 0x9E));
         assert_eq!(accent(), Color32::from_rgb(0x6E, 0x8B, 0xFF));
         assert_eq!(accent_hover(), Color32::from_rgb(0x8A, 0xA2, 0xFF));
         assert_eq!(danger(), Color32::from_rgb(0xFF, 0x6B, 0x6B));
@@ -653,6 +677,7 @@ mod tests {
 
     #[test]
     fn light_palette_has_dark_text_on_light_cards() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let palette = LIGHT;
         assert!(palette.text.r() < 64, "浅色皮肤主文本必须是深色");
         assert!(palette.card.r() > 220, "浅色皮肤卡片必须是浅色");
@@ -662,6 +687,7 @@ mod tests {
 
     #[test]
     fn alpha_layers_match_spec() {
+        let _guard = TEST_LOCK.lock().unwrap();
         set_light(false);
         set_glass_opacity(75);
         assert_eq!(window_bg().a(), 191);
@@ -670,6 +696,11 @@ mod tests {
         set_glass_opacity(35);
         assert!(window_bg().a() < 191);
         assert!(panel_bg().a() < 211);
+        // 内容区有对比度下限：即使玻璃滑到 35%，也不能透成白色面板。
+        assert!(content_bg().a() >= 200, "深色内容区 alpha 不应低于 200");
+        set_light(true);
+        assert!(content_bg().a() >= 224, "浅色内容区 alpha 不应低于 224");
+        set_light(false);
         set_glass_opacity(75);
         assert_eq!(accent_fill().a(), 31);
         assert_eq!(hover_fill().a(), 15);
@@ -699,6 +730,7 @@ mod tests {
 
     #[test]
     fn install_theme_sets_dark_and_light_styles() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let ctx = egui::Context::default();
         set_light(false);
         install_theme(&ctx);
@@ -730,6 +762,7 @@ mod tests {
 
     #[test]
     fn kind_colors_map_to_palette() {
+        let _guard = TEST_LOCK.lock().unwrap();
         set_light(false);
         assert_eq!(kind_color(ClipKind::Text), accent());
         assert_eq!(kind_color(ClipKind::Image), success());
@@ -743,6 +776,7 @@ mod tests {
 
     #[test]
     fn frames_use_theme_radii() {
+        let _guard = TEST_LOCK.lock().unwrap();
         set_light(false);
         let picker = picker_frame();
         assert_eq!(picker.corner_radius.nw, RADIUS_WINDOW);

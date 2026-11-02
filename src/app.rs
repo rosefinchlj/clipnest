@@ -82,7 +82,11 @@ impl ClipNestApp {
         let settings = crate::config::load_settings();
         crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
         crate::ui::theme::set_glass_enabled(true);
-        crate::ui::theme::set_glass_opacity(settings.glass_opacity);
+        // 调试/截图用：临时覆盖磨砂透明度，不写回 settings.json。
+        let dev_glass = std::env::var("CLIPNEST_DEV_GLASS")
+            .ok()
+            .and_then(|value| value.parse::<u8>().ok());
+        crate::ui::theme::set_glass_opacity(dev_glass.unwrap_or(settings.glass_opacity));
         crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
         // 排查内存占用时可跳过字体/背景材质（仅调试用）。
         if std::env::var_os("CLIPNEST_SKIP_FONTS").is_none() {

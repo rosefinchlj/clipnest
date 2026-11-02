@@ -127,7 +127,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Align2::RIGHT_TOP,
         fmt_relative_time(row.item.last_used_at),
         theme::font_aux(),
-        theme::text_weak(),
+        theme::text_secondary(),
     );
     let star_center = Pos2::new(rect.right() - 20.0, rect.bottom() - 19.0);
     let star_rect = Rect::from_center_size(star_center, Vec2::splat(18.0));

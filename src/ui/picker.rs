@@ -20,6 +20,13 @@ pub(crate) fn show(
 ) {
     let full = ui.max_rect();
     let hint_top = full.bottom() - theme::HINT_BAR_HEIGHT;
+    // 内容区底：在磨砂玻璃之上再压一层有最低不透明度的底，
+    // 避免用户把透明度调低后、内容直接叠在白色桌面上导致文字看不清。
+    ui.painter().rect_filled(
+        full,
+        egui::CornerRadius::same(theme::RADIUS_CARD),
+        theme::content_bg(),
+    );
     // 顶部 16px 拖拽条：任意位置按住即可拖动面板（搜索框仍用于输入）。
     const DRAG_STRIP: f32 = 16.0;
     let drag_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), DRAG_STRIP));
@@ -324,9 +331,9 @@ fn empty_state(
         icon_center,
         44.0,
         if searching {
-            theme::text_weak()
+            theme::text_secondary()
         } else {
-            theme::text_weak().gamma_multiply(0.9)
+            theme::text_secondary().gamma_multiply(0.9)
         },
     );
     painter.text(
@@ -338,11 +345,7 @@ fn empty_state(
             "还没有记录，复制点什么试试"
         },
         theme::font_body(),
-        if searching {
-            theme::text_secondary()
-        } else {
-            theme::text_weak()
-        },
+        theme::text_secondary(),
     );
     if searching {
         let btn_rect = Rect::from_center_size(
@@ -361,7 +364,7 @@ fn empty_state(
             Align2::CENTER_TOP,
             "正在加载…",
             theme::font_aux(),
-            theme::text_weak(),
+            theme::text_secondary(),
         );
     }
     let _ = actions;

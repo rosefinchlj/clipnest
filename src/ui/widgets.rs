@@ -341,7 +341,7 @@ pub fn search_box(
             .hint_text(
                 egui::RichText::new(placeholder)
                     .size(theme::SIZE_BODY)
-                    .color(theme::text_weak()),
+                    .color(theme::text_secondary()),
             )
             .font(theme::font_body())
             .text_color(theme::text())
