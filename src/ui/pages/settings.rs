@@ -42,7 +42,7 @@ pub(crate) fn show(
                 ui.add_space(16.0);
                 hotkey_section(state, ui, actions);
                 ui.add_space(16.0);
-                capacity_section(state, ui);
+                capacity_section(state, ui, actions);
                 ui.add_space(16.0);
                 behavior_section(state, ui, actions);
                 ui.add_space(16.0);
@@ -94,13 +94,23 @@ fn appearance_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<
             "终端式 Acrylic 磨砂：越低越透；深色 tint 有下限，白底/亮色窗口上文字仍可读。只作用于候选窗。",
             |ui| {
                 let mut opacity = state.settings_draft.glass_opacity as u32;
-                let slider = egui::Slider::new(&mut opacity, 35..=100)
-                    .suffix(" %")
-                    .fixed_decimals(0);
-                if ui.add(slider).changed() {
-                    state.settings_draft.glass_opacity = opacity as u8;
-                    actions.push(UiAction::PreviewGlassOpacity(opacity as u8));
-                }
+                ui.scope(|ui| {
+                    // 默认控件底色与卡片同色，滑轨会“消失”；这里单独给滑轨一点可见度。
+                    let visuals = ui.visuals_mut();
+                    visuals.widgets.inactive.bg_fill = theme::border();
+                    visuals.widgets.inactive.weak_bg_fill = theme::border();
+                    visuals.widgets.hovered.bg_fill = theme::accent();
+                    visuals.widgets.active.bg_fill = theme::accent();
+                    visuals.selection.bg_fill = theme::accent();
+                    visuals.slider_trailing_fill = true;
+                    let slider = egui::Slider::new(&mut opacity, 35..=100)
+                        .suffix(" %")
+                        .fixed_decimals(0);
+                    if ui.add(slider).changed() {
+                        state.settings_draft.glass_opacity = opacity as u8;
+                        actions.push(UiAction::PreviewGlassOpacity(opacity as u8));
+                    }
+                });
             },
         );
     });
@@ -281,7 +291,7 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
 // 容量与清理
 // ---------------------------------------------------------------------------
 
-fn capacity_section(state: &mut UiState, ui: &mut egui::Ui) {
+fn capacity_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
     section(ui, "容量与清理", |ui| {
         // 条数上限
         let mut max_items = state.settings_draft.max_items as u64;
@@ -358,6 +368,18 @@ fn capacity_section(state: &mut UiState, ui: &mut egui::Ui) {
             fmt_size(state.stats.favorite_file_bytes),
             fmt_size(state.stats.db_bytes)
         )));
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.label(theme::weak(
+                "立即按已保存的上限清理一次；收藏内容与收藏文件实体不会被删除。",
+            ));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::button(ui, "立即清理", widgets::ButtonKind::Secondary).clicked() {
+                    actions.push(UiAction::RefreshStats);
+                    state.toast("正在清理并刷新占用…");
+                }
+            });
+        });
     });
 }
 

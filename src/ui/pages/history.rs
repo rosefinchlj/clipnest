@@ -94,8 +94,10 @@ pub(crate) fn page(
     let btn_h = 30.0;
     let btn_y = toolbar_rect.center().y - btn_h / 2.0;
     let export_w = 74.0;
-    let export_rect =
-        Rect::from_min_size(Pos2::new(toolbar_rect.right() - export_w, btn_y), Vec2::new(export_w, btn_h));
+    let export_rect = Rect::from_min_size(
+        Pos2::new(toolbar_rect.right() - export_w, btn_y),
+        Vec2::new(export_w, btn_h),
+    );
     if widgets::button_at(ui, export_rect, "导出", widgets::ButtonKind::Secondary).clicked() {
         actions.push(UiAction::ExportJson);
     }
@@ -138,7 +140,10 @@ pub(crate) fn page(
         );
         let del_w = 88.0;
         let del_rect = Rect::from_min_size(
-            Pos2::new(batch_rect.right() - del_w - 10.0, batch_rect.center().y - 14.0),
+            Pos2::new(
+                batch_rect.right() - del_w - 10.0,
+                batch_rect.center().y - 14.0,
+            ),
             Vec2::new(del_w, 28.0),
         );
         if widgets::button_at(ui, del_rect, "批量删除", widgets::ButtonKind::Danger).clicked() {
@@ -186,10 +191,7 @@ pub(crate) fn page(
             ),
         )
     } else {
-        (
-            body_rect,
-            Rect::from_min_size(Pos2::ZERO, Vec2::ZERO),
-        )
+        (body_rect, Rect::from_min_size(Pos2::ZERO, Vec2::ZERO))
     };
 
     table(state, ui, table_rect, actions);
@@ -246,11 +248,7 @@ impl Columns {
 /// 表格：card 背景 + 表头 + 虚拟化行（44px）+ 多选/右键。
 fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiAction>) {
     let painter = ui.painter().clone();
-    painter.rect_filled(
-        rect,
-        CornerRadius::same(theme::RADIUS_CARD),
-        theme::card(),
-    );
+    painter.rect_filled(rect, CornerRadius::same(theme::RADIUS_CARD), theme::card());
     painter.rect_stroke(
         rect,
         CornerRadius::same(theme::RADIUS_CARD),
@@ -259,8 +257,10 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
     );
 
     let header_h = 30.0;
-    let header_rect =
-        Rect::from_min_size(Pos2::new(rect.left() + 1.0, rect.top() + 1.0), Vec2::new(rect.width() - 2.0, header_h));
+    let header_rect = Rect::from_min_size(
+        Pos2::new(rect.left() + 1.0, rect.top() + 1.0),
+        Vec2::new(rect.width() - 2.0, header_h),
+    );
     let cols = Columns::new(header_rect);
     // 全选复选框
     let all_selected = !state.items.is_empty()
@@ -273,8 +273,13 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
         Pos2::new(cols.check_x + 7.0, header_rect.center().y),
         Vec2::splat(16.0),
     );
-    if widgets::checkbox(ui, &mut header_all).rect != check_rect {
-        // 上面只是借用 checkbox 的交互语义；实际位置由下面重画（保持列对齐）
+    let check_resp = widgets::checkbox_at(ui, check_rect, "table_all_check", &mut header_all);
+    if check_resp.changed() {
+        if header_all {
+            state.multi_selected = state.items.iter().map(|i| i.id).collect();
+        } else {
+            state.multi_selected.clear();
+        }
     }
     // 表头文字
     let head_font = theme::font_aux();
@@ -293,19 +298,6 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
             head_font.clone(),
             head_color,
         );
-    }
-    // 全选交互（用整格热区，视觉与行内复选框一致）
-    let check_zone = Rect::from_min_size(
-        Pos2::new(cols.check_x - 2.0, header_rect.top()),
-        Vec2::new(22.0, header_h),
-    );
-    let check_zone_resp = ui.interact(check_zone, ui.id().with("table_all"), Sense::click());
-    if check_zone_resp.clicked() {
-        if all_selected {
-            state.multi_selected.clear();
-        } else {
-            state.multi_selected = state.items.iter().map(|i| i.id).collect();
-        }
     }
     // 表头分隔线
     painter.line_segment(
@@ -326,8 +318,16 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
         } else {
             "还没有记录，复制点什么试试"
         };
-        let center = Pos2::new(rect.center().x, header_rect.bottom() + (rect.bottom() - header_rect.bottom()) * 0.4);
-        paint::paint_clipboard_big(&painter, center - Vec2::new(0.0, 20.0), 36.0, theme::text_weak());
+        let center = Pos2::new(
+            rect.center().x,
+            header_rect.bottom() + (rect.bottom() - header_rect.bottom()) * 0.4,
+        );
+        paint::paint_clipboard_big(
+            &painter,
+            center - Vec2::new(0.0, 20.0),
+            36.0,
+            theme::text_weak(),
+        );
         painter.text(
             center + Vec2::new(0.0, 22.0),
             Align2::CENTER_TOP,
@@ -357,8 +357,10 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
                     };
                     let selected_single = state.selected == Some(i);
                     let in_multi = state.multi_selected.contains(&item.id);
-                    let (row_rect, resp) =
-                        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
+                    let (row_rect, resp) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), row_h),
+                        Sense::click(),
+                    );
                     let hovered = resp.hovered();
                     if selected_single || in_multi {
                         ui.painter().rect_filled(
@@ -371,24 +373,14 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
                                 Pos2::new(row_rect.left(), row_rect.top() + 8.0),
                                 Pos2::new(row_rect.left() + 2.0, row_rect.bottom() - 8.0),
                             );
-                            ui.painter().rect_filled(bar, CornerRadius::same(1), theme::accent());
+                            ui.painter()
+                                .rect_filled(bar, CornerRadius::same(1), theme::accent());
                         }
                     } else if hovered {
-                        ui.painter().rect_filled(
-                            row_rect,
-                            CornerRadius::ZERO,
-                            theme::hover_fill(),
-                        );
+                        ui.painter()
+                            .rect_filled(row_rect, CornerRadius::ZERO, theme::hover_fill());
                     }
-                    paint_table_row(
-                        state,
-                        ui,
-                        row_rect,
-                        &item,
-                        &cols,
-                        in_multi,
-                        actions,
-                    );
+                    paint_table_row(state, ui, row_rect, &item, &cols, in_multi, actions);
                     // 单击：选中 / Ctrl 多选 / Shift 范围选择
                     if resp.clicked() {
                         let ctrl = ui.ctx().input(|i| i.modifiers.ctrl);
@@ -399,7 +391,11 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
                             }
                         } else if shift {
                             if let Some(anchor) = state.last_click_index {
-                                let (a, b) = if anchor <= i { (anchor, i) } else { (i, anchor) };
+                                let (a, b) = if anchor <= i {
+                                    (anchor, i)
+                                } else {
+                                    (i, anchor)
+                                };
                                 for idx in a..=b {
                                     if let Some(it) = state.items.get(idx) {
                                         state.multi_selected.insert(it.id);
@@ -421,8 +417,15 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
                     // 右键菜单
                     resp.context_menu(|ui| {
                         ui.set_width(190.0);
-                        if widgets::menu_item(ui, if item.pinned { "取消收藏" } else { "收藏" })
-                            .clicked()
+                        if widgets::menu_item(
+                            ui,
+                            if item.pinned {
+                                "取消收藏"
+                            } else {
+                                "收藏"
+                            },
+                        )
+                        .clicked()
                         {
                             let pinned = !item.pinned;
                             actions.push(UiAction::Pin {
@@ -461,10 +464,7 @@ fn paint_table_row(
 
     // 行内复选框
     let mut checked = in_multi;
-    let check_rect = Rect::from_center_size(
-        Pos2::new(cols.check_x + 7.0, y),
-        Vec2::splat(16.0),
-    );
+    let check_rect = Rect::from_center_size(Pos2::new(cols.check_x + 7.0, y), Vec2::splat(16.0));
     let check_resp = {
         let mut child = ui.new_child(UiBuilder::new().max_rect(check_rect));
         widgets::checkbox(&mut child, &mut checked)
@@ -528,7 +528,11 @@ fn paint_table_row(
     // 收藏星标（可点击）
     let star_center = Pos2::new(cols.star_x + 8.0, y);
     let star_rect = Rect::from_center_size(star_center, Vec2::splat(20.0));
-    let star_resp = ui.interact(star_rect, ui.id().with(("table_star", item.id)), Sense::click());
+    let star_resp = ui.interact(
+        star_rect,
+        ui.id().with(("table_star", item.id)),
+        Sense::click(),
+    );
     if item.pinned || star_resp.hovered() {
         paint::paint_star(
             &painter,
@@ -630,7 +634,11 @@ fn detail_panel(
         ("粘贴", widgets::ButtonKind::Primary, 0u8),
         ("仅复制", widgets::ButtonKind::Secondary, 1),
         (
-            if item.pinned { "取消收藏" } else { "收藏" },
+            if item.pinned {
+                "取消收藏"
+            } else {
+                "收藏"
+            },
             widgets::ButtonKind::Secondary,
             2,
         ),
@@ -659,7 +667,11 @@ fn detail_panel(
                     if pinned && item.kind == ClipKind::Files {
                         actions.push(UiAction::SaveFavoriteFiles(item.id));
                     }
-                    state.toast(if pinned { "已收藏" } else { "已取消收藏" });
+                    state.toast(if pinned {
+                        "已收藏"
+                    } else {
+                        "已取消收藏"
+                    });
                 }
                 _ => state.request_delete_ids(vec![item.id], actions),
             }
@@ -668,10 +680,7 @@ fn detail_panel(
     }
 
     // 内容区
-    let content_rect = Rect::from_min_max(
-        Pos2::new(inner.left(), btn_y + btn_h + 12.0),
-        inner.max,
-    );
+    let content_rect = Rect::from_min_max(Pos2::new(inner.left(), btn_y + btn_h + 12.0), inner.max);
     ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
         egui::ScrollArea::vertical()
             .id_salt("detail_scroll")
@@ -701,10 +710,8 @@ fn detail_panel(
                                 .corner_radius(CornerRadius::same(theme::RADIUS_THUMB)),
                         );
                     } else {
-                        let (rect, _) = ui.allocate_exact_size(
-                            Vec2::new(max_w, 160.0),
-                            Sense::hover(),
-                        );
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::new(max_w, 160.0), Sense::hover());
                         paint::paint_thumb_placeholder(ui.painter(), rect);
                     }
                     ui.add_space(8.0);

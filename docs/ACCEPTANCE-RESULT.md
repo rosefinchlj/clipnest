@@ -369,3 +369,22 @@
 ### 校验
 - `cargo test --release` **144 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
 - 截图：`target/settings_sticky.png`（顶部）与 `target/settings_scrolled.png`（滚动到底部后保存栏仍固定）；已更新 `docs/screenshots/manager-settings.png` / `manager-settings-scrolled.png`。
+
+
+---
+
+## 17. v1.8.2（2026-11-02，管理台三处小修）
+
+### 用户反馈
+- 管理台左侧「收藏/设置」旁边的空白处有一个小方框，选中「设置」时又看不到。
+- 「容量与清理」只有上限和占用，没有可以主动点的清理按钮。
+- 「磨砂透明度」看不到滑轨，但拖动数值会变化。
+
+### 根因与修复
+- **幽灵方框**：`src/ui/pages/history.rs::table` 里调用 `widgets::checkbox(ui, &mut header_all)` 只是为了拿交互语义，真正的表头复选框另用 painter 画在列位置；旧调用会按当前布局游标分配一个 16px 控件，落到页面左侧（窗口坐标约 x=4..17, y=139..153）。设置页没有表格，所以不出现；选中设置时被高亮行盖住。新增 `widgets::checkbox_at(ui, rect, id, checked)`，在指定矩形内绘制并交互、**不推进布局游标**；表头直接使用它并处理全选，删除旧的 check_zone 交互。新增 `checkbox_at_does_not_advance_layout_cursor` 回归测试。
+- **清理按钮**：`capacity_section` 原本只有上限与占用。新增「立即清理」按钮，点击后 push `UiAction::RefreshStats`（Store 的 RefreshStats 分支会执行 `retention::prune`），并提示“正在清理并刷新占用…”。文案说明按**已保存**的上限执行，收藏内容与收藏文件实体不会被删除。
+- **滑轨不可见**：egui 0.32 的 `Slider` 用 `visuals.widgets.inactive.bg_fill` 画滑轨，主题里该值等于 `card()`，和设置卡片同色。现在在滑块外包 `ui.scope`，把 `inactive.bg_fill` 改为 `theme::border()`，hovered/active 与 `selection.bg_fill` 用强调色，并开启 `slider_trailing_fill`，滑轨和已选段都可见。
+
+### 校验
+- `cargo test --release` **145 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
+- 截图：`target/mgr_fixed_fav.png` / `target/mgr_fixed_history.png`（方框消失）、`target/settings_fixed.png`（滑轨可见）、`target/settings_fixed_cleanup.png`（立即清理按钮）。

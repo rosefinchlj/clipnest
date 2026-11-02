@@ -121,11 +121,7 @@ pub fn menu_item(ui: &mut egui::Ui, text: &str) -> Response {
     let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
     let painter = ui.painter();
     if resp.hovered() {
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(6),
-            theme::hover_fill(),
-        );
+        painter.rect_filled(rect, CornerRadius::same(6), theme::hover_fill());
     }
     painter.text(
         Pos2::new(rect.left() + 10.0, rect.center().y),
@@ -154,23 +150,49 @@ pub fn menu_item(ui: &mut egui::Ui, text: &str) -> Response {
 /// 16×16 自绘复选框。
 pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool) -> Response {
     let (rect, mut resp) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+    paint_checkbox(ui.painter(), rect, *checked);
+    if resp.clicked() {
+        *checked = !*checked;
+        resp.mark_changed();
+    }
+    resp
+}
+
+/// 在指定矩形内放一个复选框（不推进布局游标）；用于表头列对齐。
+pub fn checkbox_at(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id_salt: impl std::hash::Hash,
+    checked: &mut bool,
+) -> Response {
+    let mut resp = ui.interact(rect, ui.id().with(id_salt), Sense::click());
+    paint_checkbox(ui.painter(), rect, *checked);
+    if resp.clicked() {
+        *checked = !*checked;
+        resp.mark_changed();
+    }
+    resp
+}
+
+fn paint_checkbox(painter: &egui::Painter, rect: Rect, checked: bool) {
     let radius = CornerRadius::same(4);
-    let painter = ui.painter();
-    if *checked {
+    if checked {
         painter.rect_filled(rect, radius, theme::accent());
         paint::paint_check(painter, rect, Color32::WHITE);
     }
     painter.rect_stroke(
         rect.shrink(0.5),
         radius,
-        Stroke::new(1.2_f32, if *checked { theme::accent() } else { theme::border() }),
+        Stroke::new(
+            1.2_f32,
+            if checked {
+                theme::accent()
+            } else {
+                theme::border()
+            },
+        ),
         StrokeKind::Inside,
     );
-    if resp.clicked() {
-        *checked = !*checked;
-        resp.mark_changed();
-    }
-    resp
 }
 
 /// 36×20 圆角开关。
@@ -182,13 +204,22 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool) -> Response {
     let painter = ui.painter();
     painter.rect_filled(rect, radius, track);
     if t < 0.99 {
-        painter.rect_stroke(rect, radius, Stroke::new(1.0_f32, theme::border()), StrokeKind::Inside);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0_f32, theme::border()),
+            StrokeKind::Inside,
+        );
     }
     let knob_x = rect.left() + 10.0 + (rect.width() - 20.0) * t;
     painter.circle_filled(
         Pos2::new(knob_x, rect.center().y),
         7.0,
-        if t > 0.5 { Color32::WHITE } else { theme::text_secondary() },
+        if t > 0.5 {
+            Color32::WHITE
+        } else {
+            theme::text_secondary()
+        },
     );
     if resp.clicked() {
         *on = !*on;
@@ -225,10 +256,8 @@ pub fn search_box(
     auto_focus: bool,
 ) -> SearchBoxOutput {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(width, theme::SEARCH_HEIGHT),
-        Sense::click(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, theme::SEARCH_HEIGHT), Sense::click());
     let text_id = response.id.with("text");
     let focused = ui.ctx().memory(|m| m.has_focus(text_id));
     // 120ms 聚焦过渡：描边/图标渐变到强调色，避免每次打开都硬闪。
@@ -374,19 +403,17 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
         for filter in ClipFilter::all() {
             let label = filter.label();
             let width = paint::text_width(ui, label, theme::font_aux()) + 26.0;
-            let (rect, resp) = ui.allocate_exact_size(
-                Vec2::new(width, theme::CHIP_HEIGHT),
-                Sense::click(),
-            );
+            let (rect, resp) =
+                ui.allocate_exact_size(Vec2::new(width, theme::CHIP_HEIGHT), Sense::click());
             let selected = *current == filter;
             let radius = CornerRadius::same(theme::RADIUS_CHIP);
             // 选中/悬停都做 120ms 过渡，避免胶囊背景瞬间跳变。
             let sel_t = ui
                 .ctx()
                 .animate_bool_with_time(resp.id.with("sel"), selected, 0.12);
-            let hov_t = ui
-                .ctx()
-                .animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.09);
+            let hov_t =
+                ui.ctx()
+                    .animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.09);
             let painter = ui.painter();
             let fill = if sel_t > 0.001 {
                 lerp_color(theme::hover_fill(), theme::accent(), sel_t)
@@ -400,10 +427,7 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
                 painter.rect_stroke(
                     rect,
                     radius,
-                    Stroke::new(
-                        1.0_f32,
-                        lerp_color(theme::border(), theme::accent(), sel_t),
-                    ),
+                    Stroke::new(1.0_f32, lerp_color(theme::border(), theme::accent(), sel_t)),
                     StrokeKind::Inside,
                 );
             }
@@ -438,10 +462,8 @@ pub struct HintBarOutput {
 /// 底部提示条（高 36）：左侧快捷键提示，右侧「共 N 条」+ 齿轮。
 pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput {
     let height = theme::HINT_BAR_HEIGHT;
-    let (rect, _resp) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), height),
-        Sense::hover(),
-    );
+    let (rect, _resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
     let painter = ui.painter().clone();
     // 底部提示条铺一层较实的底：候选窗半透明时，白底/浅底下文字也能看清。
     painter.rect_filled(
@@ -454,10 +476,7 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
         },
         theme::panel_bg(),
     );
-    painter.line_segment(
-        [rect.left_top(), rect.right_top()],
-        theme::divider(),
-    );
+    painter.line_segment([rect.left_top(), rect.right_top()], theme::divider());
 
     // 左：快捷键提示（暂停时追加状态）
     let mut x = rect.left() + 2.0;
@@ -518,10 +537,7 @@ pub fn paint_toast(ui: &egui::Ui, bottom_center: Pos2, text: &str, alpha: f32) {
     let size = galley.size() + Vec2::new(28.0, 18.0);
     // 轻微上浮：淡入时从下方 6px 处升起，淡出时回落；比只改透明度更有"落定"感。
     let lift = (1.0 - alpha).clamp(0.0, 1.0) * 6.0;
-    let rect = Rect::from_center_size(
-        bottom_center - Vec2::new(0.0, size.y / 2.0 + lift),
-        size,
-    );
+    let rect = Rect::from_center_size(bottom_center - Vec2::new(0.0, size.y / 2.0 + lift), size);
     let painter = ui.painter();
     let radius = CornerRadius::same(theme::RADIUS_CARD);
     // 阴影（多层模拟模糊）
@@ -779,6 +795,31 @@ mod tests {
         assert_eq!(lerp_color(a, b, 0.0), a);
         assert_eq!(lerp_color(a, b, 1.0), b);
         assert_eq!(lerp_color(a, b, 2.0), b); // 越界夹取
+    }
+
+    #[test]
+    fn checkbox_at_does_not_advance_layout_cursor() {
+        // 表头全选复选框必须画在指定列位置，不能借布局游标“顺带”画到页面原点。
+        let ctx = egui::Context::default();
+        let mut checked = false;
+        let mut before = Pos2::ZERO;
+        let mut after = Pos2::ZERO;
+        let mut response_rect = Rect::NOTHING;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(240.0);
+                before = ui.next_widget_position();
+                let rect = Rect::from_min_size(egui::pos2(40.0, 30.0), Vec2::splat(16.0));
+                let resp = checkbox_at(ui, rect, "test-checkbox-at", &mut checked);
+                response_rect = resp.rect;
+                after = ui.next_widget_position();
+            });
+        });
+        assert_eq!(
+            response_rect,
+            Rect::from_min_size(egui::pos2(40.0, 30.0), Vec2::splat(16.0))
+        );
+        assert_eq!(before, after, "checkbox_at 不应推进布局游标");
     }
 
     #[test]
