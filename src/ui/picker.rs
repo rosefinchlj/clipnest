@@ -206,6 +206,28 @@ fn handle_command(
     }
 }
 
+/// 键盘选中行时计算最小滚动偏移。
+///
+/// 只在选中行超出当前可视区时才滚动；行仍在视口内时保持原偏移，
+/// 避免每次上下移动都把列表重新居中（到列表底部时尤其容易产生跳动/闪烁）。
+pub(crate) fn scroll_offset_for_row(
+    current_offset: f32,
+    row: usize,
+    viewport_height: f32,
+    content_height: f32,
+) -> f32 {
+    let max_offset = (content_height - viewport_height).max(0.0);
+    let row_top = row as f32 * theme::ROW_HEIGHT;
+    let row_bottom = row_top + theme::ROW_HEIGHT;
+    if row_top < current_offset {
+        row_top.clamp(0.0, max_offset)
+    } else if row_bottom > current_offset + viewport_height {
+        (row_bottom - viewport_height).clamp(0.0, max_offset)
+    } else {
+        current_offset.clamp(0.0, max_offset)
+    }
+}
+
 /// 虚拟化列表：`ScrollArea::show_rows`，行高 64；到底部附近自动加载下一页。
 fn render_list(
     state: &mut UiState,
@@ -219,12 +241,15 @@ fn render_list(
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("picker_list")
             .auto_shrink([false, false]);
-        // 键盘导航后滚动到选中行（只应用一次，避免覆盖用户滚动）
+        // 键盘导航后只在必要时滚动（只应用一次，避免覆盖用户滚动）。
+        // 之前每次按键都居中选中行，在列表底部会把视口向上拽、造成闪烁。
         if let Some(row) = state.pending_scroll_row.take() {
-            let offset = (row as f32 * theme::ROW_HEIGHT
-                - list_rect.height() * 0.5
-                + theme::ROW_HEIGHT * 0.5)
-                .max(0.0);
+            let offset = scroll_offset_for_row(
+                state.picker_scroll_offset,
+                row,
+                list_rect.height(),
+                state.items.len() as f32 * theme::ROW_HEIGHT,
+            );
             scroll = scroll.vertical_scroll_offset(offset);
         }
         let out = scroll.show_rows(
@@ -264,6 +289,7 @@ fn render_list(
                 }
             },
         );
+        state.picker_scroll_offset = out.state.offset.y;
         // 滚动接近底部 → 加载更多（数据库分页）
         if !state.items.is_empty()
             && out.state.offset.y + list_rect.height() >= out.content_size.y - 240.0
@@ -416,6 +442,33 @@ mod tests {
         assert_eq!(s.selected, Some(2));
         handle(&mut s, PickerCommand::Home);
         assert_eq!(s.selected, Some(0));
+    }
+
+    #[test]
+    fn keyboard_scroll_is_minimal_and_stable_at_bottom() {
+        let row = theme::ROW_HEIGHT;
+        let viewport = row * 6.0;
+        let content = row * 30.0;
+        // 选中行在视口内：不改变滚动位置。
+        assert_eq!(scroll_offset_for_row(0.0, 1, viewport, content), 0.0);
+        // 超出底部才滚动，且只滚到刚好露出。
+        assert_eq!(
+            scroll_offset_for_row(0.0, 8, viewport, content),
+            row * 3.0
+        );
+        // 最后一条：滚到底部上限。
+        let bottom = content - viewport;
+        assert_eq!(
+            scroll_offset_for_row(0.0, 29, viewport, content),
+            bottom
+        );
+        // 从最后一条 Up 到上一条：仍在视口内，禁止重新居中（修复闪烁）。
+        assert_eq!(
+            scroll_offset_for_row(bottom, 28, viewport, content),
+            bottom
+        );
+        // 回绕到顶部时滚回顶部。
+        assert_eq!(scroll_offset_for_row(bottom, 0, viewport, content), 0.0);
     }
 
     #[test]

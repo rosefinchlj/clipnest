@@ -306,10 +306,29 @@
 ### 修复
 - 去掉内容区不透明底，恢复整窗磨砂透光；src/window.rs::apply_backdrop 的 Acrylic tint alpha 改为
   150 + (pct-35)*60/65（35% 时仍保留 150/255 深色 tint，100% 时 210/255），白底上文字可读且背景模糊仍可见。
-- 深色主题辅助文本提亮：	ext_secondary #8B98A9 → #A5B2C4、	ext_weak #5C6878 → #7F8C9E；行时间、搜索占位、空状态/加载文案提升为次级文字。
+- 深色主题辅助文本提亮：text_secondary #8B98A9 → #A5B2C4、text_weak #5C6878 → #7F8C9E；行时间、搜索占位、空状态/加载文案提升为次级文字。
 - 设置页磨砂说明改为「终端式 Acrylic 磨砂；深色 tint 有下限，白底/亮色窗口上文字仍可读」。
 - 主题测试用 TEST_LOCK: Mutex<()> 串行化全局状态，修复并行测试偶发失败。
 
 ### 校验
 - cargo test --release 142 passed / 0 failed（连续 5 次全绿）；cargo build --release 0 warnings；--selftest PASS。
 - 透明感与可读性为互斥目标，最终采用「Acrylic 深色 tint 下限」而非不透明内容底；需用户在真实桌面（白色/彩色背景）下目检确认。
+
+---
+
+## 14. v1.7.3（2026-11-02，候选窗键盘移动闪烁）
+
+### 用户反馈
+- 从最后一个列表项按 ↑ 移动到上一条时，候选窗会闪一下。
+
+### 根因
+- 键盘导航每次按键都把选中行重新居中滚动（`pending_scroll_row` + `vertical_scroll_offset`），在列表底部附近容易产生视口跳动。
+- 列表选中高亮使用 80ms `animate_bool_with_time`，移动时旧行淡出/新行淡入，会额外放大闪烁感。
+
+### 修复
+- `src/ui/picker.rs` 新增 `scroll_offset_for_row()`：选中行仍在视口内时保持原滚动偏移，只有超出视口才做最小滚动；`UiState` 保存上一帧 `picker_scroll_offset`。
+- `src/ui/row.rs` 选中态改为瞬时切换（不再对 selection 做淡入淡出），hover 动画保留。
+
+### 校验
+- `cargo test --release` **143 passed / 0 failed**；新增 `keyboard_scroll_is_minimal_and_stable_at_bottom` 覆盖「最后一条 → 上一条不滚动」与回绕到顶部。
+- `cargo build --release` 0 warnings；`--selftest` PASS。

@@ -36,7 +36,9 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Sense::click(),
     );
     let ctx = ui.ctx().clone();
-    let sel_t = ctx.animate_bool_with_time(response.id.with("sel"), row.selected, 0.08);
+    // 选中态必须瞬时切换：用 80ms 淡入淡出时，每次上下移动都会同时淡出旧行/淡入新行，
+    // 看起来像整块列表闪一下。hover 仍保留轻微动画。
+    let sel_t = if row.selected { 1.0 } else { 0.0 };
     let hover_t = ctx.animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.08);
 
     // 背景 / 左侧竖条

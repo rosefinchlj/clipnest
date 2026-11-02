@@ -181,6 +181,8 @@ pub struct UiState {
     selected: Option<usize>,
     /// 键盘导航后需要滚动到的行下标（下一次渲染列表时应用一次）。
     pending_scroll_row: Option<usize>,
+    /// 候选窗列表当前滚动偏移（上一帧 `ScrollArea` 输出，用于最小化滚动）。
+    picker_scroll_offset: f32,
     stats: Stats,
 
     // ---- 搜索 ----
@@ -230,6 +232,7 @@ impl UiState {
             append_requested_len: 0,
             selected: None,
             pending_scroll_row: None,
+            picker_scroll_offset: 0.0,
             stats: Stats::default(),
             search_text: String::new(),
             search_focus: true,
@@ -342,6 +345,7 @@ impl UiState {
         self.picker_filter = ClipFilter::All;
         self.selected = Some(0);
         self.pending_scroll_row = Some(0);
+        self.picker_scroll_offset = 0.0;
         self.search_focus = true;
         self.pending = None;
         self.append_gen = None;
