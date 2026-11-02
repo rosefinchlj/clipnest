@@ -277,3 +277,17 @@
 ### 校验
 
 - `cargo test` 142 passed / 0 failed；`cargo build --release` 0 warnings；`--selftest` PASS。
+
+
+---
+
+## 12. v1.7.0（2026-11-02，主界面不磨砂/循环选择/底部提示可读）
+
+- **管理台不磨砂**：新增 `theme::set_glass_enabled(bool)`；管理台子窗口调用 `set_glass_enabled(false)`，
+  窗口底/面板/卡片全部不透明，不再调用 `apply_backdrop`（无 Acrylic）；候选窗仍保持磨砂。
+  透明度设置只影响候选窗。
+- **列表循环**：`keys::move_selection` 单步 `↓` 在最后一条回绕到第一条，`↑` 在第一条回绕到末尾；
+  避免边界重复设置滚动位置造成的闪烁；更新了 `keys`/`picker` 单元测试。
+- **底部提示条可读性**：候选窗 hint bar 增加 panel 底色 + 圆角，文字从 `text_weak` 提升为 `text_secondary`；
+  浅色/白底/高透明下也能看清。
+- 校验：`cargo test` 142 passed；`cargo build` 0 warnings；截图确认 hint bar 底色与文字对比。

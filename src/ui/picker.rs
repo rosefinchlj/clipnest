@@ -413,7 +413,9 @@ mod tests {
         handle(&mut s, PickerCommand::Up);
         assert_eq!(s.selected, Some(0));
         handle(&mut s, PickerCommand::Up);
-        assert_eq!(s.selected, Some(0), "顶部不前绕");
+        assert_eq!(s.selected, Some(2), "顶部 Up 回绕到末尾");
+        handle(&mut s, PickerCommand::Down);
+        assert_eq!(s.selected, Some(0), "末尾 Down 回绕到第一条");
         handle(&mut s, PickerCommand::End);
         assert_eq!(s.selected, Some(2));
         handle(&mut s, PickerCommand::Home);

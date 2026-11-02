@@ -20,7 +20,7 @@ pub fn run(page: ManagerPage, target_hwnd: isize) -> eframe::Result<()> {
     let _ = crate::config::ensure_dirs();
     crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
     crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
-    crate::ui::theme::set_glass_opacity(settings.glass_opacity);
+    crate::ui::theme::set_glass_enabled(false);
     crate::logging::log(&format!(
         "管理台窗口进程启动（page={:?}，target={target_hwnd}）",
         page
@@ -75,7 +75,7 @@ impl ManagerApp {
     fn new(cc: &eframe::CreationContext<'_>, page: ManagerPage, target_hwnd: isize) -> Self {
         let settings = crate::config::load_settings();
         crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
-        crate::ui::theme::set_glass_opacity(settings.glass_opacity);
+        crate::ui::theme::set_glass_enabled(false);
         if std::env::var_os("CLIPNEST_SKIP_FONTS").is_none() {
             crate::ui::install_fonts(&cc.egui_ctx);
         }
@@ -125,16 +125,8 @@ impl ManagerApp {
             return;
         };
         self.hwnd = Some(hwnd);
-        match crate::window::apply_backdrop(
-            hwnd,
-            crate::ui::theme::is_light(),
-            crate::ui::theme::glass_opacity(),
-        ) {
-            Ok(kind) => {
-                crate::logging::log(&format!("管理台窗口背景材质: {kind}"));
-            }
-            Err(err) => crate::logging::warn(&format!("{err}；回退半透明深色")),
-        }
+        crate::logging::log("管理台窗口：使用不透明背景（不做 Acrylic 磨砂）");
+        crate::window::set_round_corners(hwnd);
         if let Some(pos) = crate::window::picker_position(
             self.settings.manager_size.into(),
             ctx.pixels_per_point(),
@@ -162,16 +154,9 @@ impl ManagerApp {
         if let Ok(mut shared) = self.settings_shared.lock() {
             *shared = next.clone();
         }
-        crate::ui::theme::set_glass_opacity(next.glass_opacity);
+        crate::ui::theme::set_glass_enabled(false);
         crate::ui::theme::set_light(next.theme == ThemeMode::Light);
         crate::ui::install_theme(ctx);
-        if let Some(hwnd) = self.hwnd {
-            let _ = crate::window::apply_backdrop(
-                hwnd,
-                crate::ui::theme::is_light(),
-                crate::ui::theme::glass_opacity(),
-            );
-        }
         self.ui.set_settings(&next);
         self.persist_settings();
         self.notify_main_settings();
@@ -361,15 +346,8 @@ impl ManagerApp {
                     let _ = tx.send(StoreCmd::RefreshStats);
                 }
             }
-            UiAction::PreviewGlassOpacity(opacity) => {
-                crate::ui::theme::set_glass_opacity(opacity);
-                if let Some(hwnd) = self.hwnd {
-                    let _ = crate::window::apply_backdrop(
-                        hwnd,
-                        crate::ui::theme::is_light(),
-                        opacity,
-                    );
-                }
+            UiAction::PreviewGlassOpacity(_) => {
+                // 管理台不透明，透明度只影响主候选窗；保存后主进程会应用。
                 ctx.request_repaint();
             }
         }

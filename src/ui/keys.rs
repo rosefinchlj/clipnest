@@ -167,6 +167,13 @@ pub fn move_selection(current: Option<usize>, delta: i32, len: usize) -> Option<
     let Some(cur) = current else {
         return Some(if delta >= 0 { 0 } else { len - 1 });
     };
+    // 单步 ↑/↓ 循环：末尾再按 ↓ 回到第一条，开头按 ↑ 跳到末尾（避免边界闪烁/卡住）。
+    if delta == 1 && cur + 1 >= len {
+        return Some(0);
+    }
+    if delta == -1 && cur == 0 {
+        return Some(len - 1);
+    }
     let next = (cur as i64 + delta as i64).clamp(0, len as i64 - 1) as usize;
     Some(next)
 }
@@ -432,8 +439,8 @@ mod tests {
         assert_eq!(move_selection(None, 1, 0), None);
         assert_eq!(move_selection(None, 1, 5), Some(0));
         assert_eq!(move_selection(None, -1, 5), Some(4));
-        assert_eq!(move_selection(Some(0), -1, 5), Some(0));
-        assert_eq!(move_selection(Some(4), 1, 5), Some(4));
+        assert_eq!(move_selection(Some(0), -1, 5), Some(4));
+        assert_eq!(move_selection(Some(4), 1, 5), Some(0));
         assert_eq!(move_selection(Some(2), 2, 5), Some(4));
         assert_eq!(jump_selection(false, 5), Some(0));
         assert_eq!(jump_selection(true, 5), Some(4));

@@ -81,6 +81,7 @@ impl ClipNestApp {
     pub fn new(cc: &eframe::CreationContext<'_>, preview: Option<String>) -> Self {
         let settings = crate::config::load_settings();
         crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
+        crate::ui::theme::set_glass_enabled(true);
         crate::ui::theme::set_glass_opacity(settings.glass_opacity);
         crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
         // 排查内存占用时可跳过字体/背景材质（仅调试用）。

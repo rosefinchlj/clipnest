@@ -119,6 +119,7 @@ const LIGHT: Palette = Palette {
 
 static LIGHT_MODE: AtomicBool = AtomicBool::new(false);
 static GLASS_OPACITY: AtomicU8 = AtomicU8::new(75);
+static GLASS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// 切换深/浅色（由设置驱动）；切换后需要重新调用 [`install_theme`]。
 pub fn set_light(light: bool) {
@@ -136,6 +137,15 @@ pub fn set_glass_opacity(opacity: u8) {
 
 pub fn glass_opacity() -> u8 {
     GLASS_OPACITY.load(Ordering::Relaxed)
+}
+
+/// 是否启用磨砂玻璃（Acrylic + 半透明层）。管理台窗口会关闭它，使用不透明背景。
+pub fn set_glass_enabled(enabled: bool) {
+    GLASS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn glass_enabled() -> bool {
+    GLASS_ENABLED.load(Ordering::Relaxed)
 }
 
 fn palette() -> Palette {
@@ -171,6 +181,9 @@ pub fn pinned() -> Color32 {
     palette().pinned
 }
 fn card_alpha() -> u8 {
+    if !glass_enabled() {
+        return 255;
+    }
     // 卡片也随透明度轻微变化，但保留足够底以保障文字对比度。
     let pct = glass_opacity() as i32;
     (150 + (pct - 35) * 105 / 65).clamp(150, 255) as u8
@@ -206,12 +219,18 @@ fn scale_alpha(color: Color32, alpha: u8) -> Color32 {
 }
 
 pub fn window_bg() -> Color32 {
+    if !glass_enabled() {
+        return palette().window_base;
+    }
     let pct = glass_opacity() as u16;
     let alpha = ((pct * 255) / 100).clamp(40, 255) as u8;
     scale_alpha(palette().window_base, alpha)
 }
 
 pub fn panel_bg() -> Color32 {
+    if !glass_enabled() {
+        return palette().panel_base;
+    }
     let pct = glass_opacity() as u16;
     let alpha = ((pct * 255) / 100 + 20).clamp(60, 255) as u8;
     scale_alpha(palette().panel_base, alpha)

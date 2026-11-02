@@ -71,7 +71,7 @@ fn appearance_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<
         setting_row(
             ui,
             "磨砂透明度",
-            "越低越透明（类似终端透出背景）；需要 Windows 透明效果开启。",
+            "越低越透明（类似终端透出背景）；只作用于候选窗，管理台使用不透明背景。",
             |ui| {
                 let mut opacity = state.settings_draft.glass_opacity as u32;
                 let slider = egui::Slider::new(&mut opacity, 35..=100)

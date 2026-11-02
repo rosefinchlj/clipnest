@@ -444,6 +444,17 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
         Sense::hover(),
     );
     let painter = ui.painter().clone();
+    // 底部提示条铺一层较实的底：候选窗半透明时，白底/浅底下文字也能看清。
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: theme::RADIUS_ROW,
+            se: theme::RADIUS_ROW,
+        },
+        theme::panel_bg(),
+    );
     painter.line_segment(
         [rect.left_top(), rect.right_top()],
         theme::divider(),
@@ -456,7 +467,7 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
         Pos2::new(x, rect.center().y - theme::SIZE_AUX * 0.5),
         keys::PICKER_HINT,
         theme::font_aux(),
-        theme::text_weak(),
+        theme::text_secondary(),
         rect.width() * 0.62,
     );
     if paused {
