@@ -262,6 +262,7 @@ impl PreviewState {
     fn handle_actions(&mut self, actions: Vec<UiAction>) {
         for action in actions {
             match action {
+                UiAction::PreviewGlassOpacity(_) => {}
                 UiAction::Search {
                     text,
                     filter,

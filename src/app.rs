@@ -82,6 +82,7 @@ impl ClipNestApp {
     pub fn new(cc: &eframe::CreationContext<'_>, preview: Option<String>) -> Self {
         let settings = crate::config::load_settings();
         crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
+        crate::ui::theme::set_glass_opacity(settings.glass_opacity);
         crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
         // 排查内存占用时可跳过字体/背景材质（仅调试用）。
         if std::env::var_os("CLIPNEST_SKIP_FONTS").is_none() {
@@ -193,7 +194,7 @@ impl ClipNestApp {
         };
         self.hwnd = Some(hwnd);
         if std::env::var_os("CLIPNEST_SKIP_MICA").is_none() {
-            match crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light()) {
+            match crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light(), crate::ui::theme::glass_opacity()) {
                 Ok(kind) => {
                     crate::logging::log(&format!("窗口背景材质生效: {kind}"));
                     self.backdrop = Some(kind);
@@ -498,6 +499,17 @@ impl ClipNestApp {
                     let _ = tx.send(StoreCmd::GetPastePayload(id));
                 }
             }
+            UiAction::PreviewGlassOpacity(opacity) => {
+                crate::ui::theme::set_glass_opacity(opacity);
+                if let Some(hwnd) = self.hwnd {
+                    let _ = crate::window::apply_backdrop(
+                        hwnd,
+                        crate::ui::theme::is_light(),
+                        opacity,
+                    );
+                }
+                ctx.request_repaint();
+            }
             UiAction::RequestPastePayload(_) => {
                 // UI 的 Paste 动作已携带载荷请求（GetPastePayload），这里不再重复请求，
                 // 否则 Store 每次取载荷都会 bump_used，导致一次粘贴 use_count +2。
@@ -593,6 +605,8 @@ impl ClipNestApp {
     fn apply_settings(&mut self, ctx: &egui::Context, next: Settings) {
         let mut next = next;
         let theme_changed = next.theme != self.settings.theme;
+        let glass_changed = next.glass_opacity != self.settings.glass_opacity;
+        let pause_changed = next.pause_capture != self.settings.pause_capture;
         // Sys 托盘可绕过 UI 直接修改 pause_capture/autostart（立即生效）；
         // 若发现 shared 与本侧不一致，说明是 Sys 改的，保存时以 Sys 的运行时值为准，避免回滚。
         if let Ok(shared) = self.settings_shared.lock() {
@@ -611,14 +625,21 @@ impl ClipNestApp {
             let _ = tx.send(SysCmd::SetHotkeys {
                 picker: next.hotkey_picker,
             });
-            let _ = tx.send(SysCmd::SetPause(next.pause_capture));
+            if pause_changed {
+                let _ = tx.send(SysCmd::SetPause(next.pause_capture));
+            }
         }
         self.ui.set_settings(&next);
-        if theme_changed {
+        crate::ui::theme::set_glass_opacity(next.glass_opacity);
+        if theme_changed || glass_changed {
             crate::ui::theme::set_light(next.theme == ThemeMode::Light);
             crate::ui::install_theme(ctx);
             if let Some(hwnd) = self.hwnd {
-                let _ = crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light());
+                let _ = crate::window::apply_backdrop(
+                    hwnd,
+                    crate::ui::theme::is_light(),
+                    crate::ui::theme::glass_opacity(),
+                );
             }
             ctx.request_repaint();
         }
@@ -718,23 +739,32 @@ impl ClipNestApp {
             return;
         }
         let theme_changed = next.theme != previous.theme;
+        let glass_changed = next.glass_opacity != previous.glass_opacity;
+        let pause_changed = next.pause_capture != previous.pause_capture;
         crate::logging::log("检测到 settings.json 变化，正在应用新设置");
         self.settings = next.clone();
         if let Ok(mut shared) = self.settings_shared.lock() {
             *shared = next.clone();
         }
-        if theme_changed {
+        crate::ui::theme::set_glass_opacity(next.glass_opacity);
+        if theme_changed || glass_changed {
             crate::ui::theme::set_light(next.theme == ThemeMode::Light);
             crate::ui::install_theme(ctx);
             if let Some(hwnd) = self.hwnd {
-                let _ = crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light());
+                let _ = crate::window::apply_backdrop(
+                    hwnd,
+                    crate::ui::theme::is_light(),
+                    crate::ui::theme::glass_opacity(),
+                );
             }
         }
         if let Some(tx) = &self.sys_tx {
             let _ = tx.send(SysCmd::SetHotkeys {
                 picker: next.hotkey_picker,
             });
-            let _ = tx.send(SysCmd::SetPause(next.pause_capture));
+            if pause_changed {
+                let _ = tx.send(SysCmd::SetPause(next.pause_capture));
+            }
         }
         self.ui.set_settings(&next);
         ctx.request_repaint();
@@ -785,6 +815,17 @@ impl ClipNestApp {
 
     #[cfg(debug_assertions)]
     fn dev_hotkeys(&mut self, ctx: &egui::Context) {
+        // F5：循环切换磨砂透明度（调试用；正式构建不包含）。
+        if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
+            let mut next = self.settings.clone();
+            next.glass_opacity = match next.glass_opacity {
+                75..=100 => 55,
+                45..=74 => 35,
+                _ => 75,
+            };
+            self.apply_settings(ctx, next);
+            crate::logging::log("dev: cycle glass opacity");
+        }
         // F6：深/浅色皮肤切换（调试用，验证主题热切换与落盘；正式构建不包含）。
         if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
             let mut next = self.settings.clone();

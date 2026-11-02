@@ -31,7 +31,7 @@ pub(crate) fn show(
                 ));
                 ui.add_space(18.0);
 
-                appearance_section(state, ui);
+                appearance_section(state, ui, actions);
                 ui.add_space(16.0);
                 hotkey_section(state, ui, actions);
                 ui.add_space(16.0);
@@ -51,7 +51,7 @@ pub(crate) fn show(
 
 
 /// 外观：深色 / 浅色皮肤（保存设置后即时切换）。
-fn appearance_section(state: &mut UiState, ui: &mut egui::Ui) {
+fn appearance_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
     section(ui, "外观", |ui| {
         setting_row(
             ui,
@@ -65,6 +65,21 @@ fn appearance_section(state: &mut UiState, ui: &mut egui::Ui) {
                 });
                 if mode != state.settings_draft.theme {
                     state.settings_draft.theme = mode;
+                }
+            },
+        );
+        setting_row(
+            ui,
+            "磨砂透明度",
+            "越低越透明（类似终端透出背景）；需要 Windows 透明效果开启。",
+            |ui| {
+                let mut opacity = state.settings_draft.glass_opacity as u32;
+                let slider = egui::Slider::new(&mut opacity, 35..=100)
+                    .suffix(" %")
+                    .fixed_decimals(0);
+                if ui.add(slider).changed() {
+                    state.settings_draft.glass_opacity = opacity as u8;
+                    actions.push(UiAction::PreviewGlassOpacity(opacity as u8));
                 }
             },
         );

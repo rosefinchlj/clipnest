@@ -27,20 +27,27 @@ pub(crate) fn show(
     if drag_resp.drag_started() {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
-    if drag_resp.hovered() || drag_resp.dragged() {
+    let drag_hot = drag_resp.hovered() || drag_resp.dragged();
+    if drag_hot {
         ui.ctx().set_cursor_icon(if drag_resp.dragged() {
             egui::CursorIcon::Grabbing
         } else {
             egui::CursorIcon::Grab
         });
-        let handle = Pos2::new(drag_rect.center().x, drag_rect.center().y);
-        for offset in [-7.0_f32, 0.0, 7.0] {
-            ui.painter().circle_filled(
-                Pos2::new(handle.x + offset, handle.y),
-                1.6,
-                theme::text_weak(),
-            );
-        }
+    }
+    // 抓取点常驻显示（悬停时更亮），让"可拖动"一眼可见。
+    let handle = Pos2::new(drag_rect.center().x, drag_rect.center().y);
+    let dot_color = if drag_hot {
+        theme::text_secondary()
+    } else {
+        theme::text_weak()
+    };
+    for offset in [-7.0_f32, 0.0, 7.0] {
+        ui.painter().circle_filled(
+            Pos2::new(handle.x + offset, handle.y),
+            1.6,
+            dot_color,
+        );
     }
     let search_top = full.top() + DRAG_STRIP;
     let chips_top = search_top + theme::SEARCH_HEIGHT + theme::GAP_S;

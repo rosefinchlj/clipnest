@@ -274,7 +274,14 @@ impl SysState {
     fn handle_cmd(&mut self, cmd: SysCmd) {
         match cmd {
             SysCmd::SetPause(paused) => {
-                self.with_settings(|s| s.pause_capture = paused);
+                let changed = self.with_settings(|s| {
+                    let changed = s.pause_capture != paused;
+                    s.pause_capture = paused;
+                    changed
+                });
+                if !changed {
+                    return;
+                }
                 self.save_settings();
                 if let Some(tray) = &self.tray {
                     tray.set_paused(paused);

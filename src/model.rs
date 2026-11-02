@@ -477,6 +477,8 @@ impl PasteKey {
 pub struct Settings {
     /// 外观皮肤：深色 / 浅色。
     pub theme: ThemeMode,
+    /// 面板磨砂透明度（35–100，越低越透，类似终端）。
+    pub glass_opacity: u8,
     /// 备用全局快捷键（Win+V 被接管时仍保留）。
     pub hotkey_picker: HotkeyChord,
     pub pause_capture: bool,
@@ -507,6 +509,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeMode::Dark,
+            glass_opacity: 75,
             hotkey_picker: HotkeyChord::default(),
             pause_capture: false,
             ignore_apps: Vec::new(),

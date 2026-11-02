@@ -10,7 +10,7 @@
 //! 动效（§7.4）：行悬停/选中 80ms、窗口 120ms、模式切换 150ms；不做花哨动效。
 
 use crate::model::ClipKind;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
 };
@@ -118,6 +118,7 @@ const LIGHT: Palette = Palette {
 };
 
 static LIGHT_MODE: AtomicBool = AtomicBool::new(false);
+static GLASS_OPACITY: AtomicU8 = AtomicU8::new(75);
 
 /// 切换深/浅色（由设置驱动）；切换后需要重新调用 [`install_theme`]。
 pub fn set_light(light: bool) {
@@ -126,6 +127,15 @@ pub fn set_light(light: bool) {
 
 pub fn is_light() -> bool {
     LIGHT_MODE.load(Ordering::Relaxed)
+}
+
+/// 设置面板磨砂透明度（35–100；越低越透，类似终端）。切换后立即生效。
+pub fn set_glass_opacity(opacity: u8) {
+    GLASS_OPACITY.store(opacity.clamp(35, 100), Ordering::Relaxed);
+}
+
+pub fn glass_opacity() -> u8 {
+    GLASS_OPACITY.load(Ordering::Relaxed)
 }
 
 fn palette() -> Palette {
@@ -160,17 +170,23 @@ pub fn success() -> Color32 {
 pub fn pinned() -> Color32 {
     palette().pinned
 }
+fn card_alpha() -> u8 {
+    // 卡片也随透明度轻微变化，但保留足够底以保障文字对比度。
+    let pct = glass_opacity() as i32;
+    (150 + (pct - 35) * 105 / 65).clamp(150, 255) as u8
+}
+
 pub fn card() -> Color32 {
-    palette().card
+    scale_alpha(palette().card, card_alpha())
 }
 pub fn card_hover() -> Color32 {
-    palette().card_hover
+    scale_alpha(palette().card_hover, card_alpha())
 }
 pub fn card_active() -> Color32 {
-    palette().card_active
+    scale_alpha(palette().card_active, card_alpha())
 }
 pub fn input_focused() -> Color32 {
-    palette().input_focused
+    scale_alpha(palette().input_focused, (card_alpha() + 8).min(255))
 }
 pub fn border() -> Color32 {
     palette().border
@@ -185,12 +201,20 @@ pub fn table_stripe() -> Color32 {
     palette().table_stripe
 }
 
+fn scale_alpha(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
 pub fn window_bg() -> Color32 {
-    palette().window_bg
+    let pct = glass_opacity() as u16;
+    let alpha = ((pct * 255) / 100).clamp(40, 255) as u8;
+    scale_alpha(palette().window_base, alpha)
 }
 
 pub fn panel_bg() -> Color32 {
-    palette().panel_bg
+    let pct = glass_opacity() as u16;
+    let alpha = ((pct * 255) / 100 + 20).clamp(60, 255) as u8;
+    scale_alpha(palette().panel_base, alpha)
 }
 
 pub fn divider() -> Stroke {
@@ -601,7 +625,8 @@ mod tests {
         assert_eq!(danger(), Color32::from_rgb(0xFF, 0x6B, 0x6B));
         assert_eq!(success(), Color32::from_rgb(0x4A, 0xDE, 0x80));
         assert_eq!(pinned(), Color32::from_rgb(0xF5, 0xC4, 0x51));
-        assert_eq!(card(), Color32::from_rgb(0x1A, 0x21, 0x2B));
+        assert_eq!(card().to_opaque(), Color32::from_rgb(0x1A, 0x21, 0x2B));
+        assert!(card().a() >= 200, "默认透明度下卡片仍需保持可读");
         assert_eq!(border(), Color32::from_rgb(0x2A, 0x33, 0x40));
         assert_eq!(panel_base(), Color32::from_rgb(0x13, 0x18, 0x20));
         assert_eq!(window_base(), Color32::from_rgb(0x0E, 0x11, 0x16));
@@ -619,8 +644,14 @@ mod tests {
     #[test]
     fn alpha_layers_match_spec() {
         set_light(false);
-        assert_eq!(window_bg().a(), 190);
-        assert_eq!(panel_bg().a(), 215);
+        set_glass_opacity(75);
+        assert_eq!(window_bg().a(), 191);
+        assert_eq!(panel_bg().a(), 211);
+        // 透明度滑杆调低后，窗口/面板 alpha 应同步下降
+        set_glass_opacity(35);
+        assert!(window_bg().a() < 191);
+        assert!(panel_bg().a() < 211);
+        set_glass_opacity(75);
         assert_eq!(accent_fill().a(), 31);
         assert_eq!(hover_fill().a(), 15);
         assert_eq!(divider().width, 1.0);

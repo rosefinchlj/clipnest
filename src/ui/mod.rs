@@ -116,6 +116,8 @@ pub enum UiAction {
     RefreshStats,
     /// 切换管理台页面。
     SelectManagerPage(ManagerPage),
+    /// 实时预览磨砂透明度（只改运行时，不落盘；点保存才持久化）。
+    PreviewGlassOpacity(u8),
 }
 
 // ---------------------------------------------------------------------------
@@ -361,12 +363,41 @@ impl UiState {
     pub fn show(&mut self, ctx: &egui::Context, thumbs: &mut ThumbCache) -> Vec<UiAction> {
         let mut actions = Vec::new();
         self.begin_frame(ctx, &mut actions);
-        // 整个窗口（含 SidePanel/透明区域）统一铺半透明深色底：Acrylic 模糊才能均匀透出，
+        // 整个窗口（含 SidePanel/透明区域）统一铺半透明底：Acrylic 模糊才能均匀透出，
         // 否则 SidePanel 没填充的区域会直接露出桌面、显得像破洞。
-        ctx.layer_painter(egui::LayerId::background()).rect_filled(
-            ctx.screen_rect(),
+        let bg_painter = ctx.layer_painter(egui::LayerId::background());
+        let screen = ctx.screen_rect();
+        bg_painter.rect_filled(
+            screen,
             egui::CornerRadius::same(theme::RADIUS_WINDOW),
             theme::window_bg(),
+        );
+        // 顶部轻微高光 + 渐隐，给磨砂玻璃一点"厚度"。
+        let dark = !theme::is_light();
+        let sheen = if dark {
+            egui::Color32::from_white_alpha(12)
+        } else {
+            egui::Color32::from_black_alpha(7)
+        };
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(screen.left_top(), sheen);
+        mesh.colored_vertex(screen.right_top(), sheen);
+        mesh.colored_vertex(screen.right_bottom(), egui::Color32::TRANSPARENT);
+        mesh.colored_vertex(screen.left_bottom(), egui::Color32::TRANSPARENT);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        bg_painter.add(egui::Shape::mesh(mesh));
+        let edge = if dark {
+            egui::Color32::from_white_alpha(26)
+        } else {
+            egui::Color32::from_black_alpha(12)
+        };
+        bg_painter.line_segment(
+            [
+                egui::Pos2::new(screen.left() + 14.0, screen.top() + 0.5),
+                egui::Pos2::new(screen.right() - 14.0, screen.top() + 0.5),
+            ],
+            egui::Stroke::new(1.0_f32, edge),
         );
         match self.mode {
             WindowMode::Picker => {

@@ -31,15 +31,17 @@ impl HasWindowHandle for HwndHandle {
 
 /// 应用 Win11 背景材质：优先 Mica Alt（tabbed，无拖动卡顿），回退 Acrylic。
 /// 返回实际生效的材质名，便于日志/诊断。
-pub fn apply_backdrop(hwnd: isize, light: bool) -> Result<&'static str, String> {
+pub fn apply_backdrop(hwnd: isize, light: bool, opacity_pct: u8) -> Result<&'static str, String> {
     // 首选 Acrylic（SetWindowCompositionAttribute）：对 OpenGL/GL 交换链窗口也能真正透出模糊背景；
     // Win11 的 Mica（DWM system backdrop）要求应用自己绘制透明表面，egui/glow 下通常看不到效果，
     // 所以把 Mica 仅作为 Acrylic 失败时的兜底。
     set_dark_mode(hwnd, !light);
+    // 越透明 → Acrylic 叠色越淡，背后模糊越明显（接近终端观感）。
+    let tint_alpha = ((opacity_pct as u16 * 2).clamp(60, 210)) as u8;
     let tint = if light {
-        (246, 249, 255, 170)
+        (246, 249, 255, tint_alpha)
     } else {
-        (16, 20, 27, 150)
+        (16, 20, 27, tint_alpha)
     };
     match window_vibrancy::apply_acrylic(HwndHandle(hwnd), Some(tint)) {
         Ok(()) => {
@@ -117,12 +119,25 @@ pub fn picker_position(size: egui::Vec2, pixels_per_point: f32) -> Option<egui::
             return None;
         }
         let work = info.rcWork;
-        let work_w = (work.right - work.left).max(0);
-        let work_h = (work.bottom - work.top).max(0);
         let win_w = (size.x * ppp).round() as i32;
         let win_h = (size.y * ppp).round() as i32;
-        let x = work.left + ((work_w - win_w).max(0) / 2);
-        let y = work.top + ((work_h - win_h).max(0) / 2);
+        let margin = (10.0 * ppp).round() as i32;
+        let gap = (14.0 * ppp).round() as i32;
+
+        // 水平：以光标为中心，贴边时夹在工作区内。
+        let max_left = (work.right - win_w - margin).max(work.left + margin);
+        let x = (cursor.x - win_w / 2).clamp(work.left + margin, max_left);
+
+        // 垂直：优先出现在光标下方；下方放不下就"往上顶"（底部贴近光标上方）；
+        // 上方也放不下（光标很靠上）就贴住工作区顶部。
+        let mut y = cursor.y + gap;
+        if y + win_h > work.bottom - margin {
+            y = cursor.y - win_h - gap;
+        }
+        let min_top = work.top + margin;
+        let max_top = (work.bottom - win_h - margin).max(min_top);
+        let y = y.clamp(min_top, max_top);
+
         Some(egui::pos2(x as f32 / ppp, y as f32 / ppp))
     }
 }
