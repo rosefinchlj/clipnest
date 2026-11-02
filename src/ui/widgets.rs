@@ -15,7 +15,7 @@ use eframe::egui::{
 // ---------------------------------------------------------------------------
 
 /// 两个不透明色按 `t` 线性插值。
-fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+pub(crate) fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     Color32::from_rgba_premultiplied(
@@ -56,42 +56,42 @@ pub fn button_at(ui: &mut egui::Ui, rect: Rect, text: &str, kind: ButtonKind) ->
     let radius = CornerRadius::same(theme::RADIUS_INPUT);
     let hovered = resp.hovered();
     let pressed = resp.is_pointer_button_down_on();
+    // 90ms 悬停过渡：只有底色/文字轻微渐变，不做缩放，保持克制。
+    let hov_t = ui
+        .ctx()
+        .animate_bool_with_time(resp.id.with("hover"), hovered, 0.09);
     let (fill, stroke, fg) = match kind {
         ButtonKind::Primary => (
-            if hovered {
-                theme::accent_hover()
-            } else {
-                theme::accent()
-            },
+            lerp_color(theme::accent(), theme::accent_hover(), hov_t),
             Stroke::new(1.0_f32, theme::accent()),
             Color32::WHITE,
         ),
         ButtonKind::Secondary => (
-            theme::button_fill(hovered, pressed),
+            if pressed {
+                theme::button_fill(true, true)
+            } else {
+                lerp_color(
+                    theme::button_fill(false, false),
+                    theme::button_fill(true, false),
+                    hov_t,
+                )
+            },
             theme::divider(),
             theme::text(),
         ),
         ButtonKind::Danger => (
-            if hovered {
-                Color32::from_rgba_unmultiplied(0xFF, 0x6B, 0x6B, 30)
-            } else {
-                theme::card()
-            },
+            lerp_color(
+                theme::card(),
+                Color32::from_rgba_unmultiplied(0xFF, 0x6B, 0x6B, 30),
+                hov_t,
+            ),
             Stroke::new(1.0_f32, theme::danger()),
             theme::danger(),
         ),
         ButtonKind::Ghost => (
-            if hovered {
-                theme::hover_fill()
-            } else {
-                Color32::TRANSPARENT
-            },
+            theme::hover_fill().gamma_multiply(hov_t),
             Stroke::NONE,
-            if hovered {
-                theme::text()
-            } else {
-                theme::text_secondary()
-            },
+            lerp_color(theme::text_secondary(), theme::text(), hov_t),
         ),
     };
     let painter = ui.painter();
@@ -231,25 +231,24 @@ pub fn search_box(
     );
     let text_id = response.id.with("text");
     let focused = ui.ctx().memory(|m| m.has_focus(text_id));
+    // 120ms 聚焦过渡：描边/图标渐变到强调色，避免每次打开都硬闪。
+    let focus_t = ui
+        .ctx()
+        .animate_bool_with_time(response.id.with("focus"), focused, 0.12);
 
     // 背景/描边（聚焦强调色描边）
     ui.painter().rect_filled(
         rect,
         CornerRadius::same(theme::RADIUS_INPUT),
-        if focused {
-            theme::input_focused()
-        } else {
-            theme::card()
-        },
+        lerp_color(theme::card(), theme::input_focused(), focus_t),
     );
     ui.painter().rect_stroke(
         rect,
         CornerRadius::same(theme::RADIUS_INPUT),
-        if focused {
-            Stroke::new(1.0_f32, theme::accent())
-        } else {
-            theme::divider()
-        },
+        Stroke::new(
+            1.0_f32,
+            lerp_color(theme::divider().color, theme::accent(), focus_t),
+        ),
         StrokeKind::Inside,
     );
 
@@ -261,11 +260,7 @@ pub fn search_box(
     paint::paint_search(
         ui.painter(),
         icon_rect,
-        if focused {
-            theme::accent()
-        } else {
-            theme::text_weak()
-        },
+        lerp_color(theme::text_weak(), theme::accent(), focus_t),
     );
 
     // 右侧：清除按钮 / 快捷键提示（画成键帽样式，避免反引号等窄字形被误认为被裁切）
@@ -385,22 +380,30 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
             );
             let selected = *current == filter;
             let radius = CornerRadius::same(theme::RADIUS_CHIP);
+            // 选中/悬停都做 120ms 过渡，避免胶囊背景瞬间跳变。
+            let sel_t = ui
+                .ctx()
+                .animate_bool_with_time(resp.id.with("sel"), selected, 0.12);
+            let hov_t = ui
+                .ctx()
+                .animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.09);
             let painter = ui.painter();
-            if selected {
-                painter.rect_filled(rect, radius, theme::accent());
-            } else if resp.hovered() {
-                painter.rect_filled(rect, radius, theme::hover_fill());
-                painter.rect_stroke(
-                    rect,
-                    radius,
-                    Stroke::new(1.0_f32, theme::border()),
-                    StrokeKind::Inside,
-                );
+            let fill = if sel_t > 0.001 {
+                lerp_color(theme::hover_fill(), theme::accent(), sel_t)
             } else {
+                theme::hover_fill().gamma_multiply(hov_t)
+            };
+            if fill.a() > 0 {
+                painter.rect_filled(rect, radius, fill);
+            }
+            if sel_t < 0.999 {
                 painter.rect_stroke(
                     rect,
                     radius,
-                    Stroke::new(1.0_f32, theme::border()),
+                    Stroke::new(
+                        1.0_f32,
+                        lerp_color(theme::border(), theme::accent(), sel_t),
+                    ),
                     StrokeKind::Inside,
                 );
             }
@@ -409,11 +412,7 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
                 Align2::CENTER_CENTER,
                 label,
                 FontId::new(theme::SIZE_AUX + 0.5, egui::FontFamily::Proportional),
-                if selected {
-                    Color32::WHITE
-                } else {
-                    theme::text_secondary()
-                },
+                lerp_color(theme::text_secondary(), Color32::WHITE, sel_t),
             );
             if resp.clicked() && !selected {
                 *current = filter;
@@ -517,8 +516,10 @@ pub fn paint_toast(ui: &egui::Ui, bottom_center: Pos2, text: &str, alpha: f32) {
     }
     let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), theme::font_body(), theme::text()));
     let size = galley.size() + Vec2::new(28.0, 18.0);
+    // 轻微上浮：淡入时从下方 6px 处升起，淡出时回落；比只改透明度更有"落定"感。
+    let lift = (1.0 - alpha).clamp(0.0, 1.0) * 6.0;
     let rect = Rect::from_center_size(
-        bottom_center - Vec2::new(0.0, size.y / 2.0),
+        bottom_center - Vec2::new(0.0, size.y / 2.0 + lift),
         size,
     );
     let painter = ui.painter();

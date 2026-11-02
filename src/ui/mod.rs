@@ -183,6 +183,8 @@ pub struct UiState {
     pending_scroll_row: Option<usize>,
     /// 候选窗列表当前滚动偏移（上一帧 `ScrollArea` 输出，用于最小化滚动）。
     picker_scroll_offset: f32,
+    /// 候选窗本次出现的时间（用于 160ms 淡入；不改变窗口本身的位置）。
+    picker_appear_at: Option<Instant>,
     stats: Stats,
 
     // ---- 搜索 ----
@@ -233,6 +235,7 @@ impl UiState {
             selected: None,
             pending_scroll_row: None,
             picker_scroll_offset: 0.0,
+            picker_appear_at: None,
             stats: Stats::default(),
             search_text: String::new(),
             search_focus: true,
@@ -346,6 +349,7 @@ impl UiState {
         self.selected = Some(0);
         self.pending_scroll_row = Some(0);
         self.picker_scroll_offset = 0.0;
+        self.picker_appear_at = Some(Instant::now());
         self.search_focus = true;
         self.pending = None;
         self.append_gen = None;

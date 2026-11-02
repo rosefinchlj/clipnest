@@ -332,3 +332,23 @@
 ### 校验
 - `cargo test --release` **143 passed / 0 failed**；新增 `keyboard_scroll_is_minimal_and_stable_at_bottom` 覆盖「最后一条 → 上一条不滚动」与回绕到顶部。
 - `cargo build --release` 0 warnings；`--selftest` PASS。
+
+---
+
+## 15. v1.8.0（2026-11-02，克制的动效）
+
+### 用户反馈
+- 使用过程中「没有任何动效」，希望加一点不夸张、兼顾实用和高级感的动效。
+
+### 实现
+- **候选窗出现**：`UiState.picker_appear_at` + `src/ui/picker.rs` 的 160ms ease-out 内容淡入（opacity 0.62 → 1.0，只改内容透明度，不移动窗口、不影响磨砂底与粘贴时延）；淡入期间主动 `request_repaint()`。
+- **Toast**：`src/ui/widgets.rs::paint_toast` 淡入/淡出时上浮 6px，避免凭空出现。
+- **按钮**：`button_at` 增加 90ms hover 插值；主按钮 accent→accent_hover、次按钮 card→card_hover、危险按钮淡红、幽灵按钮背景淡入。
+- **筛选条**：`filter_chips` 选中 120ms、hover 90ms 插值（底色/描边/文字一起过渡）。
+- **搜索框**：聚焦 120ms 过渡（底色、描边、放大镜图标渐变为强调色）。
+- **管理台导航**：当前页 120ms 选中过渡、hover 90ms；切换页面不再硬跳。
+- 未加窗口飞入/缩放/列表滚动动画：这些在常驻小面板上容易显慢或与粘贴路径冲突，保持「快」优先。
+
+### 校验
+- `cargo test --release` **143 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
+- 动效均为纯 UI 绘制层，不影响剪贴板监听、粘贴时序与 SQLite 路径。

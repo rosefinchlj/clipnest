@@ -251,30 +251,39 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
             Sense::click(),
         );
         let active = state.manager_page == page;
-        if active {
+        // 120ms 选中过渡 + 90ms 悬停过渡：切页不硬跳，导航条有轻微呼吸感。
+        let sel_t = ui
+            .ctx()
+            .animate_bool_with_time(resp.id.with("navsel"), active, 0.12);
+        let hov_t = ui
+            .ctx()
+            .animate_bool_with_time(resp.id.with("navhover"), resp.hovered(), 0.09);
+        if sel_t > 0.001 {
             painter.rect_filled(
                 item_rect,
                 CornerRadius::same(theme::RADIUS_ROW),
-                theme::accent_fill(),
+                theme::accent_fill().gamma_multiply(sel_t),
             );
             let bar = Rect::from_min_max(
                 Pos2::new(item_rect.left() + 1.0, item_rect.top() + 10.0),
                 Pos2::new(item_rect.left() + 3.0, item_rect.bottom() - 10.0),
             );
-            painter.rect_filled(bar, CornerRadius::same(1), theme::accent());
-        } else if resp.hovered() {
+            painter.rect_filled(
+                bar,
+                CornerRadius::same(1),
+                theme::accent().gamma_multiply(sel_t),
+            );
+        } else if hov_t > 0.001 {
             painter.rect_filled(
                 item_rect,
                 CornerRadius::same(theme::RADIUS_ROW),
-                theme::hover_fill(),
+                theme::hover_fill().gamma_multiply(hov_t),
             );
         }
         let icon_color = if active {
             theme::accent()
-        } else if resp.hovered() {
-            theme::text()
         } else {
-            theme::text_secondary()
+            widgets::lerp_color(theme::text_secondary(), theme::text(), hov_t)
         };
         let icon_rect = Rect::from_center_size(
             Pos2::new(item_rect.left() + 24.0, item_rect.center().y),
@@ -288,10 +297,8 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
             theme::font_body(),
             if active {
                 theme::text()
-            } else if resp.hovered() {
-                theme::text()
             } else {
-                theme::text_secondary()
+                widgets::lerp_color(theme::text_secondary(), theme::text(), hov_t)
             },
         );
         if resp.hovered() {

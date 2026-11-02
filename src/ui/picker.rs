@@ -18,6 +18,17 @@ pub(crate) fn show(
     thumbs: &mut ThumbCache,
     actions: &mut Vec<UiAction>,
 ) {
+    // 出现动效：内容 160ms ease-out 淡入（磨砂底由窗口/Acrylic 提供，不跟着闪）。
+    let appear = state
+        .picker_appear_at
+        .map(|at| (at.elapsed().as_secs_f32() / 0.16).min(1.0))
+        .unwrap_or(1.0);
+    let appear = 1.0 - (1.0 - appear).powi(3);
+    ui.set_opacity(0.62 + 0.38 * appear);
+    if appear < 0.999 {
+        ui.ctx().request_repaint();
+    }
+
     let full = ui.max_rect();
     let hint_top = full.bottom() - theme::HINT_BAR_HEIGHT;
     // 顶部 16px 拖拽条：任意位置按住即可拖动面板（搜索框仍用于输入）。
