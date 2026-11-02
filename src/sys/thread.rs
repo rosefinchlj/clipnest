@@ -54,6 +54,8 @@ pub(crate) const FOREGROUND_POLL_TIMER_ID: usize = 0x434E;
 pub const ACTIVATE_MAGIC: usize = 0x434C_4E53;
 /// UI 子进程请求守护进程退出（`WM_COPYDATA.dwData`，即 "CLNQ"）。
 pub const QUIT_MAGIC: usize = 0x434C_4E51;
+/// 设置更新（子进程 → 主进程）：lpData 指向 UTF-8 JSON，cbData=字节数。
+pub const SETTINGS_MAGIC: usize = 0x434C_4E54;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -138,12 +140,39 @@ fn dispatch_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Opt
                 return Some(0);
             }
             let cds = unsafe { &*(lparam as *const COPYDATASTRUCT) };
-            if cds.dwData == ACTIVATE_MAGIC && cds.cbData == 0 {
-                logging::log("收到第二实例唤起消息（WM_COPYDATA）");
-                with_state(hwnd, |state| state.request_picker("第二实例唤起"));
+            if cds.dwData == ACTIVATE_MAGIC
+                && (cds.cbData == 0 || cds.cbData == std::mem::size_of::<isize>() as u32)
+            {
+                logging::log("收到唤起候选窗消息（WM_COPYDATA）");
+                let target = if cds.cbData == std::mem::size_of::<isize>() as u32
+                    && !cds.lpData.is_null()
+                {
+                    unsafe { *(cds.lpData as *const isize) }
+                } else {
+                    0
+                };
+                with_state(hwnd, |state| {
+                    if target != 0 {
+                        state.request_picker_with_target(target, "管理台唤起");
+                    } else {
+                        state.request_picker("第二实例唤起");
+                    }
+                });
             } else if cds.dwData == QUIT_MAGIC && cds.cbData == 0 {
                 logging::log("收到 UI 子进程的退出请求（WM_COPYDATA）");
                 with_state(hwnd, |state| state.emit_quit_request());
+            } else if cds.dwData == SETTINGS_MAGIC && cds.cbData > 0 && cds.cbData <= 64 * 1024 {
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize)
+                };
+                match serde_json::from_slice::<Settings>(bytes) {
+                    Ok(settings) => {
+                        logging::log("收到管理台子进程的设置更新（WM_COPYDATA）");
+                        let boxed = Box::new(settings);
+                        with_state(hwnd, |state| state.apply_external_settings(boxed));
+                    }
+                    Err(err) => logging::warn(&format!("子进程设置数据解析失败：{err}")),
+                }
             }
             Some(1) // TRUE：消息已处理
         }
@@ -409,6 +438,43 @@ pub fn hidden_window_class() -> &'static str {
 
 /// 查找已运行实例的隐藏窗口句柄（0 = 未找到）。
 ///
+/// 请求主进程唤出候选窗，并指定粘贴目标（管理台子进程用）。
+pub fn activate_existing_instance_with_target(target: isize) -> bool {
+    let hwnd = find_existing_instance();
+    if hwnd == 0 || unsafe { IsWindow(hwnd as HWND) } == 0 {
+        return false;
+    }
+    let cds = COPYDATASTRUCT {
+        dwData: ACTIVATE_MAGIC,
+        cbData: std::mem::size_of::<isize>() as u32,
+        lpData: &target as *const isize as *mut _,
+    };
+    let ok = unsafe {
+        SendMessageW(hwnd as HWND, WM_COPYDATA, 0, &cds as *const COPYDATASTRUCT as isize)
+    };
+    ok != 0
+}
+
+/// 把设置以 WM_COPYDATA(JSON) 推送给主进程（管理台子进程用）。
+pub fn send_settings_update(settings: &Settings) -> bool {
+    let hwnd = find_existing_instance();
+    if hwnd == 0 || unsafe { IsWindow(hwnd as HWND) } == 0 {
+        return false;
+    }
+    let Ok(bytes) = serde_json::to_vec(settings) else {
+        return false;
+    };
+    let cds = COPYDATASTRUCT {
+        dwData: SETTINGS_MAGIC,
+        cbData: bytes.len() as u32,
+        lpData: bytes.as_ptr() as *mut _,
+    };
+    let ok = unsafe {
+        SendMessageW(hwnd as HWND, WM_COPYDATA, 0, &cds as *const COPYDATASTRUCT as isize)
+    };
+    ok != 0
+}
+
 /// 供 `main.rs` 的单实例逻辑使用：命名互斥体/类名查找 + [`activate_existing_instance`]。
 pub fn find_existing_instance() -> isize {
     let class = wide(HIDDEN_WINDOW_CLASS);

@@ -19,6 +19,7 @@ mod clipboard;
 mod config;
 mod diag;
 mod logging;
+mod manager_window;
 mod model;
 mod store;
 mod sys;
@@ -30,6 +31,7 @@ use eframe::egui;
 enum Mode {
     Normal,
     UiPreview(String),
+    UiManager { page: ui::ManagerPage, target: isize },
     Selftest(String),
     Diagnose(String),
     DemoSeed { count: usize, confirmed: bool },
@@ -66,6 +68,43 @@ fn parse_args() -> Mode {
                 let confirmed = args.iter().any(|a| a == "--yes" || a == "-y");
                 return Mode::DemoSeed { count, confirmed };
             }
+            "--ui-manager" => {
+                let mut page = ui::ManagerPage::History;
+                let mut target = 0isize;
+                let mut j = i + 1;
+                while j < args.len() {
+                    match args[j].as_str() {
+                        "--page" => {
+                            if let Some(value) = args.get(j + 1) {
+                                page = match value.as_str() {
+                                    "favorites" => ui::ManagerPage::Favorites,
+                                    "settings" => ui::ManagerPage::Settings,
+                                    "about" => ui::ManagerPage::About,
+                                    _ => ui::ManagerPage::History,
+                                };
+                                j += 1;
+                            }
+                        }
+                        "--target" => {
+                            if let Some(value) = args.get(j + 1) {
+                                target = value.parse::<isize>().unwrap_or(0);
+                                j += 1;
+                            }
+                        }
+                        other if !other.starts_with("--") => {
+                            page = match other {
+                                "favorites" => ui::ManagerPage::Favorites,
+                                "settings" => ui::ManagerPage::Settings,
+                                "about" => ui::ManagerPage::About,
+                                _ => ui::ManagerPage::History,
+                            };
+                        }
+                        _ => break,
+                    }
+                    j += 1;
+                }
+                return Mode::UiManager { page, target };
+            }
             "--ui-preview" => {
                 let mode = args
                     .get(i + 1)
@@ -90,6 +129,7 @@ clipnest.exe                        正常启动（托盘常驻）\n  \
 clipnest.exe --selftest [out.json]  无界面全链路自检\n  \
 clipnest.exe --diagnose [out.json]  环境与能力诊断\n  \
 clipnest.exe --demo-seed N --yes    写入 N 条演示数据\n  \
+clipnest.exe --ui-manager [--page P] [--target HWND]  管理台独立窗口（内部使用）\n  \
 clipnest.exe --ui-preview <mode>    UI 预览（picker / manager）\n  \
 clipnest.exe --version              显示版本\n  \
 clipnest.exe --help                 显示本帮助\n\n\
@@ -130,7 +170,7 @@ fn attach_parent_console() {
 
 fn main() {
     let mode = parse_args();
-    if !matches!(mode, Mode::Normal) {
+    if !matches!(mode, Mode::Normal | Mode::UiManager { .. }) {
         attach_parent_console();
     }
 
@@ -175,6 +215,12 @@ fn main() {
                 }
             };
             std::process::exit(code);
+        }
+        Mode::UiManager { page, target } => {
+            if let Err(err) = manager_window::run(page, target) {
+                eprintln!("管理台窗口启动失败: {err}");
+                std::process::exit(1);
+            }
         }
         Mode::UiPreview(preview) => {
             if let Err(err) = run_native(Some(preview)) {
@@ -247,6 +293,10 @@ fn run_native(preview: Option<String>) -> eframe::Result<()> {
             .with_decorations(false)
             .with_taskbar(false)
             .with_resizable(false);
+    }
+
+    if let Some(icon) = window::app_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
 
     let options = eframe::NativeOptions {

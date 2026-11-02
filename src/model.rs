@@ -545,10 +545,10 @@ impl Default for Settings {
 pub enum Event {
     /// 请求打开 Picker；`target_hwnd` 是呼出前的目标前台窗口。
     PickerRequested { target_hwnd: isize },
-    /// 请求打开管理台。
-    ManagerRequested,
+    /// 请求打开管理台（独立窗口进程）。
+    ManagerRequested { target_hwnd: isize },
     /// 请求打开管理台并定位到「设置」页（托盘菜单「设置」）。
-    SettingsRequested,
+    SettingsRequested { target_hwnd: isize },
     /// 请求退出程序（托盘菜单）。
     QuitRequested,
     /// 历史列表发生变化（Store 处理完一次写入/删除后发送）。
@@ -563,6 +563,8 @@ pub enum Event {
     PasteResult { ok: bool, reason: Option<String> },
     /// 轻提示（UI toast）。
     Toast(String),
+    /// 子进程（管理台）发来的设置更新（避免仅依赖 settings.json 轮询）。
+    SettingsUpdated(Box<Settings>),
     /// 备用全局快捷键注册状态。
     HotkeyStatus { ok: bool, reason: Option<String> },
     /// 剪贴板监听线程捕获到新内容（正常情况下 Sys 发 `Event::Captured`，由 UI 线程转发 `StoreCmd::Upsert`）。

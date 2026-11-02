@@ -33,6 +33,18 @@ pub fn exe_name_from_path(path: &str) -> Option<String> {
     }
 }
 
+/// 该进程是否也是 ClipNest（主进程与管理台子进程同 exe 名）。
+/// 用于避免把"管理台窗口"当作粘贴目标。
+pub fn is_clipnest_process(pid: u32) -> bool {
+    let Some(current) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()))
+    else {
+        return false;
+    };
+    process_name(pid).as_deref() == Some(current.as_str())
+}
+
 /// 当前前台窗口句柄（无前台窗口返回 0）。
 pub fn foreground_window_handle() -> isize {
     unsafe { GetForegroundWindow() as isize }

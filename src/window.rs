@@ -154,6 +154,75 @@ pub fn request_close_window(hwnd: isize) {
     }
 }
 
+
+/// 应用图标（从内嵌 PNG 解码），供 winit 设置窗口/任务栏图标。
+pub fn app_icon() -> Option<egui::IconData> {
+    static BYTES: &[u8] = include_bytes!("../assets/icon.png");
+    let img = image::load_from_memory(BYTES).ok()?;
+    let rgba = img.into_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+    Some(egui::IconData {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    })
+}
+
+/// 按窗口标题查找（用于管理台子进程单例/激活、退出时连带关闭）。
+pub fn find_window_by_title(title: &str) -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+    let mut wide: Vec<u16> = title.encode_utf16().collect();
+    wide.push(0);
+    let hwnd = unsafe { FindWindowW(std::ptr::null(), wide.as_ptr()) };
+    if hwnd.is_null() {
+        None
+    } else {
+        Some(hwnd as isize)
+    }
+}
+
+/// 按标题前缀查找窗口（管理台标题带页面 key）。
+pub fn find_window_by_title_prefix(prefix: &str) -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextW, IsWindowVisible,
+    };
+    struct Ctx<'a> {
+        prefix: &'a [u16],
+        found: isize,
+    }
+    unsafe extern "system" fn callback(hwnd: windows_sys::Win32::Foundation::HWND, lparam: isize) -> i32 {
+        let ctx = &mut *(lparam as *mut Ctx<'_>);
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let mut buf = [0u16; 256];
+        let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        if len <= 0 {
+            return 1;
+        }
+        let title = &buf[..len as usize];
+        if title.len() >= ctx.prefix.len() && title[..ctx.prefix.len()] == *ctx.prefix {
+            ctx.found = hwnd as isize;
+            return 0;
+        }
+        1
+    }
+    let prefix: Vec<u16> = prefix.encode_utf16().collect();
+    let mut ctx = Ctx { prefix: &prefix, found: 0 };
+    unsafe {
+        EnumWindows(Some(callback), &mut ctx as *mut Ctx<'_> as isize);
+    }
+    if ctx.found == 0 { None } else { Some(ctx.found) }
+}
+
+/// 按标题前缀请求关闭窗口。
+pub fn close_window_by_title_prefix(prefix: &str) {
+    if let Some(hwnd) = find_window_by_title_prefix(prefix) {
+        request_close_window(hwnd);
+    }
+}
+
+
 /// 强制把窗口切到前台并聚焦（托盘菜单/热键从隐藏状态唤起时，
 /// 仅靠 egui `ViewportCommand::Focus` 在部分场景会被前台锁拒绝）。
 /// 用 AttachThreadInput 绕过前台锁定；失败静默（只是得不到焦点，不影响功能）。

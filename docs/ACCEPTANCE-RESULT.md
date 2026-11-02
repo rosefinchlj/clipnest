@@ -240,3 +240,40 @@
 
 - `cargo build --release` / `cargo test`：**0 warnings**；142 tests passed；
   `--selftest` PASS；`--diagnose` OK；release exe 8.91MB（含 9 尺寸图标资源）。
+
+
+---
+
+## 11. v1.6.0（2026-11-02，图标/并发窗口/粘贴速度）
+
+### 图标统一
+
+- exe 图标资源继续由 `patch-icon` 写入（9 个尺寸，RT_GROUP_ICON + RT_ICON）；
+- 主候选窗和管理台窗口都通过 `ViewportBuilder::with_icon` 设置内嵌 PNG 图标
+  （之前主窗口是 eframe 默认的 “e” 图标，任务管理器/任务栏看不到 ClipNest 图标）；
+- 验证：对主窗口/管理台窗口查询 `WM_GETICON`，small icon 均非 0；exe `ExtractAssociatedIcon` 为 32×32 新图标。
+- 如资源管理器仍显示旧图标，是 Windows 图标缓存，F5/重启 Explorer 即可。
+
+### 管理台独立窗口（主界面不隐藏）
+
+- 主进程保持“候选窗”单窗口；打开管理台时 spawn `clipnest.exe --ui-manager --page X --target HWND` 子进程。
+- 子进程只启动 Store（共享 SQLite），不启动 Sys（托盘/快捷键仍在主进程），因此：
+  - 管理台打开时按快捷键，候选窗在主窗口出现，管理台窗口保持可见；
+  - 候选窗关闭/粘贴后管理台仍在；
+  - 管理台关闭不影响主进程。
+- 管理台粘贴目标：主进程把最后的外部前台窗口作为 `target` 传给子进程，子进程直接写剪贴板 + `restore_and_paste`；
+  粘贴目标排除所有 ClipNest 进程（主/子），避免把管理台自己当成目标。
+- 管理台保存设置后通过 WM_COPYDATA(SETTINGS_MAGIC, JSON) 通知主进程立即应用（主题/透明度/快捷键/暂停），
+  不依赖 settings.json 轮询。
+- 托盘“管理历史/设置”会复用同页面窗口；不同页面则关闭旧的再开新的；主进程退出时连带关闭管理台。
+- 验证：主进程 + 子进程共存（进程数=2），管理台标题 `ClipNest · 剪贴匣 · 管理 · history`，直接主进程退出后两个进程均退出。
+
+### 粘贴延迟
+
+- 原流程固定等待：面板移出屏幕 120ms + 恢复前台固定 60ms + SendInput；
+- 现在：20ms 移出等待 + 前台就绪即发送（最多 60ms 轮询，通常 0–10ms），目标拿到前台立刻 SendInput。
+- 新增日志 `粘贴：载荷到达` / `自动粘贴：开始` / `自动粘贴完成` 便于定位耗时。
+
+### 校验
+
+- `cargo test` 142 passed / 0 failed；`cargo build --release` 0 warnings；`--selftest` PASS。

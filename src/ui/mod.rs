@@ -61,6 +61,16 @@ pub enum ManagerPage {
 }
 
 impl ManagerPage {
+    /// 命令行/进程参数用的稳定 key。
+    pub fn key(self) -> &'static str {
+        match self {
+            ManagerPage::History => "history",
+            ManagerPage::Favorites => "favorites",
+            ManagerPage::Settings => "settings",
+            ManagerPage::About => "about",
+        }
+    }
+
     /// 导航显示名。
     pub fn label(self) -> &'static str {
         match self {

@@ -49,6 +49,13 @@ impl SysState {
         self.ctx.request_repaint();
     }
 
+    /// 把管理台子进程推来的设置写入共享配置并转给 UI 线程应用（快捷键/暂停等）。
+    pub(crate) fn apply_external_settings(&mut self, settings: Box<crate::model::Settings>) {
+        self.with_settings(|s| *s = (*settings).clone());
+        let _ = self.events.send(Event::SettingsUpdated(settings));
+        self.ctx.request_repaint();
+    }
+
     fn toast(&self, msg: impl Into<String>) {
         self.emit(Event::Toast(msg.into()));
     }
@@ -149,9 +156,28 @@ impl SysState {
         let self_pid = unsafe { GetCurrentProcessId() };
         // 托盘菜单/面板已打开等场景，当前前台可能是本进程窗口（托盘隐藏窗口、Picker 本身），
         // 不能作为粘贴目标：退回最近一次记录的外部前台窗口。
-        if target_hwnd == 0 || util::window_pid(target_hwnd) == self_pid {
+        if target_hwnd == 0
+            || util::window_pid(target_hwnd) == self_pid
+            || util::is_clipnest_process(util::window_pid(target_hwnd))
+        {
             target_hwnd = self.last_external_fg;
         }
+        logging::log(&format!("呼出面板（{source}），target_hwnd={target_hwnd}"));
+        self.emit(Event::PickerRequested { target_hwnd });
+    }
+
+    /// 管理台子进程请求唤出候选窗：显式指定粘贴目标（管理台打开前的前台窗口）。
+    pub(crate) fn request_picker_with_target(&mut self, target: isize, source: &str) {
+        let target_hwnd = if target != 0
+            && util::window_pid(target) != 0
+            && !util::is_clipnest_process(util::window_pid(target))
+        {
+            target
+        } else if self.last_external_fg != 0 {
+            self.last_external_fg
+        } else {
+            0
+        };
         logging::log(&format!("呼出面板（{source}），target_hwnd={target_hwnd}"));
         self.emit(Event::PickerRequested { target_hwnd });
     }
@@ -163,7 +189,8 @@ impl SysState {
             return;
         }
         let self_pid = unsafe { GetCurrentProcessId() };
-        if util::window_pid(fg) != self_pid {
+        let fg_pid = util::window_pid(fg);
+        if fg_pid != self_pid && !util::is_clipnest_process(fg_pid) {
             self.last_external_fg = fg;
         }
     }
@@ -194,17 +221,23 @@ impl SysState {
             tray::MENU_OPEN => self.request_picker("托盘菜单"),
             tray::MENU_MANAGER => {
                 logging::log("托盘：打开管理历史");
-                self.emit(Event::ManagerRequested);
+                self.emit(Event::ManagerRequested {
+                    target_hwnd: self.last_external_fg,
+                });
             }
             tray::MENU_PAUSE => self.toggle_pause(),
             tray::MENU_CLEAR => {
                 // 清空需要 UI 二次确认（spec §6.4）
-                self.emit(Event::ManagerRequested);
+                self.emit(Event::ManagerRequested {
+                    target_hwnd: self.last_external_fg,
+                });
                 self.toast("清空历史请在管理台确认");
             }
             tray::MENU_SETTINGS => {
                 logging::log("托盘：打开设置");
-                self.emit(Event::SettingsRequested);
+                self.emit(Event::SettingsRequested {
+                    target_hwnd: self.last_external_fg,
+                });
             }
             tray::MENU_AUTOSTART => self.toggle_autostart(),
             tray::MENU_QUIT => {
@@ -371,6 +404,7 @@ impl SysState {
     }
 
     fn handle_paste(&mut self, payload: crate::model::PastePayload, target_hwnd: isize) {
+        logging::log(&format!("自动粘贴：开始 target={target_hwnd}"));
         // 1) 写剪贴板（失败不粘贴）
         if let Err(err) = clipboard::write_clipboard(&payload, &config::data_dir()) {
             logging::warn(&format!("自动粘贴：写剪贴板失败：{err}"));

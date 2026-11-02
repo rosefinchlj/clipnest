@@ -66,8 +66,14 @@ pub fn restore_and_paste(target: isize, key: PasteKey) -> Result<(), PasteError>
     }
 
     restore_foreground(hwnd)?;
-    // 40–80ms：给目标窗口完成激活/输入队列切换（spec §6.3）
-    std::thread::sleep(Duration::from_millis(60));
+    // 等待目标窗口真正拿到前台（通常 0–10ms，最多 60ms）；拿到就立即发送，避免固定 60ms 延迟。
+    let deadline = std::time::Instant::now() + Duration::from_millis(60);
+    while unsafe { GetForegroundWindow() } != hwnd {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 
     if unsafe { GetForegroundWindow() } != hwnd {
         if unsafe { IsWindow(hwnd) } == 0 {
@@ -89,7 +95,7 @@ fn restore_foreground(hwnd: HWND) -> Result<(), PasteError> {
 
     for attempt in 0..3 {
         if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(10));
         }
         // 附加到目标线程输入队列，绕过前台锁定（限制见 SetForegroundWindow 文档）
         let target_thread = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
