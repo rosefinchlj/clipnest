@@ -10,6 +10,11 @@ use eframe::egui::{self, Pos2, Rect, UiBuilder, Vec2};
 
 const MIB: f64 = 1024.0 * 1024.0;
 
+/// 底部固定保存栏高度（含卡片内边距）。
+const SAVE_BAR_HEIGHT: f32 = 64.0;
+/// 内容区与固定保存栏之间的留白。
+const SAVE_BAR_GAP: f32 = 12.0;
+
 /// 设置页入口。
 pub(crate) fn show(
     state: &mut UiState,
@@ -18,7 +23,9 @@ pub(crate) fn show(
     actions: &mut Vec<UiAction>,
 ) {
     let inner = rect.shrink(theme::PAGE_PAD);
-    ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
+    let (content, footer) = split_page(inner);
+
+    ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
         egui::ScrollArea::vertical()
             .id_salt("settings_scroll")
             .auto_shrink([false, false])
@@ -27,7 +34,7 @@ pub(crate) fn show(
                 ui.label(theme::title("设置"));
                 ui.add_space(4.0);
                 ui.label(theme::aux(
-                    "焦点在输入框时按 Esc 会先结束编辑；带「立即生效」的开关会即时应用，其余点底部「保存设置」生效。",
+                    "焦点在输入框时按 Esc 会先结束编辑；带「立即生效」的开关会即时应用，其余点底部固定栏「保存设置」生效。",
                 ));
                 ui.add_space(18.0);
 
@@ -42,13 +49,26 @@ pub(crate) fn show(
                 ignore_section(state, ui);
                 ui.add_space(16.0);
                 data_section(state, ui, actions);
-                ui.add_space(20.0);
-                save_bar(state, ui, actions);
-                ui.add_space(12.0);
+                // 给滚动内容留出呼吸空间，避免最后一张卡片贴着固定栏。
+                ui.add_space(8.0);
             });
     });
+
+    save_bar(state, ui, footer, actions);
 }
 
+/// 把设置页内容区切成「可滚动内容 + 底部固定保存栏」。
+fn split_page(inner: Rect) -> (Rect, Rect) {
+    let footer = Rect::from_min_max(
+        Pos2::new(inner.left(), inner.bottom() - SAVE_BAR_HEIGHT),
+        inner.max,
+    );
+    let content = Rect::from_min_max(
+        inner.min,
+        Pos2::new(inner.right(), footer.top() - SAVE_BAR_GAP),
+    );
+    (content, footer)
+}
 
 /// 外观：深色 / 浅色皮肤（保存设置后即时切换）。
 fn appearance_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
@@ -571,46 +591,47 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
 // 保存栏
 // ---------------------------------------------------------------------------
 
-fn save_bar(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
+fn save_bar(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiAction>) {
     let dirty = settings_dirty(state);
     let painter = ui.painter().clone();
-    let rect = ui.available_rect_before_wrap();
-    let y = rect.top() + 2.0;
-    painter.line_segment(
-        [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-        theme::divider(),
+    // 固定栏浮在设置页底部：不随 ScrollArea 滚走，始终能看到「保存设置」。
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same(theme::RADIUS_CARD),
+        theme::card(),
     );
-    ui.add_space(14.0);
-    ui.horizontal(|ui| {
-        if widgets::button(ui, "保存设置", widgets::ButtonKind::Primary).clicked() {
-            state.save_settings_draft(actions);
-        }
-        if widgets::button(ui, "放弃修改", widgets::ButtonKind::Secondary).clicked() {
-            state.settings_draft = state.settings.clone();
-            state.rec.recording = false;
-            state.rec.error = None;
-            state.toast("已放弃修改");
-        }
-        ui.add_space(8.0);
-        if dirty {
-            ui.label(
-                egui::RichText::new("有未保存的修改")
-                    .size(theme::SIZE_AUX)
-                    .color(theme::pinned()),
-            );
-        } else {
-            ui.label(theme::weak("设置已保存"));
-        }
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(theme::RADIUS_CARD),
+        theme::divider(),
+        egui::StrokeKind::Inside,
+    );
+
+    let inner = rect.shrink2(Vec2::new(16.0, 10.0));
+    ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
+        ui.horizontal(|ui| {
+            if widgets::button(ui, "保存设置", widgets::ButtonKind::Primary).clicked() {
+                state.save_settings_draft(actions);
+            }
+            if widgets::button(ui, "放弃修改", widgets::ButtonKind::Secondary).clicked() {
+                state.settings_draft = state.settings.clone();
+                state.rec.recording = false;
+                state.rec.error = None;
+                state.toast("已放弃修改");
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if dirty {
+                    ui.label(
+                        egui::RichText::new("● 有未保存的修改")
+                            .size(theme::SIZE_AUX)
+                            .color(theme::pinned()),
+                    );
+                } else {
+                    ui.label(theme::weak("设置已保存"));
+                }
+            });
+        });
     });
-    // 自动自启状态提醒
-    if state.settings.autostart != state.settings_draft.autostart {
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new("开机自启开关已立即生效，其余需要保存")
-                .size(theme::SIZE_AUX)
-                .color(theme::text_weak()),
-        );
-    }
 }
 
 /// 设置草稿与已生效设置是否有差异。
@@ -621,5 +642,21 @@ fn settings_dirty(state: &UiState) -> bool {
     ) {
         (Ok(a), Ok(b)) => a != b,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sticky_footer_splits_content_without_overlap() {
+        let inner = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(600.0, 500.0));
+        let (content, footer) = split_page(inner);
+        assert_eq!(footer.bottom(), inner.bottom());
+        assert!((footer.height() - SAVE_BAR_HEIGHT).abs() < 0.01);
+        assert_eq!(content.top(), inner.top());
+        assert!(content.bottom() <= footer.top());
+        assert!((footer.top() - content.bottom() - SAVE_BAR_GAP).abs() < 0.01);
     }
 }

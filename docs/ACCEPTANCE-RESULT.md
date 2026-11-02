@@ -352,3 +352,20 @@
 ### 校验
 - `cargo test --release` **143 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
 - 动效均为纯 UI 绘制层，不影响剪贴板监听、粘贴时序与 SQLite 路径。
+
+---
+
+## 16. v1.8.1（2026-11-02，设置页固定保存栏）
+
+### 用户反馈
+- 设置项改完后，保存按钮在最底部，必须滚到最后才能点，使用不便。
+
+### 实现
+- `src/ui/pages/settings.rs` 把设置页拆成两块：上方 `ScrollArea` 放所有设置卡片，下方 64px 高的**固定操作栏**始终可见。
+- 固定栏使用卡片底色 + 边框，左侧「保存设置 / 放弃修改」，右侧始终显示「● 有未保存的修改」或「设置已保存」；不再依赖滚动位置。
+- 内容区底边预留 12px 间距，滚动内容不会钻到固定栏下面；设置页顶部提示文案同步改为「底部固定栏」。
+- 新增 `split_page()` 纯函数与 `sticky_footer_splits_content_without_overlap` 单测，锁定固定栏高度、底部对齐、内容不重叠。
+
+### 校验
+- `cargo test --release` **144 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
+- 截图：`target/settings_sticky.png`（顶部）与 `target/settings_scrolled.png`（滚动到底部后保存栏仍固定）；已更新 `docs/screenshots/manager-settings.png` / `manager-settings-scrolled.png`。
