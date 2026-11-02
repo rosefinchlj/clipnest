@@ -27,7 +27,7 @@ pub use theme::install_theme;
 pub use thumbs::ThumbCache;
 
 use crate::model::{
-    ClipFilter, ClipId, ClipItem, Settings, SearchPage, Stats, WinVStatus,
+    ClipFilter, ClipId, ClipItem, Settings, SearchPage, Stats,
 };
 use eframe::egui;
 use std::collections::HashSet;
@@ -185,7 +185,6 @@ pub struct UiState {
     capturing: bool,
 
     // ---- 状态展示 ----
-    winv_status: WinVStatus,
     hotkey_status: Option<(bool, Option<String>)>,
 
     // ---- Manager ----
@@ -229,7 +228,6 @@ impl UiState {
             toast: None,
             paused: settings.pause_capture,
             capturing: false,
-            winv_status: WinVStatus::Unknown,
             hotkey_status: None,
             detail_open: true,
             multi_selected: HashSet::new(),
@@ -281,10 +279,6 @@ impl UiState {
     }
 
     /// 应用 Win+V 接管状态。
-    pub fn apply_winv(&mut self, status: WinVStatus) {
-        self.winv_status = status;
-    }
-
     /// 应用备用快捷键注册状态。
     pub fn apply_hotkey_status(&mut self, ok: bool, reason: Option<String>) {
         if !ok {

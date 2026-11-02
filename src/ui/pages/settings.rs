@@ -1,10 +1,10 @@
-//! 管理台 · 设置页：快捷键录制、Win+V 接管状态、容量、行为、忽略名单、开机自启、数据操作。
+//! 管理台 · 设置页：外观皮肤、快捷键录制、容量、行为、忽略名单、开机自启、数据操作。
 //!
 //! 所有修改先写入 [`UiState::settings_draft`]，点「保存设置」后通过
 //! [`UiAction::SetSettings`] 交给 Lead 落盘；开自启/暂停/导出/清空等即时动作
 //! 通过对应 [`UiAction`] 发送。**UI 不直接写设置文件**。
 
-use crate::model::{fmt_size, PasteKey, Settings};
+use crate::model::{fmt_size, PasteKey, Settings, ThemeMode};
 use crate::ui::{theme, widgets, UiAction, UiState};
 use eframe::egui::{self, Pos2, Rect, UiBuilder, Vec2};
 
@@ -31,6 +31,8 @@ pub(crate) fn show(
                 ));
                 ui.add_space(18.0);
 
+                appearance_section(state, ui);
+                ui.add_space(16.0);
                 hotkey_section(state, ui, actions);
                 ui.add_space(16.0);
                 capacity_section(state, ui);
@@ -44,6 +46,28 @@ pub(crate) fn show(
                 save_bar(state, ui, actions);
                 ui.add_space(12.0);
             });
+    });
+}
+
+
+/// 外观：深色 / 浅色皮肤（保存设置后即时切换）。
+fn appearance_section(state: &mut UiState, ui: &mut egui::Ui) {
+    section(ui, "外观", |ui| {
+        setting_row(
+            ui,
+            "皮肤",
+            "深色磨砂玻璃 / 浅色。浅色适合亮色桌面或白天使用，保存后立即切换。",
+            |ui| {
+                let mut mode = state.settings_draft.theme;
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut mode, ThemeMode::Dark, ThemeMode::Dark.label());
+                    ui.selectable_value(&mut mode, ThemeMode::Light, ThemeMode::Light.label());
+                });
+                if mode != state.settings_draft.theme {
+                    state.settings_draft.theme = mode;
+                }
+            },
+        );
     });
 }
 
@@ -174,7 +198,7 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
                     ui.label(
                         egui::RichText::new(err.clone())
                             .size(theme::SIZE_AUX)
-                            .color(theme::DANGER),
+                            .color(theme::danger()),
                     );
                 }
             });
@@ -186,7 +210,7 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
                 ui.label(
                     egui::RichText::new(format!("快捷键已生效：{note}"))
                         .size(theme::SIZE_AUX)
-                        .color(theme::SUCCESS),
+                        .color(theme::success()),
                 );
             }
             Some((true, None)) => {
@@ -196,7 +220,7 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
                         state.settings.hotkey_picker.label()
                     ))
                     .size(theme::SIZE_AUX)
-                    .color(theme::SUCCESS),
+                    .color(theme::success()),
                 );
             }
             Some((false, reason)) => {
@@ -206,7 +230,7 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
                         reason.clone().unwrap_or_else(|| "未知原因".into())
                     ))
                     .size(theme::SIZE_AUX)
-                    .color(theme::DANGER),
+                    .color(theme::danger()),
                 );
             }
             None => {
@@ -449,7 +473,7 @@ fn ignore_section(state: &mut UiState, ui: &mut egui::Ui) {
                 egui::TextEdit::singleline(&mut state.ignore_input)
                     .hint_text("输入进程名，例如 wechat.exe")
                     .font(theme::font_body())
-                    .text_color(theme::TEXT)
+                    .text_color(theme::text())
                     .margin(egui::Margin::symmetric(10, 6)),
             );
             if widgets::button(ui, "添加", widgets::ButtonKind::Secondary).clicked() {
@@ -557,7 +581,7 @@ fn save_bar(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>)
             ui.label(
                 egui::RichText::new("有未保存的修改")
                     .size(theme::SIZE_AUX)
-                    .color(theme::PINNED),
+                    .color(theme::pinned()),
             );
         } else {
             ui.label(theme::weak("设置已保存"));
@@ -569,7 +593,7 @@ fn save_bar(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>)
         ui.label(
             egui::RichText::new("开机自启开关已立即生效，其余需要保存")
                 .size(theme::SIZE_AUX)
-                .color(theme::TEXT_WEAK),
+                .color(theme::text_weak()),
         );
     }
 }

@@ -13,7 +13,7 @@
 //! 只是动作在本地消化（弹 toast 提示），不写数据库、不写设置、不动真实窗口。
 
 use crate::model::{
-    ClipFilter, ClipItem, ClipKind, FileEntry, SearchPage, Settings, Stats, WinVMode, WinVStatus,
+    ClipFilter, ClipItem, ClipKind, FileEntry, SearchPage, Settings, Stats,
 };
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{theme, ManagerPage, UiAction, UiState, WindowMode};
@@ -154,7 +154,6 @@ impl PreviewState {
         state.preview_mode(true);
         state.set_settings(&preview_settings());
         state.apply_stats(fake_stats());
-        state.apply_winv(WinVStatus::HookActive { compensated: true });
         state.apply_hotkey_status(true, None);
 
         match mode {
@@ -373,7 +372,6 @@ fn filter_items(items: &[ClipItem], text: &str, filter: ClipFilter) -> Vec<ClipI
 fn preview_settings() -> Settings {
     let mut settings = Settings::default();
     settings.ignore_apps = vec!["1password.exe".to_string(), "keepass.exe".to_string()];
-    settings.winv_mode = WinVMode::Auto;
     settings
 }
 

@@ -20,7 +20,30 @@ pub(crate) fn show(
 ) {
     let full = ui.max_rect();
     let hint_top = full.bottom() - theme::HINT_BAR_HEIGHT;
-    let chips_top = full.top() + theme::SEARCH_HEIGHT + theme::GAP_S;
+    // 顶部 16px 拖拽条：任意位置按住即可拖动面板（搜索框仍用于输入）。
+    const DRAG_STRIP: f32 = 16.0;
+    let drag_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), DRAG_STRIP));
+    let drag_resp = ui.interact(drag_rect, ui.id().with("picker_drag"), egui::Sense::drag());
+    if drag_resp.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if drag_resp.hovered() || drag_resp.dragged() {
+        ui.ctx().set_cursor_icon(if drag_resp.dragged() {
+            egui::CursorIcon::Grabbing
+        } else {
+            egui::CursorIcon::Grab
+        });
+        let handle = Pos2::new(drag_rect.center().x, drag_rect.center().y);
+        for offset in [-7.0_f32, 0.0, 7.0] {
+            ui.painter().circle_filled(
+                Pos2::new(handle.x + offset, handle.y),
+                1.6,
+                theme::text_weak(),
+            );
+        }
+    }
+    let search_top = full.top() + DRAG_STRIP;
+    let chips_top = search_top + theme::SEARCH_HEIGHT + theme::GAP_S;
     let list_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_S;
     let list_bottom = (hint_top - theme::GAP_XS).max(list_top + theme::ROW_HEIGHT);
     let list_rect = Rect::from_min_max(
@@ -40,7 +63,10 @@ pub(crate) fn show(
 
     // ---- 2) 搜索框（高 40）----
     let hint = state.settings.hotkey_picker.label();
-    let search_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), theme::SEARCH_HEIGHT));
+    let search_rect = Rect::from_min_size(
+        Pos2::new(full.left(), search_top),
+        Vec2::new(full.width(), theme::SEARCH_HEIGHT),
+    );
     ui.scope_builder(UiBuilder::new().max_rect(search_rect), |ui| {
         let out = widgets::search_box(
             ui,
@@ -291,9 +317,9 @@ fn empty_state(
         icon_center,
         44.0,
         if searching {
-            theme::TEXT_WEAK
+            theme::text_weak()
         } else {
-            theme::TEXT_WEAK.gamma_multiply(0.9)
+            theme::text_weak().gamma_multiply(0.9)
         },
     );
     painter.text(
@@ -306,9 +332,9 @@ fn empty_state(
         },
         theme::font_body(),
         if searching {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         } else {
-            theme::TEXT_WEAK
+            theme::text_weak()
         },
     );
     if searching {
@@ -328,7 +354,7 @@ fn empty_state(
             Align2::CENTER_TOP,
             "正在加载…",
             theme::font_aux(),
-            theme::TEXT_WEAK,
+            theme::text_weak(),
         );
     }
     let _ = actions;

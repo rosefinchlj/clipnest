@@ -110,12 +110,29 @@ fn title_bar(state: &mut UiState, ui: &mut egui::Ui, full: Rect, actions: &mut V
             sw: 0,
             se: 0,
         },
-        theme::PANEL_BASE,
+        theme::panel_base(),
     );
     painter.line_segment(
         [rect.left_bottom(), rect.right_bottom()],
         theme::divider(),
     );
+
+    // 标题栏空白区域可拖动窗口（右侧按钮区域除外）
+    let drag_rect = Rect::from_min_size(
+        rect.min,
+        Vec2::new((rect.width() - 96.0).max(1.0), rect.height()),
+    );
+    let drag = ui.interact(drag_rect, ui.id().with("title_drag"), Sense::drag());
+    if drag.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if drag.hovered() || drag.dragged() {
+        ui.ctx().set_cursor_icon(if drag.dragged() {
+            egui::CursorIcon::Grabbing
+        } else {
+            egui::CursorIcon::Grab
+        });
+    }
 
     // 右侧窗口按钮
     let close_rect = Rect::from_min_size(
@@ -146,18 +163,18 @@ fn title_bar(state: &mut UiState, ui: &mut egui::Ui, full: Rect, actions: &mut V
         &painter,
         min_rect.shrink(10.0),
         if min_resp.hovered() {
-            theme::TEXT
+            theme::text()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         },
     );
     paint::paint_close(
         &painter,
         close_rect.shrink(16.0),
         if close_resp.hovered() {
-            theme::TEXT
+            theme::text()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         },
     );
 
@@ -172,7 +189,7 @@ fn title_bar(state: &mut UiState, ui: &mut egui::Ui, full: Rect, actions: &mut V
         Align2::LEFT_CENTER,
         crate::model::APP_TITLE,
         theme::font_body(),
-        theme::TEXT,
+        theme::text(),
     );
 
     // 其余区域可拖拽窗口
@@ -244,7 +261,7 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
                 Pos2::new(item_rect.left() + 1.0, item_rect.top() + 10.0),
                 Pos2::new(item_rect.left() + 3.0, item_rect.bottom() - 10.0),
             );
-            painter.rect_filled(bar, CornerRadius::same(1), theme::ACCENT);
+            painter.rect_filled(bar, CornerRadius::same(1), theme::accent());
         } else if resp.hovered() {
             painter.rect_filled(
                 item_rect,
@@ -253,11 +270,11 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
             );
         }
         let icon_color = if active {
-            theme::ACCENT
+            theme::accent()
         } else if resp.hovered() {
-            theme::TEXT
+            theme::text()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         };
         let icon_rect = Rect::from_center_size(
             Pos2::new(item_rect.left() + 24.0, item_rect.center().y),
@@ -270,11 +287,11 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
             page.label(),
             theme::font_body(),
             if active {
-                theme::TEXT
+                theme::text()
             } else if resp.hovered() {
-                theme::TEXT
+                theme::text()
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             },
         );
         if resp.hovered() {
@@ -300,7 +317,7 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
         Align2::LEFT_CENTER,
         format!("共 {} 条 · 收藏 {} 条", keys::fmt_count(state.stats.total), keys::fmt_count(state.stats.pinned)),
         theme::font_aux(),
-        theme::TEXT_WEAK,
+        theme::text_weak(),
     );
     // 暂停记录开关（立即生效）
     let pause_rect = Rect::from_min_size(
@@ -330,7 +347,7 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
         Align2::LEFT_BOTTOM,
         format!("ClipNest v{}", env!("CARGO_PKG_VERSION")),
         theme::font_aux(),
-        theme::TEXT_WEAK.gamma_multiply(0.8),
+        theme::text_weak().gamma_multiply(0.8),
     );
 }
 

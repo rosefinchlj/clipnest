@@ -390,7 +390,7 @@ fn get_payload(
 fn wait_clips_changed(events: &Receiver<Event>, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let Ok(Event::ClipsChanged { .. }) = events.recv_timeout(Duration::from_millis(200)) {
+        if let Ok(Event::ClipsChanged) = events.recv_timeout(Duration::from_millis(200)) {
             return true;
         }
     }

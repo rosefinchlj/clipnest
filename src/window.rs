@@ -31,11 +31,17 @@ impl HasWindowHandle for HwndHandle {
 
 /// 应用 Win11 背景材质：优先 Mica Alt（tabbed，无拖动卡顿），回退 Acrylic。
 /// 返回实际生效的材质名，便于日志/诊断。
-pub fn apply_backdrop(hwnd: isize) -> Result<&'static str, String> {
+pub fn apply_backdrop(hwnd: isize, light: bool) -> Result<&'static str, String> {
     // 首选 Acrylic（SetWindowCompositionAttribute）：对 OpenGL/GL 交换链窗口也能真正透出模糊背景；
     // Win11 的 Mica（DWM system backdrop）要求应用自己绘制透明表面，egui/glow 下通常看不到效果，
     // 所以把 Mica 仅作为 Acrylic 失败时的兜底。
-    match window_vibrancy::apply_acrylic(HwndHandle(hwnd), Some((16, 20, 27, 150))) {
+    set_dark_mode(hwnd, !light);
+    let tint = if light {
+        (246, 249, 255, 170)
+    } else {
+        (16, 20, 27, 150)
+    };
+    match window_vibrancy::apply_acrylic(HwndHandle(hwnd), Some(tint)) {
         Ok(()) => {
             set_round_corners(hwnd);
             return Ok("acrylic");
@@ -45,15 +51,29 @@ pub fn apply_backdrop(hwnd: isize) -> Result<&'static str, String> {
         }
     }
     // Win11 22H2+：DWM system backdrop（部分机器/渲染器下可能看不到模糊，但聊胜于无）。
-    if window_vibrancy::apply_mica(HwndHandle(hwnd), Some(true)).is_ok() {
+    if window_vibrancy::apply_mica(HwndHandle(hwnd), Some(!light)).is_ok() {
         set_round_corners(hwnd);
         return Ok("mica");
     }
-    if window_vibrancy::apply_tabbed(HwndHandle(hwnd), Some(true)).is_ok() {
+    if window_vibrancy::apply_tabbed(HwndHandle(hwnd), Some(!light)).is_ok() {
         set_round_corners(hwnd);
         return Ok("mica-tabbed");
     }
     Err("背景材质不可用（Acrylic/Mica 都失败）".to_string())
+}
+
+/// 深色/浅色标题栏属性（DWMWA_USE_IMMERSIVE_DARK_MODE = 20）。失败静默。
+fn set_dark_mode(hwnd: isize, dark: bool) {
+    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+    let value: i32 = if dark { 1 } else { 0 };
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd as _,
+            20,
+            &value as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
 }
 
 /// Win11 圆角（DWMWCP_ROUND）。失败静默（系统不支持就当方角）。

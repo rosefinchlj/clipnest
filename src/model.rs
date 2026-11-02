@@ -57,13 +57,6 @@ impl ClipKind {
         }
     }
 
-    pub fn icon(self) -> &'static str {
-        match self {
-            ClipKind::Text => "T",
-            ClipKind::Image => "▣",
-            ClipKind::Files => "▤",
-        }
-    }
 }
 
 /// 文件列表中的一项。
@@ -197,14 +190,6 @@ impl ClipItem {
         }
     }
 
-    /// 是否仍可作为粘贴载荷（文件可能已不存在）。
-    pub fn is_pasteable(&self) -> bool {
-        match self.kind {
-            ClipKind::Text => self.text.is_some(),
-            ClipKind::Image => self.blob_id.is_some(),
-            ClipKind::Files => !self.files.is_empty(),
-        }
-    }
 }
 
 /// 采集后送入 Store 的归一化输入（由 Sys 线程构造）。
@@ -365,7 +350,6 @@ impl Default for HotkeyChord {
 }
 
 impl HotkeyChord {
-    pub const VK_WIN_L: u32 = 0x5B;
 
     pub fn new(ctrl: bool, alt: bool, shift: bool, win: bool, vk: u32) -> Self {
         Self {
@@ -454,71 +438,28 @@ pub fn vk_label(vk: u32) -> String {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WinVMode {
-    /// 默认关闭：v1.2 起不再接管 Win+V（保留枚举用于兼容旧配置）。
-    #[default]
-    Off,
-    /// 自动探测：优先直接注册，失败再用键盘钩子（历史模式，v1.2 不再使用）。
-    Auto,
-    /// 只尝试 RegisterHotKey（历史模式）。
-    RegisterOnly,
-    /// 只安装键盘钩子（历史模式）。
-    HookOnly,
-}
-
-impl WinVMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            WinVMode::Auto => "自动（注册 → 钩子）",
-            WinVMode::RegisterOnly => "仅系统热键注册",
-            WinVMode::HookOnly => "仅键盘钩子",
-            WinVMode::Off => "关闭",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum WinVStatus {
-    Unknown,
-    /// RegisterHotKey 注册成功（最干净）。
-    Registered,
-    /// 低级键盘钩子生效；`compensated` 表示已启用开始菜单补偿逻辑。
-    HookActive {
-        compensated: bool,
-    },
-    /// 无法接管（保留备用快捷键）。
-    Unavailable {
-        reason: String,
-    },
-}
-
-impl WinVStatus {
-    pub fn label(&self) -> String {
-        match self {
-            WinVStatus::Unknown => "未知".into(),
-            WinVStatus::Registered => "系统热键注册成功".into(),
-            WinVStatus::HookActive { compensated } => {
-                if *compensated {
-                    "键盘钩子生效（含开始菜单补偿）".into()
-                } else {
-                    "键盘钩子生效".into()
-                }
-            }
-            WinVStatus::Unavailable { reason } => format!("不可用：{reason}"),
-        }
-    }
-
-    pub fn is_ok(&self) -> bool {
-        matches!(self, WinVStatus::Registered | WinVStatus::HookActive { .. })
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum PasteKey {
     #[default]
     CtrlV,
     ShiftInsert,
+}
+
+/// 外观皮肤（深色磨砂玻璃 / 浅色）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl ThemeMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeMode::Dark => "深色",
+            ThemeMode::Light => "浅色",
+        }
+    }
 }
 
 impl PasteKey {
@@ -534,9 +475,10 @@ impl PasteKey {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// 外观皮肤：深色 / 浅色。
+    pub theme: ThemeMode,
     /// 备用全局快捷键（Win+V 被接管时仍保留）。
     pub hotkey_picker: HotkeyChord,
-    pub winv_mode: WinVMode,
     pub pause_capture: bool,
     /// 忽略的应用进程名（小写、含 .exe）。
     pub ignore_apps: Vec<String>,
@@ -564,8 +506,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            theme: ThemeMode::Dark,
             hotkey_picker: HotkeyChord::default(),
-            winv_mode: WinVMode::Auto,
             pause_capture: false,
             ignore_apps: Vec::new(),
 
@@ -607,7 +549,7 @@ pub enum Event {
     /// 请求退出程序（托盘菜单）。
     QuitRequested,
     /// 历史列表发生变化（Store 处理完一次写入/删除后发送）。
-    ClipsChanged { total: usize },
+    ClipsChanged,
     /// 搜索/分页结果。
     SearchPage(SearchPage),
     /// 某条记录的粘贴载荷。
@@ -618,8 +560,6 @@ pub enum Event {
     PasteResult { ok: bool, reason: Option<String> },
     /// 轻提示（UI toast）。
     Toast(String),
-    /// Win+V 接管状态变化。
-    WinVStatus(WinVStatus),
     /// 备用全局快捷键注册状态。
     HotkeyStatus { ok: bool, reason: Option<String> },
     /// 剪贴板监听线程捕获到新内容（正常情况下 Sys 发 `Event::Captured`，由 UI 线程转发 `StoreCmd::Upsert`）。
@@ -660,10 +600,7 @@ pub enum SysCmd {
     /// 只写剪贴板，不粘贴。
     WriteClipboard(PastePayload),
     /// 应用新的快捷键配置。
-    SetHotkeys {
-        picker: HotkeyChord,
-        winv_mode: WinVMode,
-    },
+    SetHotkeys { picker: HotkeyChord },
     /// 暂停/恢复剪贴板监听。
     SetPause(bool),
     /// 设置开机自启。
@@ -751,7 +688,6 @@ mod tests {
         assert_eq!(s.picker_size, [620.0, 560.0]);
         assert_eq!(s.hotkey_picker.label(), "Ctrl+`");
         assert!(s.hotkey_picker.is_set());
-        assert_eq!(s.winv_mode, WinVMode::Auto);
         assert!(!s.autostart);
     }
 

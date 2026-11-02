@@ -365,3 +365,11 @@ pub fn install_fonts(ctx: &egui::Context);  // 中文字体回退
 > 快捷键/托盘唤起只做窗口移入屏幕 + 强制前台（实测 20–80ms）。
 > Win+V 接管同步移除（不注册、不装钩子）。设置改动由 UI 直接下发 SysCmd 立即生效，
 > settings.json 监听作为兜底。以本节为准，§7 仅保留为历史。
+
+## 9. v1.4.0 补充（2026-11-02）
+
+- 新增 `Settings.theme`（dark/light）与设置页「外观」分区；`theme` 模块改为运行时动态色板，
+  `set_light(bool)` + `install_theme(ctx)` 可热切换；窗口 Acrylic 色调随主题重设。
+- 候选窗顶部 16px 拖拽条、管理台标题栏支持 `ViewportCommand::StartDrag` 拖动窗口。
+- exe 图标改为构建后由 `patch-icon` 写入资源（不依赖 rc.exe）；发布流程见 `tools/build-release.ps1`。
+- Win+V 模块/类型/事件/字段已彻底删除（`src/sys/winv.rs` 移除），当前无编译警告。

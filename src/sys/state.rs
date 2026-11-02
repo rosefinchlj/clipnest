@@ -10,7 +10,7 @@ use crate::config;
 use crate::logging;
 use crate::model::{Event, Settings, SysCmd};
 use crate::sys::thread::HOTKEY_ID_PICKER;
-use crate::sys::{autostart, hotkey, paste, tray, util, winv, SysDiag};
+use crate::sys::{autostart, hotkey, paste, tray, util, SysDiag};
 use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -26,9 +26,6 @@ pub(crate) struct SysState {
     /// 备用呼出快捷键注册结果（含降级信息）。
     pub(crate) picker_hotkey: Option<hotkey::HotkeyRegistration>,
     /// Win+V 接管句柄。
-    pub(crate) winv: winv::WinVHandle,
-    /// 当前已应用的 Win+V 模式（用于 SetHotkeys 去重，避免无变更时反复装卸钩子）。
-    pub(crate) winv_mode: crate::model::WinVMode,
     /// 托盘（None 表示创建失败；drop 即移除图标）。
     pub(crate) tray: Option<tray::TrayState>,
     /// 是否已收到 Shutdown。
@@ -188,7 +185,6 @@ impl SysState {
     pub(crate) fn on_hotkey(&mut self, id: i32) {
         match id {
             HOTKEY_ID_PICKER => self.request_picker("备用快捷键"),
-            winv::WINV_HOTKEY_ID => self.request_picker("Win+V(L1)"),
             _ => logging::debug(&format!("未知 WM_HOTKEY id={id}")),
         }
     }
@@ -290,10 +286,7 @@ impl SysState {
                     "已恢复记录剪贴板"
                 });
             }
-            SysCmd::SetHotkeys {
-                picker,
-                winv_mode,
-            } => self.apply_hotkeys(picker, winv_mode),
+            SysCmd::SetHotkeys { picker } => self.apply_hotkeys(picker),
             SysCmd::SetAutostart(enabled) => match autostart::set(enabled) {
                 Ok(()) => {
                     self.with_settings(|s| s.autostart = enabled);
@@ -335,16 +328,9 @@ impl SysState {
         }
     }
 
-    fn apply_hotkeys(
-        &mut self,
-        picker: crate::model::HotkeyChord,
-        _winv_mode: crate::model::WinVMode,
-    ) {
-        // v1.2：Win+V 接管已移除，忽略传入的 winv_mode（字段仅保留兼容）。
-        let winv_mode = crate::model::WinVMode::Off;
+    fn apply_hotkeys(&mut self, picker: crate::model::HotkeyChord) {
         self.with_settings(|s| {
             s.hotkey_picker = picker;
-            s.winv_mode = winv_mode;
         });
 
         // UI 任何设置变更都会发 SetHotkeys；这里按「请求值是否真的变化」去重，
@@ -353,8 +339,7 @@ impl SysState {
             Some(existing) => existing.requested != picker,
             None => true,
         };
-        let winv_changed = self.winv_mode != winv_mode;
-        if !picker_changed && !winv_changed {
+        if !picker_changed {
             logging::debug("SetHotkeys：请求值未变化，跳过重注册");
             return;
         }
@@ -376,13 +361,6 @@ impl SysState {
         self.picker_hotkey = Some(registration);
         self.emit(Event::HotkeyStatus { ok, reason });
 
-        // v1.2：Win+V 接管已移除，不再装卸键盘钩子，仅上报固定状态。
-        self.winv_mode = winv_mode;
-        let winv_status = crate::model::WinVStatus::Unavailable {
-            reason: "v1.2 起已移除 Win+V 接管（请使用备用快捷键）".to_string(),
-        };
-        self.update_diag(|d| d.winv_status = Some(winv_status.clone()));
-        self.emit(Event::WinVStatus(winv_status));
     }
 
     fn handle_paste(&mut self, payload: crate::model::PastePayload, target_hwnd: isize) {
@@ -432,14 +410,9 @@ impl SysState {
             hotkey::unregister(self.hwnd, HOTKEY_ID_PICKER);
             self.picker_hotkey = None;
         }
-        self.winv.uninstall(self.hwnd);
         // drop 托盘 → 从通知区移除图标
         self.tray = None;
         unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
-                self.hwnd,
-                winv::WINV_RESET_TIMER_ID,
-            );
             windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
                 self.hwnd,
                 crate::sys::thread::FOREGROUND_POLL_TIMER_ID,

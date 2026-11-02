@@ -59,26 +59,26 @@ pub fn button_at(ui: &mut egui::Ui, rect: Rect, text: &str, kind: ButtonKind) ->
     let (fill, stroke, fg) = match kind {
         ButtonKind::Primary => (
             if hovered {
-                theme::ACCENT_HOVER
+                theme::accent_hover()
             } else {
-                theme::ACCENT
+                theme::accent()
             },
-            Stroke::new(1.0_f32, theme::ACCENT),
+            Stroke::new(1.0_f32, theme::accent()),
             Color32::WHITE,
         ),
         ButtonKind::Secondary => (
             theme::button_fill(hovered, pressed),
             theme::divider(),
-            theme::TEXT,
+            theme::text(),
         ),
         ButtonKind::Danger => (
             if hovered {
                 Color32::from_rgba_unmultiplied(0xFF, 0x6B, 0x6B, 30)
             } else {
-                theme::CARD
+                theme::card()
             },
-            Stroke::new(1.0_f32, theme::DANGER),
-            theme::DANGER,
+            Stroke::new(1.0_f32, theme::danger()),
+            theme::danger(),
         ),
         ButtonKind::Ghost => (
             if hovered {
@@ -88,9 +88,9 @@ pub fn button_at(ui: &mut egui::Ui, rect: Rect, text: &str, kind: ButtonKind) ->
             },
             Stroke::NONE,
             if hovered {
-                theme::TEXT
+                theme::text()
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             },
         ),
     };
@@ -133,9 +133,9 @@ pub fn menu_item(ui: &mut egui::Ui, text: &str) -> Response {
         text,
         theme::font_body(),
         if resp.hovered() {
-            theme::TEXT
+            theme::text()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         },
     );
     if resp.hovered() {
@@ -157,13 +157,13 @@ pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool) -> Response {
     let radius = CornerRadius::same(4);
     let painter = ui.painter();
     if *checked {
-        painter.rect_filled(rect, radius, theme::ACCENT);
+        painter.rect_filled(rect, radius, theme::accent());
         paint::paint_check(painter, rect, Color32::WHITE);
     }
     painter.rect_stroke(
         rect.shrink(0.5),
         radius,
-        Stroke::new(1.2_f32, if *checked { theme::ACCENT } else { theme::BORDER }),
+        Stroke::new(1.2_f32, if *checked { theme::accent() } else { theme::border() }),
         StrokeKind::Inside,
     );
     if resp.clicked() {
@@ -178,17 +178,17 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool) -> Response {
     let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(36.0, 20.0), Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.12);
     let radius = CornerRadius::same(10);
-    let track = lerp_color(theme::BORDER, theme::ACCENT, t);
+    let track = lerp_color(theme::border(), theme::accent(), t);
     let painter = ui.painter();
     painter.rect_filled(rect, radius, track);
     if t < 0.99 {
-        painter.rect_stroke(rect, radius, Stroke::new(1.0_f32, theme::BORDER), StrokeKind::Inside);
+        painter.rect_stroke(rect, radius, Stroke::new(1.0_f32, theme::border()), StrokeKind::Inside);
     }
     let knob_x = rect.left() + 10.0 + (rect.width() - 20.0) * t;
     painter.circle_filled(
         Pos2::new(knob_x, rect.center().y),
         7.0,
-        if t > 0.5 { Color32::WHITE } else { theme::TEXT_SECONDARY },
+        if t > 0.5 { Color32::WHITE } else { theme::text_secondary() },
     );
     if resp.clicked() {
         *on = !*on;
@@ -237,16 +237,16 @@ pub fn search_box(
         rect,
         CornerRadius::same(theme::RADIUS_INPUT),
         if focused {
-            theme::INPUT_FOCUSED
+            theme::input_focused()
         } else {
-            theme::CARD
+            theme::card()
         },
     );
     ui.painter().rect_stroke(
         rect,
         CornerRadius::same(theme::RADIUS_INPUT),
         if focused {
-            Stroke::new(1.0_f32, theme::ACCENT)
+            Stroke::new(1.0_f32, theme::accent())
         } else {
             theme::divider()
         },
@@ -262,9 +262,9 @@ pub fn search_box(
         ui.painter(),
         icon_rect,
         if focused {
-            theme::ACCENT
+            theme::accent()
         } else {
-            theme::TEXT_WEAK
+            theme::text_weak()
         },
     );
 
@@ -302,7 +302,7 @@ pub fn search_box(
                 Align2::CENTER_CENTER,
                 hint,
                 mono_font.clone(),
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             );
         }
     } else {
@@ -315,9 +315,9 @@ pub fn search_box(
             ui.painter(),
             clear_rect,
             if clear_resp.hovered() {
-                theme::TEXT
+                theme::text()
             } else {
-                theme::TEXT_WEAK
+                theme::text_weak()
             },
         );
         if clear_resp.clicked() {
@@ -341,10 +341,10 @@ pub fn search_box(
             .hint_text(
                 egui::RichText::new(placeholder)
                     .size(theme::SIZE_BODY)
-                    .color(theme::TEXT_WEAK),
+                    .color(theme::text_weak()),
             )
             .font(theme::font_body())
-            .text_color(theme::TEXT)
+            .text_color(theme::text())
             .desired_width(text_rect.width())
             .vertical_align(egui::Align::Center),
     );
@@ -387,20 +387,20 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
             let radius = CornerRadius::same(theme::RADIUS_CHIP);
             let painter = ui.painter();
             if selected {
-                painter.rect_filled(rect, radius, theme::ACCENT);
+                painter.rect_filled(rect, radius, theme::accent());
             } else if resp.hovered() {
                 painter.rect_filled(rect, radius, theme::hover_fill());
                 painter.rect_stroke(
                     rect,
                     radius,
-                    Stroke::new(1.0_f32, theme::BORDER),
+                    Stroke::new(1.0_f32, theme::border()),
                     StrokeKind::Inside,
                 );
             } else {
                 painter.rect_stroke(
                     rect,
                     radius,
-                    Stroke::new(1.0_f32, theme::BORDER),
+                    Stroke::new(1.0_f32, theme::border()),
                     StrokeKind::Inside,
                 );
             }
@@ -412,7 +412,7 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
                 if selected {
                     Color32::WHITE
                 } else {
-                    theme::TEXT_SECONDARY
+                    theme::text_secondary()
                 },
             );
             if resp.clicked() && !selected {
@@ -456,7 +456,7 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
         Pos2::new(x, rect.center().y - theme::SIZE_AUX * 0.5),
         keys::PICKER_HINT,
         theme::font_aux(),
-        theme::TEXT_WEAK,
+        theme::text_weak(),
         rect.width() * 0.62,
     );
     if paused {
@@ -465,7 +465,7 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
             Align2::LEFT_CENTER,
             "· 已暂停记录",
             theme::font_aux(),
-            theme::PINNED,
+            theme::pinned(),
         );
     }
 
@@ -479,9 +479,9 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
         &painter,
         gear_rect.shrink(1.0),
         if gear_resp.hovered() {
-            theme::TEXT
+            theme::text()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         },
     );
     painter.text(
@@ -489,7 +489,7 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
         Align2::RIGHT_CENTER,
         format!("共 {} 条", keys::fmt_count(total)),
         theme::font_aux(),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     if gear_resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -504,7 +504,7 @@ pub fn paint_toast(ui: &egui::Ui, bottom_center: Pos2, text: &str, alpha: f32) {
     if alpha <= 0.01 {
         return;
     }
-    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), theme::font_body(), theme::TEXT));
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), theme::font_body(), theme::text()));
     let size = galley.size() + Vec2::new(28.0, 18.0);
     let rect = Rect::from_center_size(
         bottom_center - Vec2::new(0.0, size.y / 2.0),
@@ -538,7 +538,7 @@ pub fn paint_toast(ui: &egui::Ui, bottom_center: Pos2, text: &str, alpha: f32) {
     painter.galley(
         rect.min + Vec2::new(14.0, 9.0),
         galley,
-        theme::TEXT.gamma_multiply(alpha),
+        theme::text().gamma_multiply(alpha),
     );
 }
 
@@ -575,7 +575,7 @@ pub fn hotkey_recorder(
         rect,
         radius,
         if state.recording {
-            theme::INPUT_FOCUSED
+            theme::input_focused()
         } else {
             theme::button_fill(resp.hovered(), resp.is_pointer_button_down_on())
         },
@@ -584,7 +584,7 @@ pub fn hotkey_recorder(
         rect,
         radius,
         if state.recording {
-            Stroke::new(1.0_f32, theme::ACCENT)
+            Stroke::new(1.0_f32, theme::accent())
         } else {
             theme::divider()
         },
@@ -599,7 +599,7 @@ pub fn hotkey_recorder(
             "录制"
         },
         theme::font_aux(),
-        theme::TEXT_WEAK,
+        theme::text_weak(),
     );
     ui.painter().text(
         Pos2::new(rect.right() - 12.0, rect.center().y),
@@ -607,9 +607,9 @@ pub fn hotkey_recorder(
         badge,
         FontId::new(theme::SIZE_BODY, egui::FontFamily::Proportional),
         if state.recording {
-            theme::ACCENT
+            theme::accent()
         } else {
-            theme::TEXT
+            theme::text()
         },
     );
     if resp.clicked() {
@@ -762,8 +762,8 @@ mod tests {
 
     #[test]
     fn blend_is_endpoint_exact() {
-        let a = theme::CARD;
-        let b = theme::ACCENT;
+        let a = theme::card();
+        let b = theme::accent();
         assert_eq!(lerp_color(a, b, 0.0), a);
         assert_eq!(lerp_color(a, b, 1.0), b);
         assert_eq!(lerp_color(a, b, 2.0), b); // 越界夹取

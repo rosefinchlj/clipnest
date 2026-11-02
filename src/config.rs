@@ -72,7 +72,11 @@ pub fn load_settings() -> Settings {
         Err(err) => {
             // 首次运行没有 settings.json 属于正常情况，不刷警告。
             if !err.contains("os error 2") {
-                crate::logging::warn(&format!("settings.json 读取失败（{err}），使用默认设置"));
+                let path = settings_path();
+                crate::logging::warn(&format!(
+                    "settings.json 读取失败（{err}）path={}",
+                    path.display()
+                ));
             }
             let path = settings_path();
             if path.exists() {

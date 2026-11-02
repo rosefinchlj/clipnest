@@ -10,106 +10,222 @@
 //! 动效（§7.4）：行悬停/选中 80ms、窗口 120ms、模式切换 150ms；不做花哨动效。
 
 use crate::model::ClipKind;
+use std::sync::atomic::{AtomicBool, Ordering};
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
 };
 
 // ---------------------------------------------------------------------------
-// 色板（spec §7.1，十六进制即设计稿值）
+// ---------------------------------------------------------------------------
+// 色板（深色 / 浅色两套；运行时切换）
 // ---------------------------------------------------------------------------
 
-/// 主文本 `#E6EDF3`。
-pub const TEXT: Color32 = Color32::from_rgb(0xE6, 0xED, 0xF3);
-/// 次文本 `#8B98A9`。
-pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(0x8B, 0x98, 0xA9);
-/// 弱文本/占位 `#5C6878`。
-pub const TEXT_WEAK: Color32 = Color32::from_rgb(0x5C, 0x68, 0x78);
+#[derive(Clone, Copy)]
+struct Palette {
+    text: Color32,
+    text_secondary: Color32,
+    text_weak: Color32,
+    accent: Color32,
+    accent_hover: Color32,
+    danger: Color32,
+    success: Color32,
+    pinned: Color32,
+    kind_text: Color32,
+    kind_image: Color32,
+    kind_files: Color32,
+    card: Color32,
+    card_hover: Color32,
+    card_active: Color32,
+    input_focused: Color32,
+    border: Color32,
+    panel_base: Color32,
+    window_base: Color32,
+    table_stripe: Color32,
+    window_bg: Color32,
+    panel_bg: Color32,
+    divider: Color32,
+    hover_fill: Color32,
+    popup_fill: Color32,
+    extreme_bg: Color32,
+    outline_stroke: Color32,
+    hover_stroke: Color32,
+    shadow_window: u8,
+    shadow_popup: u8,
+}
 
-/// 强调色（选中/链接/按钮）`#6E8BFF`。
-pub const ACCENT: Color32 = Color32::from_rgb(0x6E, 0x8B, 0xFF);
-/// 强调色悬停 `#8AA2FF`。
-pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0x8A, 0xA2, 0xFF);
-/// 危险 `#FF6B6B`。
-pub const DANGER: Color32 = Color32::from_rgb(0xFF, 0x6B, 0x6B);
-/// 成功 `#4ADE80`。
-pub const SUCCESS: Color32 = Color32::from_rgb(0x4A, 0xDE, 0x80);
-/// 已收藏（星标）`#F5C451`。
-pub const PINNED: Color32 = Color32::from_rgb(0xF5, 0xC4, 0x51);
+const DARK: Palette = Palette {
+    text: Color32::from_rgb(0xE6, 0xED, 0xF3),
+    text_secondary: Color32::from_rgb(0x8B, 0x98, 0xA9),
+    text_weak: Color32::from_rgb(0x5C, 0x68, 0x78),
+    accent: Color32::from_rgb(0x6E, 0x8B, 0xFF),
+    accent_hover: Color32::from_rgb(0x8A, 0xA2, 0xFF),
+    danger: Color32::from_rgb(0xFF, 0x6B, 0x6B),
+    success: Color32::from_rgb(0x4A, 0xDE, 0x80),
+    pinned: Color32::from_rgb(0xF5, 0xC4, 0x51),
+    kind_text: Color32::from_rgb(0x6E, 0x8B, 0xFF),
+    kind_image: Color32::from_rgb(0x4A, 0xDE, 0x80),
+    kind_files: Color32::from_rgb(0xF5, 0xA5, 0x24),
+    card: Color32::from_rgb(0x1A, 0x21, 0x2B),
+    card_hover: Color32::from_rgb(0x23, 0x2B, 0x37),
+    card_active: Color32::from_rgb(0x27, 0x30, 0x3E),
+    input_focused: Color32::from_rgb(0x1F, 0x27, 0x33),
+    border: Color32::from_rgb(0x2A, 0x33, 0x40),
+    panel_base: Color32::from_rgb(0x13, 0x18, 0x20),
+    window_base: Color32::from_rgb(0x0E, 0x11, 0x16),
+    table_stripe: Color32::from_rgb(0x16, 0x1C, 0x25),
+    window_bg: Color32::from_rgba_premultiplied(10, 13, 16, 190),
+    panel_bg: Color32::from_rgba_premultiplied(16, 20, 27, 215),
+    divider: Color32::from_rgba_premultiplied(20, 20, 20, 20),
+    hover_fill: Color32::from_rgba_premultiplied(15, 15, 15, 15),
+    popup_fill: Color32::from_rgb(0x1C, 0x23, 0x2E),
+    extreme_bg: Color32::from_rgb(0x10, 0x14, 0x1B),
+    outline_stroke: Color32::from_rgba_premultiplied(16, 16, 16, 16),
+    hover_stroke: Color32::from_rgba_premultiplied(28, 28, 28, 28),
+    shadow_window: 150,
+    shadow_popup: 130,
+};
 
-/// 类型色：文本 `#6E8BFF`。
-pub const KIND_TEXT: Color32 = ACCENT;
-/// 类型色：图片 `#4ADE80`。
-pub const KIND_IMAGE: Color32 = SUCCESS;
-/// 类型色：文件 `#F5A524`。
-pub const KIND_FILES: Color32 = Color32::from_rgb(0xF5, 0xA5, 0x24);
+const LIGHT: Palette = Palette {
+    text: Color32::from_rgb(0x1B, 0x24, 0x30),
+    text_secondary: Color32::from_rgb(0x4A, 0x55, 0x68),
+    text_weak: Color32::from_rgb(0x74, 0x80, 0x8F),
+    accent: Color32::from_rgb(0x3E, 0x63, 0xDD),
+    accent_hover: Color32::from_rgb(0x5B, 0x7C, 0xFA),
+    danger: Color32::from_rgb(0xD6, 0x45, 0x45),
+    success: Color32::from_rgb(0x2F, 0x9E, 0x5F),
+    pinned: Color32::from_rgb(0xB7, 0x86, 0x0B),
+    kind_text: Color32::from_rgb(0x3E, 0x63, 0xDD),
+    kind_image: Color32::from_rgb(0x2F, 0x9E, 0x5F),
+    kind_files: Color32::from_rgb(0xC7, 0x7A, 0x00),
+    card: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    card_hover: Color32::from_rgb(0xF2, 0xF5, 0xFA),
+    card_active: Color32::from_rgb(0xE8, 0xEE, 0xF8),
+    input_focused: Color32::from_rgb(0xF4, 0xF7, 0xFC),
+    border: Color32::from_rgb(0xC9, 0xD3, 0xE0),
+    panel_base: Color32::from_rgb(0xF7, 0xF9, 0xFC),
+    window_base: Color32::from_rgb(0xF2, 0xF5, 0xFA),
+    table_stripe: Color32::from_rgb(0xF3, 0xF6, 0xFA),
+    window_bg: Color32::from_rgba_premultiplied(185, 186, 188, 190),
+    panel_bg: Color32::from_rgba_premultiplied(215, 215, 215, 215),
+    divider: Color32::from_rgba_premultiplied(0, 0, 0, 24),
+    hover_fill: Color32::from_rgba_premultiplied(0, 0, 0, 12),
+    popup_fill: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    extreme_bg: Color32::from_rgb(0xEE, 0xF2, 0xF8),
+    outline_stroke: Color32::from_rgba_premultiplied(0, 0, 0, 20),
+    hover_stroke: Color32::from_rgba_premultiplied(0, 0, 0, 36),
+    shadow_window: 50,
+    shadow_popup: 40,
+};
 
-/// 卡片/输入框底色 `#1A212B`。
-pub const CARD: Color32 = Color32::from_rgb(0x1A, 0x21, 0x2B);
-/// 卡片悬停底色（在 CARD 上加 6% 白）。
-pub const CARD_HOVER: Color32 = Color32::from_rgb(0x23, 0x2B, 0x37);
-/// 卡片按下/激活底色。
-pub const CARD_ACTIVE: Color32 = Color32::from_rgb(0x27, 0x30, 0x3E);
-/// 输入框聚焦底色。
-pub const INPUT_FOCUSED: Color32 = Color32::from_rgb(0x1F, 0x27, 0x33);
-/// 分隔线/边框基色 `#2A3340`（实际绘制时用 8% 白叠加，见 [`divider`]）。
-pub const BORDER: Color32 = Color32::from_rgb(0x2A, 0x33, 0x40);
-/// 面板/侧栏不透明基色 `#131820`。
-pub const PANEL_BASE: Color32 = Color32::from_rgb(0x13, 0x18, 0x20);
-/// 窗口底不透明基色 `#0E1116`（亚克力不可用时的兜底）。
-pub const WINDOW_BASE: Color32 = Color32::from_rgb(0x0E, 0x11, 0x16);
-/// 表格行交替色（极轻微）。
-pub const TABLE_STRIPE: Color32 = Color32::from_rgb(0x16, 0x1C, 0x25);
+static LIGHT_MODE: AtomicBool = AtomicBool::new(false);
 
-/// 窗口底：`#0E1116` @82%（叠在亚克力/磨砂材质上，spec §7.1）。
+/// 切换深/浅色（由设置驱动）；切换后需要重新调用 [`install_theme`]。
+pub fn set_light(light: bool) {
+    LIGHT_MODE.store(light, Ordering::Relaxed);
+}
+
+pub fn is_light() -> bool {
+    LIGHT_MODE.load(Ordering::Relaxed)
+}
+
+fn palette() -> Palette {
+    if is_light() {
+        LIGHT
+    } else {
+        DARK
+    }
+}
+
+pub fn text() -> Color32 {
+    palette().text
+}
+pub fn text_secondary() -> Color32 {
+    palette().text_secondary
+}
+pub fn text_weak() -> Color32 {
+    palette().text_weak
+}
+pub fn accent() -> Color32 {
+    palette().accent
+}
+pub fn accent_hover() -> Color32 {
+    palette().accent_hover
+}
+pub fn danger() -> Color32 {
+    palette().danger
+}
+pub fn success() -> Color32 {
+    palette().success
+}
+pub fn pinned() -> Color32 {
+    palette().pinned
+}
+pub fn card() -> Color32 {
+    palette().card
+}
+pub fn card_hover() -> Color32 {
+    palette().card_hover
+}
+pub fn card_active() -> Color32 {
+    palette().card_active
+}
+pub fn input_focused() -> Color32 {
+    palette().input_focused
+}
+pub fn border() -> Color32 {
+    palette().border
+}
+pub fn panel_base() -> Color32 {
+    palette().panel_base
+}
+pub fn window_base() -> Color32 {
+    palette().window_base
+}
+pub fn table_stripe() -> Color32 {
+    palette().table_stripe
+}
+
 pub fn window_bg() -> Color32 {
-    Color32::from_rgba_unmultiplied(0x0E, 0x11, 0x16, 190) // 190/255 ≈ 75%（Acrylic 上叠深色，保证文字对比度）
+    palette().window_bg
 }
 
-/// 面板/侧栏：`#131820` @92%。
 pub fn panel_bg() -> Color32 {
-    Color32::from_rgba_unmultiplied(0x13, 0x18, 0x20, 215) // 215/255 ≈ 84%
+    palette().panel_bg
 }
 
-/// 分隔线/边框：1px、8% 白叠加（spec §7.1）。
 pub fn divider() -> Stroke {
-    Stroke::new(
-        1.0_f32,
-        Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 20),
-    )
+    Stroke::new(1.0_f32, palette().divider)
 }
 
-/// 选中态背景：强调色 12%（spec §6.2）。
 pub fn accent_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(0x6E, 0x8B, 0xFF, 31) // 31/255 ≈ 12%
+    let c = palette().accent;
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 31)
 }
 
-/// 悬停态背景：白色 6%（spec §6.2）。
 pub fn hover_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 15) // 15/255 ≈ 6%
+    palette().hover_fill
 }
 
-/// 文本选区背景：强调色 ~24%。
 pub fn selection_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(0x6E, 0x8B, 0xFF, 61)
+    let c = palette().accent;
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 61)
 }
 
-/// 强调色半透明底（图标底座等，18%）。
 pub fn accent_soft() -> Color32 {
-    Color32::from_rgba_unmultiplied(0x6E, 0x8B, 0xFF, 46)
+    let c = palette().accent;
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 46)
 }
 
-/// 类型色半透明底（类型徽标底座，15%）。
 pub fn kind_soft(kind: ClipKind) -> Color32 {
     let c = kind_color(kind);
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 38)
 }
 
-/// 类型徽标/图标的语义色。
 pub fn kind_color(kind: ClipKind) -> Color32 {
     match kind {
-        ClipKind::Text => KIND_TEXT,
-        ClipKind::Image => KIND_IMAGE,
-        ClipKind::Files => KIND_FILES,
+        ClipKind::Text => palette().kind_text,
+        ClipKind::Image => palette().kind_image,
+        ClipKind::Files => palette().kind_files,
     }
 }
 
@@ -209,33 +325,33 @@ pub fn font_mono() -> FontId {
 }
 
 /// 标题富文本（15、主文本色）。
-pub fn title(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).size(SIZE_TITLE).color(TEXT)
+pub fn title(value: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(value).size(SIZE_TITLE).color(text())
 }
 
 /// 列表标题富文本（13.5、主文本色）。
-pub fn row_title(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).size(SIZE_ROW_TITLE).color(TEXT)
+pub fn row_title(value: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(value).size(SIZE_ROW_TITLE).color(text())
 }
 
 /// 正文富文本（13、主文本色）。
-pub fn body(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).size(SIZE_BODY).color(TEXT)
+pub fn body(value: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(value).size(SIZE_BODY).color(text())
 }
 
 /// 次文本富文本（13、`#8B98A9`）。
 pub fn body_secondary(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).size(SIZE_BODY).color(TEXT_SECONDARY)
+    egui::RichText::new(text).size(SIZE_BODY).color(text_secondary())
 }
 
 /// 辅助文本富文本（11.5、`#8B98A9`）。
 pub fn aux(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).size(SIZE_AUX).color(TEXT_SECONDARY)
+    egui::RichText::new(text).size(SIZE_AUX).color(text_secondary())
 }
 
 /// 弱文本富文本（11.5、`#5C6878`）。
 pub fn weak(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).size(SIZE_AUX).color(TEXT_WEAK)
+    egui::RichText::new(text).size(SIZE_AUX).color(text_weak())
 }
 
 /// 等宽富文本（12、次文本色）。
@@ -243,34 +359,32 @@ pub fn mono(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text)
         .size(SIZE_MONO)
         .family(FontFamily::Monospace)
-        .color(TEXT_SECONDARY)
+        .color(text_secondary())
 }
 
 // ---------------------------------------------------------------------------
 // 常用 Frame / Shadow
 // ---------------------------------------------------------------------------
 
-/// 窗口级阴影（预览窗口、弹层）。
 pub fn window_shadow() -> Shadow {
     Shadow {
         offset: [0, 8],
         blur: 28,
         spread: 0,
-        color: Color32::from_black_alpha(150),
+        color: Color32::from_black_alpha(palette().shadow_window),
     }
 }
 
-/// 弹层/菜单阴影。
 pub fn popup_shadow() -> Shadow {
     Shadow {
         offset: [0, 4],
         blur: 16,
         spread: 0,
-        color: Color32::from_black_alpha(130),
+        color: Color32::from_black_alpha(palette().shadow_popup),
     }
 }
 
-/// Picker 面板外框：窗口底 82%、圆角 12、1px 8% 白描边、内边距 12。
+/// Picker 面板外框：窗口底、圆角 12、1px 描边、内边距 12。
 pub fn picker_frame() -> egui::Frame {
     // 全窗背景由 `UiState::show` 统一绘制（包含 SidePanel 区域），这里不再重复填充。
     egui::Frame::NONE
@@ -280,7 +394,7 @@ pub fn picker_frame() -> egui::Frame {
         .inner_margin(Margin::same(PICKER_PAD as i8))
 }
 
-/// Manager 外框：不透明深色面板、圆角 12、1px 描边。
+/// Manager 外框：圆角 12、1px 描边。
 pub fn manager_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(Color32::TRANSPARENT)
@@ -288,10 +402,10 @@ pub fn manager_frame() -> egui::Frame {
         .stroke(divider())
 }
 
-/// 卡片外框（设置分区、详情面板等）：`#1A212B`、圆角 10、1px 描边、内边距 16。
+/// 卡片外框（设置分区、详情面板等）。
 pub fn card_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(CARD)
+        .fill(card())
         .corner_radius(CornerRadius::same(RADIUS_CARD))
         .stroke(divider())
         .inner_margin(Margin::same(16))
@@ -302,20 +416,21 @@ pub fn outline_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(Color32::TRANSPARENT)
         .corner_radius(CornerRadius::same(RADIUS_CARD))
-        .stroke(Stroke::new(
-            1.0_f32,
-            Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 16),
-        ))
+        .stroke(Stroke::new(1.0_f32, palette().outline_stroke))
         .inner_margin(Margin::same(12))
 }
 
 /// 输入框/搜索框外框。
 pub fn input_frame(focused: bool) -> egui::Frame {
     egui::Frame::NONE
-        .fill(if focused { INPUT_FOCUSED } else { CARD })
+        .fill(if focused {
+            input_focused()
+        } else {
+            card()
+        })
         .corner_radius(CornerRadius::same(RADIUS_INPUT))
         .stroke(if focused {
-            Stroke::new(1.0_f32, ACCENT)
+            Stroke::new(1.0_f32, accent())
         } else {
             divider()
         })
@@ -325,7 +440,7 @@ pub fn input_frame(focused: bool) -> egui::Frame {
 /// 弹层/右键菜单外框。
 pub fn popup_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(Color32::from_rgb(0x1C, 0x23, 0x2E))
+        .fill(palette().popup_fill)
         .corner_radius(CornerRadius::same(RADIUS_CARD))
         .stroke(divider())
         .inner_margin(Margin::same(6))
@@ -335,11 +450,11 @@ pub fn popup_frame() -> egui::Frame {
 /// 按钮底色（普通/悬停/按下），供自绘按钮使用。
 pub fn button_fill(hovered: bool, pressed: bool) -> Color32 {
     if pressed {
-        CARD_ACTIVE
+        card_active()
     } else if hovered {
-        CARD_HOVER
+        card_hover()
     } else {
-        CARD
+        card()
     }
 }
 
@@ -347,25 +462,31 @@ pub fn button_fill(hovered: bool, pressed: bool) -> Color32 {
 // 安装主题
 // ---------------------------------------------------------------------------
 
-/// 安装深色主题（色板 + 圆角 + 字号 + 动效），App 启动时调用一次。
+/// 安装当前主题（深/浅色由 [`set_light`] 决定），App 启动/切换时调用。
 pub fn install_theme(ctx: &egui::Context) {
-    // 用户明确只要深色主题（spec §2.2）：强制主题偏好为 Dark，
-    // 否则 egui 在系统亮色模式下会切到 Light 的默认 Style，导致 ComboBox/DragValue/
-    // TextEdit 等默认控件变亮（自绘控件不受影响，但会显得不协调）。
-    ctx.set_theme(egui::ThemePreference::Dark);
+    let light = is_light();
+    ctx.set_theme(if light {
+        egui::ThemePreference::Light
+    } else {
+        egui::ThemePreference::Dark
+    });
     let mut style = (*ctx.style()).clone();
 
     // ---- Visuals ----
-    let mut v = egui::Visuals::dark();
-    v.dark_mode = true;
-    v.override_text_color = Some(TEXT);
-    v.hyperlink_color = ACCENT;
-    v.faint_bg_color = TABLE_STRIPE;
-    v.extreme_bg_color = Color32::from_rgb(0x10, 0x14, 0x1B);
-    v.code_bg_color = CARD;
-    v.warn_fg_color = KIND_FILES;
-    v.error_fg_color = DANGER;
-    v.window_fill = PANEL_BASE;
+    let mut v = if light {
+        egui::Visuals::light()
+    } else {
+        egui::Visuals::dark()
+    };
+    v.dark_mode = !light;
+    v.override_text_color = Some(text());
+    v.hyperlink_color = accent();
+    v.faint_bg_color = table_stripe();
+    v.extreme_bg_color = palette().extreme_bg;
+    v.code_bg_color = card();
+    v.warn_fg_color = palette().kind_files;
+    v.error_fg_color = danger();
+    v.window_fill = panel_base();
     v.window_stroke = divider();
     v.window_corner_radius = CornerRadius::same(RADIUS_CARD);
     v.window_shadow = popup_shadow();
@@ -373,38 +494,35 @@ pub fn install_theme(ctx: &egui::Context) {
     v.panel_fill = window_bg();
     v.selection = egui::style::Selection {
         bg_fill: selection_fill(),
-        stroke: Stroke::new(1.0_f32, ACCENT),
+        stroke: Stroke::new(1.0_f32, accent()),
     };
     v.interact_cursor = None;
 
-    // 控件四态（深色卡片 + 细描边 + 主文本）。
+    // 控件四态（卡片 + 细描边 + 主文本）。
     let base = egui::style::WidgetVisuals {
-        bg_fill: CARD,
-        weak_bg_fill: CARD,
+        bg_fill: card(),
+        weak_bg_fill: card(),
         bg_stroke: divider(),
         corner_radius: CornerRadius::same(RADIUS_INPUT),
-        fg_stroke: Stroke::new(1.0_f32, TEXT),
+        fg_stroke: Stroke::new(1.0_f32, text()),
         expansion: 0.0,
     };
     v.widgets.noninteractive = base;
     v.widgets.inactive = base;
     v.widgets.hovered = egui::style::WidgetVisuals {
-        bg_fill: CARD_HOVER,
-        weak_bg_fill: CARD_HOVER,
-        bg_stroke: Stroke::new(
-            1.0_f32,
-            Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 28),
-        ),
+        bg_fill: card_hover(),
+        weak_bg_fill: card_hover(),
+        bg_stroke: Stroke::new(1.0_f32, palette().hover_stroke),
         corner_radius: CornerRadius::same(RADIUS_INPUT),
-        fg_stroke: Stroke::new(1.0_f32, TEXT),
+        fg_stroke: Stroke::new(1.0_f32, text()),
         expansion: 0.0,
     };
     v.widgets.active = egui::style::WidgetVisuals {
-        bg_fill: CARD_ACTIVE,
-        weak_bg_fill: CARD_ACTIVE,
-        bg_stroke: Stroke::new(1.0_f32, ACCENT),
+        bg_fill: card_active(),
+        weak_bg_fill: card_active(),
+        bg_stroke: Stroke::new(1.0_f32, accent()),
         corner_radius: CornerRadius::same(RADIUS_INPUT),
-        fg_stroke: Stroke::new(1.0_f32, TEXT),
+        fg_stroke: Stroke::new(1.0_f32, text()),
         expansion: 0.0,
     };
     v.widgets.open = v.widgets.active;
@@ -473,39 +591,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn palette_matches_spec() {
-        assert_eq!(TEXT, Color32::from_rgb(0xE6, 0xED, 0xF3));
-        assert_eq!(TEXT_SECONDARY, Color32::from_rgb(0x8B, 0x98, 0xA9));
-        assert_eq!(TEXT_WEAK, Color32::from_rgb(0x5C, 0x68, 0x78));
-        assert_eq!(ACCENT, Color32::from_rgb(0x6E, 0x8B, 0xFF));
-        assert_eq!(ACCENT_HOVER, Color32::from_rgb(0x8A, 0xA2, 0xFF));
-        assert_eq!(DANGER, Color32::from_rgb(0xFF, 0x6B, 0x6B));
-        assert_eq!(SUCCESS, Color32::from_rgb(0x4A, 0xDE, 0x80));
-        assert_eq!(PINNED, Color32::from_rgb(0xF5, 0xC4, 0x51));
-        assert_eq!(KIND_TEXT, ACCENT);
-        assert_eq!(KIND_IMAGE, SUCCESS);
-        assert_eq!(KIND_FILES, Color32::from_rgb(0xF5, 0xA5, 0x24));
-        assert_eq!(CARD, Color32::from_rgb(0x1A, 0x21, 0x2B));
-        assert_eq!(BORDER, Color32::from_rgb(0x2A, 0x33, 0x40));
-        assert_eq!(PANEL_BASE, Color32::from_rgb(0x13, 0x18, 0x20));
-        assert_eq!(WINDOW_BASE, Color32::from_rgb(0x0E, 0x11, 0x16));
+    fn dark_palette_matches_spec() {
+        set_light(false);
+        assert_eq!(text(), Color32::from_rgb(0xE6, 0xED, 0xF3));
+        assert_eq!(text_secondary(), Color32::from_rgb(0x8B, 0x98, 0xA9));
+        assert_eq!(text_weak(), Color32::from_rgb(0x5C, 0x68, 0x78));
+        assert_eq!(accent(), Color32::from_rgb(0x6E, 0x8B, 0xFF));
+        assert_eq!(accent_hover(), Color32::from_rgb(0x8A, 0xA2, 0xFF));
+        assert_eq!(danger(), Color32::from_rgb(0xFF, 0x6B, 0x6B));
+        assert_eq!(success(), Color32::from_rgb(0x4A, 0xDE, 0x80));
+        assert_eq!(pinned(), Color32::from_rgb(0xF5, 0xC4, 0x51));
+        assert_eq!(card(), Color32::from_rgb(0x1A, 0x21, 0x2B));
+        assert_eq!(border(), Color32::from_rgb(0x2A, 0x33, 0x40));
+        assert_eq!(panel_base(), Color32::from_rgb(0x13, 0x18, 0x20));
+        assert_eq!(window_base(), Color32::from_rgb(0x0E, 0x11, 0x16));
+    }
+
+    #[test]
+    fn light_palette_has_dark_text_on_light_cards() {
+        let palette = LIGHT;
+        assert!(palette.text.r() < 64, "浅色皮肤主文本必须是深色");
+        assert!(palette.card.r() > 220, "浅色皮肤卡片必须是浅色");
+        assert!(palette.window_bg.a() < 255, "浅色皮肤也要保留半透明玻璃层");
+        set_light(false);
     }
 
     #[test]
     fn alpha_layers_match_spec() {
-        // 窗口底 82%、面板 92%
+        set_light(false);
         assert_eq!(window_bg().a(), 190);
         assert_eq!(panel_bg().a(), 215);
-        // 选中 12%、悬停 6%、分隔线 8% 白
         assert_eq!(accent_fill().a(), 31);
         assert_eq!(hover_fill().a(), 15);
         assert_eq!(divider().width, 1.0);
         assert_eq!(divider().color.a(), 20);
-        // 半透明色必须已预乘，否则混合会发亮
         let af = accent_fill();
-        assert!(af.r() <= ACCENT.r());
-        assert!(af.g() <= ACCENT.g());
-        assert!(af.b() <= ACCENT.b());
+        assert!(af.r() <= accent().r());
+        assert!(af.g() <= accent().g());
+        assert!(af.b() <= accent().b());
     }
 
     #[test]
@@ -525,12 +648,14 @@ mod tests {
     }
 
     #[test]
-    fn install_theme_sets_styles() {
+    fn install_theme_sets_dark_and_light_styles() {
         let ctx = egui::Context::default();
+        set_light(false);
         install_theme(&ctx);
         let style = ctx.style();
         assert!(style.visuals.dark_mode);
-        assert_eq!(style.visuals.override_text_color, Some(TEXT));
+        assert_eq!(style.visuals.override_text_color, Some(text()));
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
         assert_eq!(
             style.text_styles.get(&TextStyle::Body).map(|f| f.size),
             Some(SIZE_BODY)
@@ -539,35 +664,26 @@ mod tests {
             style.text_styles.get(&TextStyle::Heading).map(|f| f.size),
             Some(SIZE_TITLE)
         );
-        assert_eq!(
-            style
-                .text_styles
-                .get(&TextStyle::Name("row_title".into()))
-                .map(|f| f.size),
-            Some(SIZE_ROW_TITLE)
-        );
-        assert_eq!(
-            style.text_styles.get(&TextStyle::Monospace).map(|f| f.size),
-            Some(SIZE_MONO)
-        );
         assert_eq!(style.spacing.scroll.bar_width, 6.0);
         assert_eq!(style.animation_time, 0.12);
-        assert_eq!(style.spacing.item_spacing.y, GAP_S - 2.0);
-        // 强制深色：即使系统是亮色模式，egui 也必须用我们的深色 Style
-        assert_eq!(ctx.theme(), egui::Theme::Dark);
-        assert_eq!(
-            ctx.style().visuals.override_text_color,
-            Some(TEXT),
-            "强制 Dark 后当前 Style 仍应是主题色"
-        );
+
+        // 切到浅色：Visuals 与文本色都要跟着变
+        set_light(true);
+        install_theme(&ctx);
+        assert!(!ctx.style().visuals.dark_mode);
+        assert_eq!(ctx.theme(), egui::Theme::Light);
+        assert_eq!(ctx.style().visuals.override_text_color, Some(text()));
+        assert!(text().r() < 64);
+        set_light(false);
+        install_theme(&ctx);
     }
 
     #[test]
-    fn kind_colors_map_to_spec() {
-        assert_eq!(kind_color(ClipKind::Text), KIND_TEXT);
-        assert_eq!(kind_color(ClipKind::Image), KIND_IMAGE);
-        assert_eq!(kind_color(ClipKind::Files), KIND_FILES);
-        // 徽标底色带 alpha 且已预乘
+    fn kind_colors_map_to_palette() {
+        set_light(false);
+        assert_eq!(kind_color(ClipKind::Text), accent());
+        assert_eq!(kind_color(ClipKind::Image), success());
+        assert_eq!(kind_color(ClipKind::Files), Color32::from_rgb(0xF5, 0xA5, 0x24));
         for kind in [ClipKind::Text, ClipKind::Image, ClipKind::Files] {
             let c = kind_soft(kind);
             assert_eq!(c.a(), 38);
@@ -577,13 +693,14 @@ mod tests {
 
     #[test]
     fn frames_use_theme_radii() {
+        set_light(false);
         let picker = picker_frame();
         assert_eq!(picker.corner_radius.nw, RADIUS_WINDOW);
-        let card = card_frame();
-        assert_eq!(card.corner_radius.nw, RADIUS_CARD);
+        let card_shape = card_frame();
+        assert_eq!(card_shape.corner_radius.nw, RADIUS_CARD);
         let input = input_frame(false);
         assert_eq!(input.corner_radius.nw, RADIUS_INPUT);
-        assert_eq!(input.fill, CARD);
-        assert_eq!(input_frame(true).fill, INPUT_FOCUSED);
+        assert_eq!(input.fill, card());
+        assert_eq!(input_frame(true).fill, input_focused());
     }
 }

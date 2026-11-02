@@ -229,9 +229,15 @@ impl Db {
     }
 
     /// 把条目置顶（粘贴后调用）：last_used_at=now、use_count+1。
+    ///
+    /// 同一毫秒内连续粘贴多条时，单纯用 now 会产生相同时间戳、排序退化为 id 顺序，
+    /// 导致"刚粘贴的条目没有置顶"。这里保证时间戳严格大于当前最大值（逻辑时钟）。
     pub fn bump_used(&self, id: ClipId) -> StoreResult<bool> {
         let changed = self.conn.execute(
-            "UPDATE clips SET last_used_at = ?1, use_count = use_count + 1 WHERE id = ?2",
+            "UPDATE clips
+             SET last_used_at = MAX(?1, COALESCE((SELECT MAX(last_used_at) FROM clips), 0) + 1),
+                 use_count = use_count + 1
+             WHERE id = ?2",
             rusqlite::params![now_ms(), id],
         )?;
         Ok(changed > 0)

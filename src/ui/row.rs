@@ -51,7 +51,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
             Pos2::new(rect.left() + 1.0, rect.top() + 12.0),
             Pos2::new(rect.left() + 3.0, rect.bottom() - 12.0),
         );
-        painter.rect_filled(bar, CornerRadius::same(1), theme::ACCENT.gamma_multiply(sel_t));
+        painter.rect_filled(bar, CornerRadius::same(1), theme::accent().gamma_multiply(sel_t));
     } else if hover_t > 0.001 {
         painter.rect_filled(
             rect,
@@ -73,7 +73,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
             painter.rect_filled(
                 icon_rect,
                 CornerRadius::same(theme::RADIUS_THUMB),
-                theme::CARD_ACTIVE,
+                theme::card_active(),
             );
             let size = icon_rect.size();
             ui.put(
@@ -108,7 +108,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Pos2::new(text_left, rect.top() + 11.0),
         title,
         theme::font_row_title(),
-        theme::TEXT,
+        theme::text(),
         text_right - text_left,
     );
     let subtitle = row.item.subtitle();
@@ -117,7 +117,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Pos2::new(text_left, rect.top() + 34.0),
         subtitle,
         FontId::new(theme::SIZE_AUX, egui::FontFamily::Proportional),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         text_right - text_left,
     );
 
@@ -127,7 +127,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Align2::RIGHT_TOP,
         fmt_relative_time(row.item.last_used_at),
         theme::font_aux(),
-        theme::TEXT_WEAK,
+        theme::text_weak(),
     );
     let star_center = Pos2::new(rect.right() - 20.0, rect.bottom() - 19.0);
     let star_rect = Rect::from_center_size(star_center, Vec2::splat(18.0));
@@ -139,11 +139,11 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
             star_center,
             7.0,
             if row.item.pinned {
-                theme::PINNED
+                theme::pinned()
             } else if star_resp.hovered() {
-                theme::PINNED.gamma_multiply(0.8)
+                theme::pinned().gamma_multiply(0.8)
             } else {
-                theme::TEXT_WEAK
+                theme::text_weak()
             },
             row.item.pinned,
         );

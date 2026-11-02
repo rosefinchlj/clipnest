@@ -19,7 +19,6 @@ mod state;
 pub mod thread;
 pub mod tray;
 pub mod util;
-pub mod winv;
 
 #[allow(unused_imports)]
 pub use paste::PasteError;
@@ -51,7 +50,6 @@ pub struct SysDiag {
     pub hotkey_ok: bool,
     pub hotkey_note: Option<String>,
     /// Win+V 接管状态。
-    pub winv_status: Option<crate::model::WinVStatus>,
     /// 托盘是否创建成功。
     pub tray_ok: bool,
     /// 当前进程是否提权。
@@ -70,7 +68,7 @@ impl SysHandle {
     /// 启动 Sys 线程（阻塞到隐藏窗口/热键/托盘初始化完成）。
     ///
     /// 热键/钩子/托盘初始化失败不会返回 Err，而是通过 `Event::HotkeyStatus` /
-    /// `Event::WinVStatus` / `Event::Toast` 通知 UI；只有「Sys 线程/隐藏窗口无法创建」
+    /// `Event::Toast` 通知 UI；只有「Sys 线程/隐藏窗口无法创建」
     /// 这种根本性失败才返回 Err（此时 UI 应展示错误对话框）。
     pub fn spawn(
         events: Sender<Event>,

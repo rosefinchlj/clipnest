@@ -44,13 +44,13 @@ fn store_thread_processes_commands_and_shuts_down() {
     // Upsert → ClipsChanged
     tx.send(StoreCmd::Upsert(text_input("线程测试文本"))).unwrap();
     let event = recv_matching(&event_rx, Duration::from_secs(10), |event| {
-        matches!(event, Event::ClipsChanged { total: 1 })
+        matches!(event, Event::ClipsChanged)
     });
-    assert!(matches!(event, Event::ClipsChanged { total: 1 }));
+    assert!(matches!(event, Event::ClipsChanged));
 
     tx.send(StoreCmd::Upsert(text_input("线程测试文本二"))).unwrap();
     recv_matching(&event_rx, Duration::from_secs(10), |event| {
-        matches!(event, Event::ClipsChanged { total: 2 })
+        matches!(event, Event::ClipsChanged)
     });
 
     // Search → SearchPage（gen 原样带回，过期 gen 由 UI 丢弃）
@@ -105,7 +105,7 @@ fn store_thread_processes_commands_and_shuts_down() {
     })
     .unwrap();
     recv_matching(&event_rx, Duration::from_secs(10), |event| {
-        matches!(event, Event::ClipsChanged { .. })
+        matches!(event, Event::ClipsChanged)
     });
 
     // ExportJson → Toast("已导出…") + 文件落盘

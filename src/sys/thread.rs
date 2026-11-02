@@ -15,9 +15,9 @@
 
 
 use crate::logging;
-use crate::model::{Event, Settings, SysCmd, WinVStatus};
+use crate::model::{Event, Settings, SysCmd};
 use crate::sys::state::SysState;
-use crate::sys::{hotkey, tray, util, winv, SysDiag};
+use crate::sys::{hotkey, tray, util, SysDiag};
 use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -30,7 +30,7 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW,
-    GetWindowLongPtrW, IsWindow, KillTimer, PostQuitMessage, RegisterClassW, SendMessageW, SetTimer,
+    GetWindowLongPtrW, IsWindow, PostQuitMessage, RegisterClassW, SendMessageW, SetTimer,
     SetWindowLongPtrW, TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, HWND_MESSAGE, MSG, WM_APP,
     WM_CLIPBOARDUPDATE, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_HOTKEY, WM_NCCREATE, WM_TIMER,
     WNDCLASSW,
@@ -127,32 +127,8 @@ fn dispatch_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Opt
             });
             Some(0)
         }
-        winv::WM_APP_WINV_RESET => {
-            // 补偿：钩子吞掉 Win up 后，30ms 定时注入一次 Win up 复位系统键状态。
-            // 顺带在这里记录命中统计（钩子回调内不写日志/文件，避免阻塞输入链）。
-            let (hits, target) = winv::hook_stats();
-            logging::log(&format!(
-                "Win+V（L2 钩子）触发：累计 {hits} 次，target_hwnd={target}，开始菜单补偿已启用"
-            ));
-            unsafe {
-                SetTimer(
-                    hwnd,
-                    winv::WINV_RESET_TIMER_ID,
-                    winv::WINV_RESET_DELAY_MS,
-                    None,
-                );
-            }
-            Some(0)
-        }
         WM_TIMER if wparam == FOREGROUND_POLL_TIMER_ID => {
             with_state(hwnd, |state| state.update_foreground());
-            Some(0)
-        }
-        WM_TIMER if wparam == winv::WINV_RESET_TIMER_ID => {
-            unsafe {
-                KillTimer(hwnd, winv::WINV_RESET_TIMER_ID);
-            }
-            winv::inject_win_up();
             Some(0)
         }
         WM_COPYDATA => {
@@ -238,8 +214,6 @@ pub(crate) fn run(
         ctx: ctx.clone(),
         settings: settings.clone(),
         picker_hotkey: None,
-        winv: winv::WinVHandle::default(),
-        winv_mode: crate::model::WinVMode::Auto,
         tray: None,
         shutdown: false,
         diag: diag.clone(),
@@ -335,25 +309,11 @@ pub(crate) fn run(
         reason: hotkey_reason,
     });
 
-    // 4) Win+V 接管（L1 → L2 钩子 + 补偿）
-    // v1.2：按用户要求移除 Win+V 接管——不再安装低级键盘钩子，也不注册 Win+V。
-    // 保留 WinVHandle 字段用于生命周期/诊断兼容，状态固定为"已移除"。
-    let winv_handle = winv::WinVHandle::default();
-    let winv_status = WinVStatus::Unavailable {
-        reason: "v1.2 起已移除 Win+V 接管（请使用备用快捷键）".to_string(),
-    };
-    logging::log("Win+V 接管：已移除（不安装键盘钩子）");
-    let _ = events.send(Event::WinVStatus(winv_status.clone()));
-    ctx.request_repaint();
-
     // 把初始化结果写回状态 + 诊断快照
     let tray_ok = tray_state.is_some();
-    let winv_snapshot = winv_status;
     with_state(hwnd, |state| {
         state.picker_hotkey = Some(registration);
-        state.winv = winv_handle;
         state.tray = tray_state;
-        state.winv_mode = crate::model::WinVMode::Off;
         state.update_diag(|d| {
             d.tray_ok = tray_ok;
             d.hotkey_requested = Some(requested);
@@ -366,7 +326,6 @@ pub(crate) fn run(
                 .picker_hotkey
                 .as_ref()
                 .and_then(|registration| registration.note.clone());
-            d.winv_status = Some(winv_snapshot);
         });
     });
 
@@ -514,7 +473,6 @@ pub fn request_daemon_quit() -> bool {
 /// 避免未使用警告：托盘菜单编码在 tray.rs 中使用。
 #[allow(dead_code)]
 fn _assert_consts() {
-    let _ = (WM_APP_MENU, WM_APP_TRAY, WinVStatus::Unknown);
     let _ = mpsc::channel::<()>();
 }
 
@@ -525,7 +483,7 @@ mod tests {
     #[test]
     fn app_message_ids_are_distinct() {
         // 三个自定义消息必须互不相同，且都落在 WM_APP 区间
-        let ids = [WM_APP_CMD, WM_APP_MENU, WM_APP_TRAY, winv::WM_APP_WINV_RESET];
+        let ids = [WM_APP_CMD, WM_APP_MENU, WM_APP_TRAY];
         let mut sorted = ids.to_vec();
         sorted.sort_unstable();
         sorted.dedup();

@@ -8,7 +8,7 @@
 //!
 //! `--ui-preview <mode>` 模式走独立的假数据预览入口，不启动 Store/Sys。
 
-use crate::model::{ClipId, Event, SearchQuery, Settings, StoreCmd, SysCmd, WinVMode};
+use crate::model::{ClipId, Event, SearchQuery, Settings, StoreCmd, SysCmd, ThemeMode};
 use crate::store::StoreHandle;
 use crate::sys::SysHandle;
 use crate::ui::{ManagerPage, ThumbCache, UiAction, UiState, WindowMode};
@@ -80,9 +80,8 @@ pub struct ClipNestApp {
 
 impl ClipNestApp {
     pub fn new(cc: &eframe::CreationContext<'_>, preview: Option<String>) -> Self {
-        let mut settings = crate::config::load_settings();
-        // v1.2 起移除 Win+V 接管：不再安装键盘钩子（保留字段用于兼容旧 settings.json）。
-        settings.winv_mode = WinVMode::Off;
+        let settings = crate::config::load_settings();
+        crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
         crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
         // 排查内存占用时可跳过字体/背景材质（仅调试用）。
         if std::env::var_os("CLIPNEST_SKIP_FONTS").is_none() {
@@ -194,7 +193,7 @@ impl ClipNestApp {
         };
         self.hwnd = Some(hwnd);
         if std::env::var_os("CLIPNEST_SKIP_MICA").is_none() {
-            match crate::window::apply_backdrop(hwnd) {
+            match crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light()) {
                 Ok(kind) => {
                     crate::logging::log(&format!("窗口背景材质生效: {kind}"));
                     self.backdrop = Some(kind);
@@ -417,7 +416,6 @@ impl ClipNestApp {
                 }
             }
             Event::Toast(message) => self.ui.toast(message),
-            Event::WinVStatus(status) => self.ui.apply_winv(status),
             Event::HotkeyStatus { ok, reason } => {
                 self.ui.apply_hotkey_status(ok, reason.clone());
                 if ok {
@@ -594,8 +592,7 @@ impl ClipNestApp {
 
     fn apply_settings(&mut self, ctx: &egui::Context, next: Settings) {
         let mut next = next;
-        // v1.2 起移除 Win+V 接管：无论旧配置如何，一律强制关闭（不安装键盘钩子）。
-        next.winv_mode = WinVMode::Off;
+        let theme_changed = next.theme != self.settings.theme;
         // Sys 托盘可绕过 UI 直接修改 pause_capture/autostart（立即生效）；
         // 若发现 shared 与本侧不一致，说明是 Sys 改的，保存时以 Sys 的运行时值为准，避免回滚。
         if let Ok(shared) = self.settings_shared.lock() {
@@ -613,11 +610,18 @@ impl ClipNestApp {
         if let Some(tx) = &self.sys_tx {
             let _ = tx.send(SysCmd::SetHotkeys {
                 picker: next.hotkey_picker,
-                winv_mode: WinVMode::Off,
             });
             let _ = tx.send(SysCmd::SetPause(next.pause_capture));
         }
         self.ui.set_settings(&next);
+        if theme_changed {
+            crate::ui::theme::set_light(next.theme == ThemeMode::Light);
+            crate::ui::install_theme(ctx);
+            if let Some(hwnd) = self.hwnd {
+                let _ = crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light());
+            }
+            ctx.request_repaint();
+        }
         self.persist_settings();
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
             if self.manager_mode {
@@ -696,30 +700,39 @@ impl ClipNestApp {
             return;
         }
         // 严格解析：若读到正在写入的半截文件则保持旧值，下个周期重试。
-        let mut next = match crate::config::load_settings_strict() {
+        let next = match crate::config::load_settings_strict() {
             Ok(settings) => settings,
             Err(err) => {
-                crate::logging::debug(&format!(
-                    "设置监听：暂时无法解析 settings.json（{err}），稍后重试"
+                // 记录本次 stamp，避免同一个坏文件每 500ms 重复解析/刷日志；
+                // 文件再次被修改（mtime 变化）时会重新尝试。
+                self.settings_stamp = stamp;
+                crate::logging::warn(&format!(
+                    "设置监听：暂时无法解析 settings.json（{err}），已跳过本次外部修改"
                 ));
                 return;
             }
         };
-        next.winv_mode = WinVMode::Off;
         let previous = self.settings.clone();
         self.settings_stamp = stamp;
         if next == previous {
             return;
         }
+        let theme_changed = next.theme != previous.theme;
         crate::logging::log("检测到 settings.json 变化，正在应用新设置");
         self.settings = next.clone();
         if let Ok(mut shared) = self.settings_shared.lock() {
             *shared = next.clone();
         }
+        if theme_changed {
+            crate::ui::theme::set_light(next.theme == ThemeMode::Light);
+            crate::ui::install_theme(ctx);
+            if let Some(hwnd) = self.hwnd {
+                let _ = crate::window::apply_backdrop(hwnd, crate::ui::theme::is_light());
+            }
+        }
         if let Some(tx) = &self.sys_tx {
             let _ = tx.send(SysCmd::SetHotkeys {
                 picker: next.hotkey_picker,
-                winv_mode: WinVMode::Off,
             });
             let _ = tx.send(SysCmd::SetPause(next.pause_capture));
         }
@@ -772,6 +785,17 @@ impl ClipNestApp {
 
     #[cfg(debug_assertions)]
     fn dev_hotkeys(&mut self, ctx: &egui::Context) {
+        // F6：深/浅色皮肤切换（调试用，验证主题热切换与落盘；正式构建不包含）。
+        if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
+            let mut next = self.settings.clone();
+            next.theme = if self.settings.theme == ThemeMode::Light {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            };
+            self.apply_settings(ctx, next);
+            crate::logging::log("dev: toggle theme");
+        }
         // F7：把快捷键切成 Alt+`（调试运行时 SetHotkeys 全链路用；正式构建不包含）。
         if ctx.input(|i| i.key_pressed(egui::Key::F7)) {
             let mut next = self.settings.clone();

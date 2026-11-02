@@ -276,9 +276,9 @@ pub fn paint_kind_icon(painter: &egui::Painter, rect: Rect, kind: ClipKind, colo
 
 /// 缩略图占位（浅色山形 + 相框），解码中/失败时使用。
 pub fn paint_thumb_placeholder(painter: &egui::Painter, rect: Rect) {
-    painter.rect_filled(rect, CornerRadius::same(theme::RADIUS_THUMB), theme::CARD_ACTIVE);
+    painter.rect_filled(rect, CornerRadius::same(theme::RADIUS_THUMB), theme::card_active());
     let frame = rect.shrink(rect.width() * 0.22);
-    paint_kind_icon(painter, frame, ClipKind::Image, theme::TEXT_WEAK);
+    paint_kind_icon(painter, frame, ClipKind::Image, theme::text_weak());
 }
 
 /// 空状态大图标（剪贴板 + 折线），弱色。
@@ -308,7 +308,7 @@ pub fn paint_clipboard_big(painter: &egui::Painter, center: Pos2, size: f32, col
 
 /// 品牌标记：强调色圆角方块 + 白色剪贴板折角。
 pub fn paint_brand_mark(painter: &egui::Painter, rect: Rect) {
-    painter.rect_filled(rect, CornerRadius::same(7), theme::ACCENT);
+    painter.rect_filled(rect, CornerRadius::same(7), theme::accent());
     let inner = rect.shrink(rect.width() * 0.24);
     let stroke = Stroke::new(1.6_f32, Color32::WHITE);
     painter.rect_stroke(

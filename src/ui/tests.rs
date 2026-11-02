@@ -225,7 +225,6 @@ fn hotkey_status_failure_toasts() {
     s.apply_hotkey_status(false, Some("已占用".to_string()));
     assert!(s.toast.is_some());
     assert_eq!(s.hotkey_status, Some((false, Some("已占用".to_string()))));
-    assert_eq!(s.winv_status.label(), "未知");
 }
 
 #[test]

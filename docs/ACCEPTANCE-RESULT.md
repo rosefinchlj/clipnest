@@ -170,3 +170,44 @@
 | 测试 | `cargo test` 146 passed；`--selftest` 14/14 PASS；release exe 8.49MB |
 
 > 注意：Windows「设置 → 个性化 → 颜色 → 透明效果」必须开启，系统关闭透明效果时 Acrylic 模糊也会被禁用。
+
+---
+
+## 9. v1.4.0（2026-11-02，用户反馈 exe 图标/浅色皮肤/拖动/警告）
+
+### 1) exe 没有图标、任务管理器也不显示
+
+- 根因：本机 MSVC 环境缺少 `rc.exe`，原 `build.rs` 的资源嵌入静默失败（只有旧图标残留）。
+- 方案：删除 `build.rs` 与 `embed-resource` 依赖；新增 `patch-icon` 小工具（`src/bin/patch_icon.rs`），
+  在 cargo 构建后用 Win32 `BeginUpdateResourceW/UpdateResourceW/EndUpdateResourceW` 把
+  `assets/icon.ico` 的 9 个尺寸写成 `RT_GROUP_ICON + RT_ICON` 资源。
+- 构建入口：`tools/build-release.ps1`（cargo build + patch-icon 一步完成）。
+- 验证：`ExtractAssociatedIcon(clipnest.exe)` 返回 32×32 **新剪贴板图标**（旧图标是白底文件），
+  资源管理器/任务管理器读取的就是这个资源。
+
+### 2) 新增浅色皮肤
+
+- `Settings` 新增 `theme: ThemeMode{Dark,Light}`（默认深色，旧配置兼容）；
+  `theme.rs` 从静态深色常量重构为**可切换的动态色板**（深色/浅色全套语义色、阴影、描边、卡片色）。
+- 设置页新增「外观 → 皮肤」深色/浅色切换（保存后立即切换，不需要重启）；
+  切换时同步重装 egui Visuals、重设 Acrylic 色调与 DWM 深浅标题栏属性。
+- 验证：debug F6 热切换截图（深→浅）、设置落盘后重启仍为浅色；
+  截图见 `docs/screenshots/picker-light.png`、`manager-settings-light.png`。
+- 浅色同样依赖 Windows「透明效果」开启（关闭则只有纯色浅底）。
+
+### 3) 拖动面板
+
+- 候选窗顶部新增 16px 拖拽条（悬停显示三个抓取点，按住任意位置可拖动），搜索框仍正常输入；
+- 管理台标题栏空白区域（右侧窗口按钮除外）按住可拖动。
+- 验证：自动化鼠标拖动后窗口从 (970,416) → (1090,476)；管理台 (750,346) → (850,386)。
+
+### 4) 清理 never-use 代码 / 消除编译警告
+
+- 删除已废弃的 `src/sys/winv.rs`（Win+V 钩子整套实现）、`WinVMode/WinVStatus` 类型、
+  `Event::WinVStatus`、SysCmd 的 winv 字段、相关 UI 状态与预览赋值。
+- 删除未使用方法/常量：`ClipKind::icon`、`ClipItem::is_pasteable`、`HotkeyChord::VK_WIN_L`、
+  `Event::ClipsChanged.total`；`ClipItem.created_at/source_title` 改为在详情面板展示（不再 dead）；
+  `ThemeMode::label` 在设置页使用。
+- 顺带修复测试暴露的排序问题：`bump_used` 改为单调时间戳（同一毫秒连续粘贴也能置顶）。
+- 结果：`cargo build --release` 与 `cargo test` **0 warnings**；142 tests passed / 0 failed；
+  `--selftest` 14/14 PASS；`--diagnose` OK。

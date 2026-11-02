@@ -39,7 +39,7 @@ pub(crate) fn page(
         Align2::LEFT_CENTER,
         if favorites { "收藏" } else { "历史记录" },
         FontId::new(theme::SIZE_TITLE, egui::FontFamily::Proportional),
-        theme::TEXT,
+        theme::text(),
     );
     let count_text = if favorites {
         format!("{} 条收藏 · 不会被自动清理", state.total)
@@ -51,7 +51,7 @@ pub(crate) fn page(
         Align2::LEFT_CENTER,
         count_text,
         theme::font_aux(),
-        theme::TEXT_WEAK,
+        theme::text_weak(),
     );
 
     // ---- 工具栏：搜索 + 过滤胶囊 + 右侧按钮 ----
@@ -134,7 +134,7 @@ pub(crate) fn page(
             Align2::LEFT_CENTER,
             format!("已选 {} 项", state.multi_selected.len()),
             theme::font_body(),
-            theme::TEXT,
+            theme::text(),
         );
         let del_w = 88.0;
         let del_rect = Rect::from_min_size(
@@ -249,7 +249,7 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
     painter.rect_filled(
         rect,
         CornerRadius::same(theme::RADIUS_CARD),
-        theme::CARD,
+        theme::card(),
     );
     painter.rect_stroke(
         rect,
@@ -278,7 +278,7 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
     }
     // 表头文字
     let head_font = theme::font_aux();
-    let head_color = theme::TEXT_WEAK;
+    let head_color = theme::text_weak();
     for (x, label) in [
         (cols.type_x, "类型"),
         (cols.summary_x, "内容摘要"),
@@ -327,13 +327,13 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
             "还没有记录，复制点什么试试"
         };
         let center = Pos2::new(rect.center().x, header_rect.bottom() + (rect.bottom() - header_rect.bottom()) * 0.4);
-        paint::paint_clipboard_big(&painter, center - Vec2::new(0.0, 20.0), 36.0, theme::TEXT_WEAK);
+        paint::paint_clipboard_big(&painter, center - Vec2::new(0.0, 20.0), 36.0, theme::text_weak());
         painter.text(
             center + Vec2::new(0.0, 22.0),
             Align2::CENTER_TOP,
             msg,
             theme::font_body(),
-            theme::TEXT_WEAK,
+            theme::text_weak(),
         );
         return;
     }
@@ -371,7 +371,7 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
                                 Pos2::new(row_rect.left(), row_rect.top() + 8.0),
                                 Pos2::new(row_rect.left() + 2.0, row_rect.bottom() - 8.0),
                             );
-                            ui.painter().rect_filled(bar, CornerRadius::same(1), theme::ACCENT);
+                            ui.painter().rect_filled(bar, CornerRadius::same(1), theme::accent());
                         }
                     } else if hovered {
                         ui.painter().rect_filled(
@@ -492,7 +492,7 @@ fn paint_table_row(
         Pos2::new(cols.summary_x, y - theme::SIZE_BODY * 0.5),
         item.title(),
         theme::font_body(),
-        theme::TEXT,
+        theme::text(),
         cols.summary_w,
     );
     // 来源应用（去掉 .exe）
@@ -506,7 +506,7 @@ fn paint_table_row(
         Pos2::new(cols.source_x, y - theme::SIZE_AUX * 0.5),
         source,
         theme::font_aux(),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         96.0,
     );
     // 时间
@@ -515,7 +515,7 @@ fn paint_table_row(
         Align2::LEFT_CENTER,
         fmt_relative_time(item.last_used_at),
         theme::font_aux(),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     // 大小
     painter.text(
@@ -523,7 +523,7 @@ fn paint_table_row(
         Align2::LEFT_CENTER,
         fmt_size(item.byte_len),
         theme::font_aux(),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     // 收藏星标（可点击）
     let star_center = Pos2::new(cols.star_x + 8.0, y);
@@ -535,9 +535,9 @@ fn paint_table_row(
             star_center,
             7.0,
             if item.pinned {
-                theme::PINNED
+                theme::pinned()
             } else {
-                theme::TEXT_WEAK
+                theme::text_weak()
             },
             item.pinned,
         );
@@ -566,7 +566,7 @@ fn detail_panel(
         return;
     };
     let painter = ui.painter().clone();
-    painter.rect_filled(rect, CornerRadius::same(theme::RADIUS_CARD), theme::CARD);
+    painter.rect_filled(rect, CornerRadius::same(theme::RADIUS_CARD), theme::card());
     painter.rect_stroke(
         rect,
         CornerRadius::same(theme::RADIUS_CARD),
@@ -588,7 +588,7 @@ fn detail_panel(
         Pos2::new(title_x, inner.top() + 2.0),
         item.title(),
         theme::font_row_title(),
-        theme::TEXT,
+        theme::text(),
         inner.right() - title_x,
     );
     // 元信息
@@ -603,11 +603,27 @@ fn detail_panel(
         Align2::LEFT_TOP,
         meta,
         theme::font_aux(),
-        theme::TEXT_WEAK,
+        theme::text_weak(),
+    );
+
+    // 第二行元信息：捕获时间 + 来源窗口标题（这两个字段在列表里不展示）
+    let mut meta2 = format!("捕获于 {}", fmt_relative_time(item.created_at));
+    if let Some(title) = item.source_title.as_deref() {
+        if !title.is_empty() {
+            meta2.push_str(" · ");
+            meta2.push_str(title);
+        }
+    }
+    painter.text(
+        Pos2::new(inner.left(), inner.top() + 42.0),
+        Align2::LEFT_TOP,
+        meta2,
+        theme::font_aux(),
+        theme::text_weak(),
     );
 
     // 操作按钮行
-    let btn_y = inner.top() + 50.0;
+    let btn_y = inner.top() + 66.0;
     let btn_h = 28.0;
     let mut x = inner.left();
     for (label, kind, action) in [
@@ -666,7 +682,7 @@ fn detail_panel(
                     ui.add(
                         egui::TextEdit::multiline(&mut text)
                             .font(theme::font_mono())
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .frame(false)
                             .desired_width(f32::INFINITY)
                             .desired_rows(16),
@@ -709,11 +725,11 @@ fn detail_panel(
                             "文件已不存在"
                         };
                         let color = if file.stored {
-                            theme::SUCCESS
+                            theme::success()
                         } else if file.exists {
-                            theme::TEXT_SECONDARY
+                            theme::text_secondary()
                         } else {
-                            theme::DANGER
+                            theme::danger()
                         };
                         ui.horizontal(|ui| {
                             ui.label(theme::body(file.display_name()));

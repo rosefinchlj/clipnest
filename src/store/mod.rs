@@ -190,8 +190,7 @@ impl Store {
 
             // 合并后的变更/统计事件
             if dirty {
-                let total = self.db.counts().map(|stats| stats.total).unwrap_or(0);
-                self.emit(Event::ClipsChanged { total });
+                self.emit(Event::ClipsChanged);
                 dirty = false;
             }
             if stats_due {
