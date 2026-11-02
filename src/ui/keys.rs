@@ -28,9 +28,9 @@ pub enum PickerCommand {
     PlainCopy,
     /// Ctrl+1…9：直接粘贴第 N 条（0 基下标）。
     QuickPaste(usize),
-    /// Tab：下一个过滤。
+    /// Tab / →：下一个过滤。
     FilterNext,
-    /// Shift+Tab：上一个过滤。
+    /// Shift+Tab / ←：上一个过滤。
     FilterPrev,
     /// Ctrl+P：收藏/取消收藏。
     TogglePin,
@@ -61,7 +61,11 @@ pub enum ManagerCommand {
 ///
 /// 匹配顺序遵循「更具体的组合优先」：`consume_key` 会忽略多余的 Shift/Alt，
 /// 所以先匹配带修饰键的组合，再匹配裸键。
-pub fn route_picker_keys(ctx: &egui::Context, allow_delete: bool) -> Vec<PickerCommand> {
+pub fn route_picker_keys(
+    ctx: &egui::Context,
+    allow_delete: bool,
+    allow_arrows: bool,
+) -> Vec<PickerCommand> {
     let mut out = Vec::new();
     ctx.input_mut(|i| {
         // ---- 带修饰键（更具体）----
@@ -101,6 +105,15 @@ pub fn route_picker_keys(ctx: &egui::Context, allow_delete: bool) -> Vec<PickerC
         }
         if i.consume_key(Modifiers::NONE, Key::Tab) {
             out.push(PickerCommand::FilterNext);
+        }
+        // 左右切换过滤胶囊。搜索框有文本时不消费，留给 TextEdit 移动光标。
+        if allow_arrows {
+            if i.consume_key(Modifiers::NONE, Key::ArrowLeft) {
+                out.push(PickerCommand::FilterPrev);
+            }
+            if i.consume_key(Modifiers::NONE, Key::ArrowRight) {
+                out.push(PickerCommand::FilterNext);
+            }
         }
         if i.consume_key(Modifiers::NONE, Key::Escape) {
             out.push(PickerCommand::Close);
@@ -324,7 +337,7 @@ pub fn fmt_count(n: usize) -> String {
 }
 
 /// Picker 底部提示文案（spec §7.3）。
-pub const PICKER_HINT: &str = "↑↓ 选择 · Enter 粘贴 · Ctrl+1…9 快选 · Esc 关闭";
+pub const PICKER_HINT: &str = "↑↓ 选择 · Enter 粘贴 · Ctrl+1…9 快选 · ←→ 切分类";
 
 /// Manager 历史页提示文案。
 pub const MANAGER_HINT: &str =
@@ -351,14 +364,14 @@ mod tests {
     fn route_enter_and_ctrl_enter() {
         let ctx = egui::Context::default();
         press(&ctx, Key::Enter, Modifiers::NONE);
-        assert_eq!(route_picker_keys(&ctx, true), vec![PickerCommand::Paste]);
+        assert_eq!(route_picker_keys(&ctx, true, true), vec![PickerCommand::Paste]);
         press(&ctx, Key::Enter, Modifiers::CTRL);
         assert_eq!(
-            route_picker_keys(&ctx, true),
+            route_picker_keys(&ctx, true, true),
             vec![PickerCommand::PlainCopy]
         );
         // 已消费的按键不会被重复处理
-        assert!(route_picker_keys(&ctx, true).is_empty());
+        assert!(route_picker_keys(&ctx, true, true).is_empty());
     }
 
     #[test]
@@ -367,9 +380,26 @@ mod tests {
         press(&ctx, Key::Num1, Modifiers::CTRL);
         press(&ctx, Key::Num9, Modifiers::CTRL);
         assert_eq!(
-            route_picker_keys(&ctx, true),
+            route_picker_keys(&ctx, true, true),
             vec![PickerCommand::QuickPaste(0), PickerCommand::QuickPaste(8)]
         );
+    }
+
+    #[test]
+    fn route_left_right_switch_filters_only_when_allowed() {
+        let ctx = egui::Context::default();
+        press(&ctx, Key::ArrowLeft, Modifiers::NONE);
+        press(&ctx, Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(
+            route_picker_keys(&ctx, true, true),
+            vec![PickerCommand::FilterPrev, PickerCommand::FilterNext]
+        );
+
+        // 搜索框有文本时 allow_arrows=false：←/→ 不消费，留给 TextEdit 移动光标。
+        let ctx = egui::Context::default();
+        press(&ctx, Key::ArrowLeft, Modifiers::NONE);
+        press(&ctx, Key::ArrowRight, Modifiers::NONE);
+        assert!(route_picker_keys(&ctx, true, false).is_empty());
     }
 
     #[test]
@@ -384,7 +414,7 @@ mod tests {
         press(&ctx, Key::Delete, Modifiers::NONE);
         // 路由按「先修饰键组合、后裸键」的固定顺序消费，返回顺序与匹配顺序一致
         assert_eq!(
-            route_picker_keys(&ctx, true),
+            route_picker_keys(&ctx, true, true),
             vec![
                 PickerCommand::FilterPrev,
                 PickerCommand::FilterNext,
@@ -403,7 +433,7 @@ mod tests {
         press(&ctx, Key::P, Modifiers::CTRL);
         press(&ctx, Key::Comma, Modifiers::CTRL);
         assert_eq!(
-            route_picker_keys(&ctx, true),
+            route_picker_keys(&ctx, true, true),
             vec![PickerCommand::TogglePin, PickerCommand::OpenSettings]
         );
     }

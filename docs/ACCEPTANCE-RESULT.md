@@ -439,3 +439,21 @@
 ### 校验
 - `cargo test --release` **149 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
 - 截图：`target/ui-picker.png`，已更新 `docs/screenshots/picker.png`。
+
+
+---
+
+## 20. v1.9.2（2026-11-02，←/→ 切换分类）
+
+### 用户需求
+- 粘贴列表支持左右移动，切换 tab。
+
+### 实现
+- `src/ui/keys.rs`：新增 ←/→ 映射为 `FilterPrev` / `FilterNext`，与 Tab / Shift+Tab 行为一致；`route_picker_keys` 增加 `allow_arrows` 参数。
+- 搜索框有文字且聚焦时 `allow_arrows=false`，←/→ 留给 TextEdit 移动光标；搜索框为空或未聚焦时切换分类，符合输入与导航的直觉。
+- `src/ui/picker.rs` 传入 `allow_arrows`；底栏提示改为「←→ 切分类」。
+- 新增 `route_left_right_switch_filters_only_when_allowed` 单测，覆盖允许/禁止两条路径。
+
+### 校验
+- `cargo test --release` **150 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
+- 截图：`target/ui-picker.png`，已更新 `docs/screenshots/picker.png`。

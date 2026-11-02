@@ -73,7 +73,9 @@ pub(crate) fn show(
     if state.confirm.is_none() {
         // 搜索框有文本时 Delete 留给文本框编辑（否则删一条记录会很反直觉）
         let allow_delete = !(state.search_focused && !state.search_text.is_empty());
-        let commands = keys::route_picker_keys(ui.ctx(), allow_delete);
+        // 同上：搜索中按 ←/→ 是移动光标；搜索框为空或未聚焦时切换分类。
+        let allow_arrows = !(state.search_focused && !state.search_text.is_empty());
+        let commands = keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows);
         for command in commands {
             handle_command(state, command, list_rect.height(), actions);
         }
