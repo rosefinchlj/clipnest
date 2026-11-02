@@ -75,12 +75,7 @@ fn painter_divider(ui: &mut egui::Ui) {
 }
 
 /// 左标题/说明 + 右控件的设置行。
-fn setting_row(
-    ui: &mut egui::Ui,
-    title: &str,
-    desc: &str,
-    control: impl FnOnce(&mut egui::Ui),
-) {
+fn setting_row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         let w = (ui.available_width() - 260.0).max(160.0);
         ui.allocate_ui_with_layout(
@@ -176,7 +171,11 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
                     state.toast(format!("已录制 {}", chord.label()));
                 }
                 if let Some(err) = &state.rec.error {
-                    ui.label(egui::RichText::new(err.clone()).size(theme::SIZE_AUX).color(theme::DANGER));
+                    ui.label(
+                        egui::RichText::new(err.clone())
+                            .size(theme::SIZE_AUX)
+                            .color(theme::DANGER),
+                    );
                 }
             });
         });
@@ -215,16 +214,6 @@ fn hotkey_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAc
             }
         }
         ui.add_space(14.0);
-
-        // v1.2：Win+V 接管已移除，不再提供接管选项。
-        ui.label(
-            egui::RichText::new("Win+V 接管：已移除")
-                .size(theme::SIZE_BODY)
-                .color(theme::TEXT),
-        );
-        ui.label(theme::weak(
-            "本版本起不再拦截 Win+V（系统剪贴板历史保持 Windows 原生行为），请使用上面的备用快捷键呼出面板。",
-        ));
         let _ = actions;
     });
 }
@@ -245,7 +234,9 @@ fn capacity_section(state: &mut UiState, ui: &mut egui::Ui) {
                     egui::Layout::top_down(egui::Align::LEFT),
                     |ui| {
                         ui.label(theme::body("历史条数上限"));
-                        ui.label(theme::weak("超出后自动删除最旧的非收藏记录（收藏永不清理）"));
+                        ui.label(theme::weak(
+                            "超出后自动删除最旧的非收藏记录（收藏永不清理）",
+                        ));
                     },
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -318,62 +309,100 @@ fn capacity_section(state: &mut UiState, ui: &mut egui::Ui) {
 fn behavior_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
     section(ui, "行为", |ui| {
         // 失焦隐藏
-        setting_row(ui, "失去焦点时自动隐藏面板", "默认开启；关闭后面板需要手动 Esc 关闭", |ui| {
-            let mut v = state.settings_draft.hide_on_blur;
-            if widgets::switch(ui, &mut v).changed() {
-                state.settings_draft.hide_on_blur = v;
-            }
-        });
+        setting_row(
+            ui,
+            "失去焦点时自动隐藏面板",
+            "默认开启；关闭后面板需要手动 Esc 关闭",
+            |ui| {
+                let mut v = state.settings_draft.hide_on_blur;
+                if widgets::switch(ui, &mut v).changed() {
+                    state.settings_draft.hide_on_blur = v;
+                }
+            },
+        );
         // 粘贴后保留剪贴板
-        setting_row(ui, "粘贴后保留剪贴板内容", "关闭后粘贴完成会恢复原剪贴板内容", |ui| {
-            let mut v = state.settings_draft.keep_clipboard_after_paste;
-            if widgets::switch(ui, &mut v).changed() {
-                state.settings_draft.keep_clipboard_after_paste = v;
-            }
-        });
+        setting_row(
+            ui,
+            "粘贴后保留剪贴板内容",
+            "关闭后粘贴完成会恢复原剪贴板内容",
+            |ui| {
+                let mut v = state.settings_draft.keep_clipboard_after_paste;
+                if widgets::switch(ui, &mut v).changed() {
+                    state.settings_draft.keep_clipboard_after_paste = v;
+                }
+            },
+        );
         // 粘贴后置顶
-        setting_row(ui, "粘贴后把该条置顶", "让它出现在列表最前", |ui| {
-            let mut v = state.settings_draft.move_to_top_after_paste;
-            if widgets::switch(ui, &mut v).changed() {
-                state.settings_draft.move_to_top_after_paste = v;
-            }
-        });
+        setting_row(
+            ui,
+            "粘贴后把该条置顶",
+            "让它出现在列表最前",
+            |ui| {
+                let mut v = state.settings_draft.move_to_top_after_paste;
+                if widgets::switch(ui, &mut v).changed() {
+                    state.settings_draft.move_to_top_after_paste = v;
+                }
+            },
+        );
         // 粘贴按键
-        setting_row(ui, "模拟粘贴按键", "部分老程序只认 Shift+Insert", |ui| {
-            let mut key = state.settings_draft.paste_key;
-            egui::ComboBox::from_id_salt("paste_key_combo")
-                .selected_text(key.label())
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for candidate in [PasteKey::CtrlV, PasteKey::ShiftInsert] {
-                        ui.selectable_value(&mut key, candidate, candidate.label());
-                    }
-                });
-            if key != state.settings_draft.paste_key {
-                state.settings_draft.paste_key = key;
-            }
-        });
+        setting_row(
+            ui,
+            "模拟粘贴按键",
+            "部分老程序只认 Shift+Insert",
+            |ui| {
+                let mut key = state.settings_draft.paste_key;
+                egui::ComboBox::from_id_salt("paste_key_combo")
+                    .selected_text(key.label())
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for candidate in [PasteKey::CtrlV, PasteKey::ShiftInsert] {
+                            ui.selectable_value(&mut key, candidate, candidate.label());
+                        }
+                    });
+                if key != state.settings_draft.paste_key {
+                    state.settings_draft.paste_key = key;
+                }
+            },
+        );
         // 开机自启（立即生效）
-        setting_row(ui, "开机自启", "写入 HKCU Run（当前用户，无需管理员）", |ui| {
-            let mut v = state.settings_draft.autostart;
-            if widgets::switch(ui, &mut v).changed() {
-                state.settings_draft.autostart = v;
-                state.settings.autostart = v;
-                actions.push(UiAction::SetAutostart(v));
-                state.toast(if v { "已开启开机自启" } else { "已关闭开机自启" });
-            }
-        });
+        setting_row(
+            ui,
+            "开机自启",
+            "写入 HKCU Run（当前用户，无需管理员）",
+            |ui| {
+                let mut v = state.settings_draft.autostart;
+                if widgets::switch(ui, &mut v).changed() {
+                    state.settings_draft.autostart = v;
+                    state.settings.autostart = v;
+                    actions.push(UiAction::SetAutostart(v));
+                    state.toast(if v {
+                        "已开启开机自启"
+                    } else {
+                        "已关闭开机自启"
+                    });
+                }
+            },
+        );
         // 暂停记录（立即生效）
-        setting_row(ui, "暂停剪贴板记录", "暂停后不采集新内容（托盘菜单也可切换）", |ui| {
-            let mut v = state.settings_draft.pause_capture;
-            if widgets::switch(ui, &mut v).changed() {
-                state.settings_draft.pause_capture = v;
-                state.settings.pause_capture = v;
-                state.paused = v;
-                actions.push(UiAction::SetPause(v));
-                state.toast(if v { "已暂停记录" } else { "已恢复记录" });
-            }
-        });
+        setting_row(
+            ui,
+            "暂停剪贴板记录",
+            "暂停后不采集新内容（托盘菜单也可切换）",
+            |ui| {
+                let mut v = state.settings_draft.pause_capture;
+                if widgets::switch(ui, &mut v).changed() {
+                    state.settings_draft.pause_capture = v;
+                    state.settings.pause_capture = v;
+                    state.paused = v;
+                    actions.push(UiAction::SetPause(v));
+                    state.toast(if v {
+                        "已暂停记录"
+                    } else {
+                        "已恢复记录"
+                    });
+                }
+            },
+        );
     });
 }
 
@@ -447,9 +476,17 @@ fn ignore_section(state: &mut UiState, ui: &mut egui::Ui) {
 
 fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
     section(ui, "数据", |ui| {
-        path_row(ui, "数据目录", &crate::config::data_dir().display().to_string());
+        path_row(
+            ui,
+            "数据目录",
+            &crate::config::data_dir().display().to_string(),
+        );
         ui.add_space(4.0);
-        path_row(ui, "日志目录", &crate::config::logs_dir().display().to_string());
+        path_row(
+            ui,
+            "日志目录",
+            &crate::config::logs_dir().display().to_string(),
+        );
         ui.add_space(12.0);
 
         ui.horizontal(|ui| {

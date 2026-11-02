@@ -483,9 +483,13 @@ pub enum WinVStatus {
     /// RegisterHotKey 注册成功（最干净）。
     Registered,
     /// 低级键盘钩子生效；`compensated` 表示已启用开始菜单补偿逻辑。
-    HookActive { compensated: bool },
+    HookActive {
+        compensated: bool,
+    },
     /// 无法接管（保留备用快捷键）。
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
 }
 
 impl WinVStatus {
@@ -627,14 +631,21 @@ pub enum Event {
 pub enum StoreCmd {
     Upsert(ClipInput),
     Search(SearchQuery),
-    SetPinned { id: ClipId, pinned: bool },
+    SetPinned {
+        id: ClipId,
+        pinned: bool,
+    },
     Delete(Vec<ClipId>),
-    Clear { delete_blobs: bool },
+    Clear {
+        delete_blobs: bool,
+    },
     GetPastePayload(ClipId),
     /// 把某条文件的实体复制进数据目录（收藏时调用）。
     SaveFavoriteFiles(ClipId),
     RefreshStats,
-    ExportJson { path: PathBuf },
+    ExportJson {
+        path: PathBuf,
+    },
     Shutdown,
 }
 
@@ -712,8 +723,7 @@ pub fn fmt_relative_time(ms: i64) -> String {
         return format!("{} 小时前", diff / hour);
     }
     if diff < 2 * day {
-        let dt = chrono::DateTime::from_timestamp_millis(ms)
-            .unwrap_or_else(chrono::Utc::now);
+        let dt = chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(chrono::Utc::now);
         let local = dt.with_timezone(&chrono::Local);
         return format!("昨天 {}", local.format("%H:%M"));
     }
@@ -747,10 +757,22 @@ mod tests {
 
     #[test]
     fn hotkey_labels() {
-        assert_eq!(HotkeyChord::new(true, false, true, false, 0x56).label(), "Ctrl+Shift+V");
-        assert_eq!(HotkeyChord::new(false, false, false, true, 0x56).label(), "Win+V");
-        assert_eq!(HotkeyChord::new(true, false, false, false, 0x70).label(), "Ctrl+F1");
-        assert_eq!(HotkeyChord::new(false, false, false, true, 0x56).is_win_v(), true);
+        assert_eq!(
+            HotkeyChord::new(true, false, true, false, 0x56).label(),
+            "Ctrl+Shift+V"
+        );
+        assert_eq!(
+            HotkeyChord::new(false, false, false, true, 0x56).label(),
+            "Win+V"
+        );
+        assert_eq!(
+            HotkeyChord::new(true, false, false, false, 0x70).label(),
+            "Ctrl+F1"
+        );
+        assert_eq!(
+            HotkeyChord::new(false, false, false, true, 0x56).is_win_v(),
+            true
+        );
         assert!(!HotkeyChord::default().is_win_v());
     }
 

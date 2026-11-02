@@ -78,7 +78,7 @@ pub(super) fn decode_dib_to_rgba(dib: &[u8], max_pixels: u32) -> ClipResult<DibI
     let width = header.width as usize;
     let height = header.height as usize;
     // 每行按 4 字节对齐：stride = ceil(width * bpp / 32) * 4
-    let stride = ((width * header.bit_count as usize + 31) / 32) * 4;
+    let stride = (width * header.bit_count as usize).div_ceil(32) * 4;
     let needed = stride
         .checked_mul(height)
         .ok_or_else(|| ClipError::Image("DIB 尺寸溢出".into()))?;
@@ -619,7 +619,7 @@ mod tests {
         assert!(png_dimensions(&[0u8; 3]).is_err());
         // 声明尺寸超限的 PNG：先用 1×1 合法 PNG 确认正常，再构造超限对象不可行，
         // 这里直接断言小上限能拒绝 3×2。
-        let png = encode_png(&vec![0u8; 24], 3, 2).expect("编码");
+        let png = encode_png(&[0u8; 24], 3, 2).expect("编码");
         assert!(decode_png_to_rgba(&png, 5).is_err());
     }
 

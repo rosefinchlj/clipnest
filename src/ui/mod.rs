@@ -367,6 +367,13 @@ impl UiState {
     pub fn show(&mut self, ctx: &egui::Context, thumbs: &mut ThumbCache) -> Vec<UiAction> {
         let mut actions = Vec::new();
         self.begin_frame(ctx, &mut actions);
+        // 整个窗口（含 SidePanel/透明区域）统一铺半透明深色底：Acrylic 模糊才能均匀透出，
+        // 否则 SidePanel 没填充的区域会直接露出桌面、显得像破洞。
+        ctx.layer_painter(egui::LayerId::background()).rect_filled(
+            ctx.screen_rect(),
+            egui::CornerRadius::same(theme::RADIUS_WINDOW),
+            theme::window_bg(),
+        );
         match self.mode {
             WindowMode::Picker => {
                 egui::CentralPanel::default()

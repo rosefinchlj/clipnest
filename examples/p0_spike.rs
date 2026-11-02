@@ -962,12 +962,11 @@ impl eframe::App for SpikeApp {
             self.try_create_tray();
         }
 
-        if !self.sys_ready {
-            if self.sys_ready_rx.try_recv().is_ok() {
+        if !self.sys_ready
+            && self.sys_ready_rx.try_recv().is_ok() {
                 self.sys_ready = true;
                 p0log("GUI|sys ready");
             }
-        }
 
         // 所有能力就绪后写 READY 文件（测试脚本以此为准）
         if !self.ready_written && self.sys_ready && (!self.args.tray || self.tray.is_some()) {

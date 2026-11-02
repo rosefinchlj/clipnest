@@ -9,25 +9,6 @@ use raw_window_handle::{
 };
 use std::num::NonZeroIsize;
 
-/// 是否隐藏启动（正式模式默认隐藏：托盘常驻，等待快捷键/托盘唤起）。
-///
-/// 环境变量（开发/测试）：
-/// - `CLIPNEST_START_VISIBLE=1`：启动即显示；
-/// - `CLIPNEST_START_HIDDEN=1`：强制隐藏；
-/// - `CLIPNEST_NO_SYS=1`：跳过系统层（联调 Store/UI 时默认显示窗口）。
-pub fn start_hidden(preview_mode: bool) -> bool {
-    if preview_mode {
-        return false;
-    }
-    if std::env::var_os("CLIPNEST_START_VISIBLE").is_some() {
-        return false;
-    }
-    if std::env::var_os("CLIPNEST_START_HIDDEN").is_some() {
-        return true;
-    }
-    std::env::var_os("CLIPNEST_NO_SYS").is_none()
-}
-
 /// 从 eframe Frame 取原生 HWND（isize）。
 pub fn hwnd_of_frame(frame: &eframe::Frame) -> Option<isize> {
     match frame.window_handle().ok()?.as_raw() {
@@ -51,19 +32,28 @@ impl HasWindowHandle for HwndHandle {
 /// 应用 Win11 背景材质：优先 Mica Alt（tabbed，无拖动卡顿），回退 Acrylic。
 /// 返回实际生效的材质名，便于日志/诊断。
 pub fn apply_backdrop(hwnd: isize) -> Result<&'static str, String> {
-    // Win11 22H2+：系统背景材质（DWM system backdrop），性能最好。
+    // 首选 Acrylic（SetWindowCompositionAttribute）：对 OpenGL/GL 交换链窗口也能真正透出模糊背景；
+    // Win11 的 Mica（DWM system backdrop）要求应用自己绘制透明表面，egui/glow 下通常看不到效果，
+    // 所以把 Mica 仅作为 Acrylic 失败时的兜底。
+    match window_vibrancy::apply_acrylic(HwndHandle(hwnd), Some((16, 20, 27, 150))) {
+        Ok(()) => {
+            set_round_corners(hwnd);
+            return Ok("acrylic");
+        }
+        Err(err) => {
+            crate::logging::warn(&format!("Acrylic 不可用：{err}，尝试 Mica"));
+        }
+    }
+    // Win11 22H2+：DWM system backdrop（部分机器/渲染器下可能看不到模糊，但聊胜于无）。
+    if window_vibrancy::apply_mica(HwndHandle(hwnd), Some(true)).is_ok() {
+        set_round_corners(hwnd);
+        return Ok("mica");
+    }
     if window_vibrancy::apply_tabbed(HwndHandle(hwnd), Some(true)).is_ok() {
         set_round_corners(hwnd);
         return Ok("mica-tabbed");
     }
-    // Win10 1809+：非官方 Acrylic（拖动可能略卡，但观感接近磨砂玻璃）。
-    match window_vibrancy::apply_acrylic(HwndHandle(hwnd), Some((14, 17, 22, 165))) {
-        Ok(()) => {
-            set_round_corners(hwnd);
-            Ok("acrylic")
-        }
-        Err(err) => Err(format!("背景材质不可用: {err}")),
-    }
+    Err("背景材质不可用（Acrylic/Mica 都失败）".to_string())
 }
 
 /// Win11 圆角（DWMWCP_ROUND）。失败静默（系统不支持就当方角）。
@@ -71,7 +61,7 @@ pub fn set_round_corners(hwnd: isize) {
     use windows_sys::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
-    let value: i32 = DWMWCP_ROUND as i32;
+    let value: i32 = DWMWCP_ROUND;
     unsafe {
         DwmSetWindowAttribute(
             hwnd as _,
@@ -113,10 +103,7 @@ pub fn picker_position(size: egui::Vec2, pixels_per_point: f32) -> Option<egui::
         let win_h = (size.y * ppp).round() as i32;
         let x = work.left + ((work_w - win_w).max(0) / 2);
         let y = work.top + ((work_h - win_h).max(0) / 2);
-        Some(egui::pos2(
-            x as f32 / ppp,
-            y as f32 / ppp,
-        ))
+        Some(egui::pos2(x as f32 / ppp, y as f32 / ppp))
     }
 }
 
@@ -129,27 +116,6 @@ pub fn request_close_window(hwnd: isize) {
     }
     unsafe {
         PostMessageW(hwnd as _, WM_CLOSE, 0, 0);
-    }
-}
-
-/// 允许任意进程把窗口切到前台：守护进程在 spawn UI 子进程前调用一次，
-/// 子进程随后才能可靠地 SetForegroundWindow（否则会被前台锁拒绝）。
-pub fn allow_set_foreground_any() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
-    unsafe {
-        AllowSetForegroundWindow(0xFFFF_FFFF); // ASFW_ANY
-    }
-}
-
-/// 按标题查找顶层窗口（守护进程用于唤起已打开的 UI 子进程窗口）。
-pub fn find_window_by_title(title: &str) -> Option<isize> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
-    let wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
-    let hwnd = unsafe { FindWindowW(std::ptr::null(), wide.as_ptr()) };
-    if hwnd.is_null() {
-        None
-    } else {
-        Some(hwnd as isize)
     }
 }
 

@@ -310,7 +310,7 @@ pub(crate) fn run(
         match tray::create(&snapshot) {
             Ok(tray) => Some(tray),
             Err(err) => {
-                logging::warn(&format!("{err}"));
+                logging::warn(&err.to_string());
                 let _ = events.send(Event::Toast(err));
                 ctx.request_repaint();
                 None

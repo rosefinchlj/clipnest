@@ -62,12 +62,12 @@ pub const TABLE_STRIPE: Color32 = Color32::from_rgb(0x16, 0x1C, 0x25);
 
 /// 窗口底：`#0E1116` @82%（叠在亚克力/磨砂材质上，spec §7.1）。
 pub fn window_bg() -> Color32 {
-    Color32::from_rgba_unmultiplied(0x0E, 0x11, 0x16, 209) // 209/255 ≈ 82%
+    Color32::from_rgba_unmultiplied(0x0E, 0x11, 0x16, 190) // 190/255 ≈ 75%（Acrylic 上叠深色，保证文字对比度）
 }
 
 /// 面板/侧栏：`#131820` @92%。
 pub fn panel_bg() -> Color32 {
-    Color32::from_rgba_unmultiplied(0x13, 0x18, 0x20, 235) // 235/255 ≈ 92%
+    Color32::from_rgba_unmultiplied(0x13, 0x18, 0x20, 215) // 215/255 ≈ 84%
 }
 
 /// 分隔线/边框：1px、8% 白叠加（spec §7.1）。
@@ -272,8 +272,9 @@ pub fn popup_shadow() -> Shadow {
 
 /// Picker 面板外框：窗口底 82%、圆角 12、1px 8% 白描边、内边距 12。
 pub fn picker_frame() -> egui::Frame {
+    // 全窗背景由 `UiState::show` 统一绘制（包含 SidePanel 区域），这里不再重复填充。
     egui::Frame::NONE
-        .fill(window_bg())
+        .fill(Color32::TRANSPARENT)
         .corner_radius(CornerRadius::same(RADIUS_WINDOW))
         .stroke(divider())
         .inner_margin(Margin::same(PICKER_PAD as i8))
@@ -282,7 +283,7 @@ pub fn picker_frame() -> egui::Frame {
 /// Manager 外框：不透明深色面板、圆角 12、1px 描边。
 pub fn manager_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(WINDOW_BASE)
+        .fill(Color32::TRANSPARENT)
         .corner_radius(CornerRadius::same(RADIUS_WINDOW))
         .stroke(divider())
 }
@@ -369,7 +370,7 @@ pub fn install_theme(ctx: &egui::Context) {
     v.window_corner_radius = CornerRadius::same(RADIUS_CARD);
     v.window_shadow = popup_shadow();
     v.menu_corner_radius = CornerRadius::same(RADIUS_CARD);
-    v.panel_fill = WINDOW_BASE;
+    v.panel_fill = window_bg();
     v.selection = egui::style::Selection {
         bg_fill: selection_fill(),
         stroke: Stroke::new(1.0_f32, ACCENT),
@@ -493,8 +494,8 @@ mod tests {
     #[test]
     fn alpha_layers_match_spec() {
         // 窗口底 82%、面板 92%
-        assert_eq!(window_bg().a(), 209);
-        assert_eq!(panel_bg().a(), 235);
+        assert_eq!(window_bg().a(), 190);
+        assert_eq!(panel_bg().a(), 215);
         // 选中 12%、悬停 6%、分隔线 8% 白
         assert_eq!(accent_fill().a(), 31);
         assert_eq!(hover_fill().a(), 15);

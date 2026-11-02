@@ -103,7 +103,7 @@ fn smoke_text_roundtrip(temp_dir: &Path) {
     write_clipboard(&payload, temp_dir).expect("写文本到剪贴板");
     // 自写标记 → 读取阶段应直接忽略；内容校验走内部读取（绕过忽略逻辑）
     assert_self_marker_ignored("文本");
-    let read_text = read_back(|| read::read_text()).expect("读取 CF_UNICODETEXT");
+    let read_text = read_back(read::read_text).expect("读取 CF_UNICODETEXT");
     assert_eq!(
         read_text,
         text,

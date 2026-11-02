@@ -122,7 +122,61 @@ pub fn install_event_handlers(hwnd: HWND) {
 }
 
 /// 加载托盘图标：优先 `assets/icon.png`，失败用内置 16×16 兜底（spec §14）。
+/// 系统 DPI 与托盘图标建议像素（16 逻辑像素 × 缩放）。
+fn tray_icon_target() -> (u32, u32) {
+    use windows_sys::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSX};
+    let dpi = unsafe {
+        let dc = GetDC(std::ptr::null_mut());
+        if dc.is_null() {
+            96
+        } else {
+            let dpi = GetDeviceCaps(dc, LOGPIXELSX as i32);
+            ReleaseDC(std::ptr::null_mut(), dc);
+            if dpi <= 0 { 96 } else { dpi as u32 }
+        }
+    };
+    let px = ((16 * dpi + 48) / 96).clamp(16, 48);
+    (dpi, px)
+}
+
 fn load_icon() -> Option<Icon> {
+    // 1) 按系统 DPI 选**同尺寸**的预渲染 PNG，避免 256×256 被系统缩放到 16/20/24/32px 发虚。
+    static P16: &[u8] = include_bytes!("../../assets/icon-16.png");
+    static P20: &[u8] = include_bytes!("../../assets/icon-20.png");
+    static P24: &[u8] = include_bytes!("../../assets/icon-24.png");
+    static P28: &[u8] = include_bytes!("../../assets/icon-28.png");
+    static P32: &[u8] = include_bytes!("../../assets/icon-32.png");
+    let (dpi, want) = tray_icon_target();
+    let choices: [(u32, &'static [u8]); 5] =
+        [(16, P16), (20, P20), (24, P24), (28, P28), (32, P32)];
+    let (size, bytes) = choices
+        .iter()
+        .min_by_key(|(s, _)| (*s as i64 - want as i64).abs())
+        .copied()
+        .unwrap_or((16, P16));
+    if let Ok(img) = image::load_from_memory(bytes) {
+        let rgba = img.into_rgba8();
+        let (w, h) = (rgba.width(), rgba.height());
+        if let Ok(icon) = Icon::from_rgba(rgba.into_raw(), w, h) {
+            logging::log(&format!(
+                "托盘图标：使用预渲染 {w}×{h} 图标（DPI {dpi}，目标 {want}px）"
+            ));
+            return Some(icon);
+        }
+    }
+    // 2) 次选：exe 内嵌的多尺寸图标资源（如果资源编译成功，HICON 也会随 DPI 选用合适尺寸）。
+    #[cfg(windows)]
+    {
+        match Icon::from_resource(1, None) {
+            Ok(icon) => {
+                logging::log("托盘图标：使用 exe 内嵌图标资源");
+                return Some(icon);
+            }
+            Err(err) => logging::debug(&format!("内嵌图标资源加载失败（{err}）")),
+        }
+    }
+    let _ = size;
+    // 3) 开发期回退：运行时 assets 目录。
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

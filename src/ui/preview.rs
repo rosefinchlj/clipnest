@@ -58,7 +58,7 @@ pub fn show(ctx: &egui::Context, mode: &str) {
 
     PREVIEW.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let need_new = slot.as_ref().map_or(true, |p| p.mode != mode);
+        let need_new = slot.as_ref().is_none_or(|p| p.mode != mode);
         if need_new {
             *slot = Some(PreviewState::new(ctx, mode));
         }
