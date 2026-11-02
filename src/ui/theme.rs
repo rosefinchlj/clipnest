@@ -237,22 +237,6 @@ pub fn panel_bg() -> Color32 {
     scale_alpha(palette().panel_base, alpha)
 }
 
-/// 候选窗内容区底色（磨砂层之上再铺一层）。
-///
-/// 用户的「磨砂透明度」可以调到很低，此时如果内容直接画在透出的白色/浅色
-/// 桌面上，白字会和桌面混在一起。这里给内容区一个与玻璃透明度无关的
-/// **最低不透明度**：外层仍保留磨砂边缘，内容区始终有足够深的底，保证
-/// 主文本/次文本的对比度。
-pub fn content_bg() -> Color32 {
-    if !glass_enabled() {
-        return palette().window_base;
-    }
-    let pct = glass_opacity() as u16;
-    let min_alpha = if is_light() { 224 } else { 200 };
-    let alpha = ((pct * 255) / 100).max(min_alpha).clamp(40, 255) as u8;
-    scale_alpha(palette().window_base, alpha)
-}
-
 pub fn divider() -> Stroke {
     Stroke::new(1.0_f32, palette().divider)
 }
@@ -696,11 +680,7 @@ mod tests {
         set_glass_opacity(35);
         assert!(window_bg().a() < 191);
         assert!(panel_bg().a() < 211);
-        // 内容区有对比度下限：即使玻璃滑到 35%，也不能透成白色面板。
-        assert!(content_bg().a() >= 200, "深色内容区 alpha 不应低于 200");
-        set_light(true);
-        assert!(content_bg().a() >= 224, "浅色内容区 alpha 不应低于 224");
-        set_light(false);
+        set_glass_opacity(75);
         set_glass_opacity(75);
         assert_eq!(accent_fill().a(), 31);
         assert_eq!(hover_fill().a(), 15);

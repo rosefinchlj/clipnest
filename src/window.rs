@@ -36,8 +36,10 @@ pub fn apply_backdrop(hwnd: isize, light: bool, opacity_pct: u8) -> Result<&'sta
     // Win11 的 Mica（DWM system backdrop）要求应用自己绘制透明表面，egui/glow 下通常看不到效果，
     // 所以把 Mica 仅作为 Acrylic 失败时的兜底。
     set_dark_mode(hwnd, !light);
-    // 越透明 → Acrylic 叠色越淡，背后模糊越明显（接近终端观感）。
-    let tint_alpha = ((opacity_pct as u16 * 2).clamp(60, 210)) as u8;
+    // 终端式磨砂：即使滑到最低透明度，也要保留一个深色 tint 下限，
+    // 否则白色/浅色窗口会把整个面板冲成浅灰，白字直接失去对比度。
+    // 下限 150/255 ≈ 59% 深色 tint，仍能透出背后模糊，但文字始终可读。
+    let tint_alpha = (150 + (opacity_pct as u16).saturating_sub(35) * 60 / 65).clamp(150, 210) as u8;
     let tint = if light {
         (246, 249, 255, tint_alpha)
     } else {
