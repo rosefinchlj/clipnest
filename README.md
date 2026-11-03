@@ -2,6 +2,9 @@
 
 > Windows 磨砂玻璃剪贴板管理器（深色 / 浅色）。Rust + eframe/egui 实现：托盘常驻、全局快捷键呼出候选窗、文本/图片/文件历史持久化、收藏与容量治理、选中即自动粘贴回原窗口。
 
+> **下载**：[Releases](https://github.com/rosefinchlj/clipnest/releases) 提供最新单文件绿色 exe（Windows 10 1809+ / 11，免安装、不写系统目录）。
+> 本项目同时作为 **Rust 实践学习项目** 开源：Win32 系统编程 + eframe/egui 界面 + SQLite 持久化的完整实现，保留设计与验收文档。
+
 ![Picker 候选窗](docs/screenshots/picker.png)
 
 | 管理台 · 历史 | 管理台 · 设置（深色） |
