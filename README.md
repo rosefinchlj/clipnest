@@ -1,5 +1,7 @@
 # ClipNest · 剪贴匣
 
+[![release](https://img.shields.io/github/v/release/rosefinchlj/clipnest?sort=semver)](https://github.com/rosefinchlj/clipnest/releases) [![license](https://img.shields.io/github/license/rosefinchlj/clipnest)](LICENSE)
+
 > Windows 磨砂玻璃剪贴板管理器（深色 / 浅色）。Rust + eframe/egui 实现：托盘常驻、全局快捷键呼出候选窗、文本/图片/文件历史持久化、收藏与容量治理、选中即自动粘贴回原窗口。
 
 > **下载**：[Releases](https://github.com/rosefinchlj/clipnest/releases) 提供最新单文件绿色 exe（Windows 10 1809+ / 11，免安装、不写系统目录）。
@@ -212,4 +214,4 @@ clipnest.exe（单进程常驻）
 
 ## 许可
 
-MIT
+MIT，见 [LICENSE](LICENSE)。
