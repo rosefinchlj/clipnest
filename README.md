@@ -6,16 +6,29 @@
 
 > **下载**：[Releases](https://github.com/rosefinchlj/clipnest/releases) 提供最新单文件绿色 exe（Windows 10 1809+ / 11，免安装、不写系统目录）。
 > 本项目同时作为 **Rust 实践学习项目** 开源：Win32 系统编程 + eframe/egui 界面 + SQLite 持久化的完整实现，保留设计与验收文档。
+> 在线介绍页：[rosefinchlj.github.io/clipnest](https://rosefinchlj.github.io/clipnest/)
 
-![Picker 候选窗](docs/screenshots/picker.png)
+## 这是什么
+
+**ClipNest（剪贴匣）是一个 Windows 剪贴板历史管理器 / 剪贴板工具**：把你 Ctrl+C 复制过的文本、图片、文件自动记进本地数据库，
+按全局快捷键呼出可搜索的候选窗，选中即粘贴回原窗口。单文件绿色 exe，纯本地、不联网，Rust + eframe/egui 实现。
+
+**ClipNest is a clipboard history manager for Windows.** It records copied text, images and files into a local SQLite database,
+opens a searchable picker with a global hotkey, and pastes the selected entry right back into the window you came from.
+Single portable `.exe` for Windows 10/11, fully offline, built in Rust (eframe/egui + SQLite).
+
+常见搜索词 / commonly searched as：Windows 剪贴板历史、剪贴板管理器、剪贴板工具、复制粘贴历史、clipboard history Windows、clipboard manager。
+可替代 / alternatives：Windows 自带 `Win+V` 剪贴板历史、Ditto、CopyQ、ClipClip（差异见下方 [FAQ](#faq)）。
+
+![ClipNest 剪贴板历史候选窗（Windows 全局快捷键呼出）](docs/screenshots/picker.png)
 
 | 管理台 · 历史 | 管理台 · 设置（深色） |
 |---|---|
-| ![历史](docs/screenshots/manager-history.png) | ![设置](docs/screenshots/manager-settings.png) |
+| ![ClipNest 管理台历史列表（深色主题，搜索/分页/收藏/回收站）](docs/screenshots/manager-history.png) | ![ClipNest 设置页（深色主题，容量与快捷键配置）](docs/screenshots/manager-settings.png) |
 
 | 浅色皮肤 · 候选窗 | 浅色皮肤 · 设置 |
 |---|---|
-| ![浅色候选窗](docs/screenshots/picker-light.png) | ![浅色设置](docs/screenshots/manager-settings-light.png) |
+| ![ClipNest 剪贴板候选窗（浅色主题，磨砂玻璃）](docs/screenshots/picker-light.png) | ![ClipNest 设置页（浅色主题）](docs/screenshots/manager-settings-light.png) |
 
 ## 为什么重新造一个
 
@@ -46,6 +59,54 @@ ClipNest 的目标是**低占用、键盘优先、视觉克制**：
   管理台可关闭，主候选窗不受影响。
 - **系统集成**：托盘菜单（打开面板 / 管理历史 / 暂停记录 / 清空 / 设置 / 开机自启 / 退出）、单实例、HKCU 开机自启、暂停记录、忽略应用名单。
 - **隐私**：纯本地、零网络；密码管理器等带 `Clipboard Viewer Ignore` 标记的复制不会被记录；日志不含剪贴板全文。
+
+## FAQ
+
+### ClipNest 是什么？和 Windows 自带的 Win+V 剪贴板历史有什么区别？
+
+ClipNest 是第三方的 Windows 剪贴板历史管理器。Windows 11 自带的 `Win+V` 剪贴板历史条数很少、没有搜索、
+重启/清理后容易丢，也不支持文件；ClipNest 默认保存 **5000 条**（可调、可无限）到本地 SQLite，
+支持中文 FTS5 搜索、文本/图片/文件三类内容、收藏、回收站和容量治理，重启不丢。
+
+### 免费吗？开源协议是什么？
+
+完全免费开源，**MIT 许可**，可商用、可修改；exe 从 [Releases](https://github.com/rosefinchlj/clipnest/releases) 直接下载。
+
+### 支持哪些 Windows 版本？需要安装吗？
+
+Windows 10 1809+ 与 Windows 11（x64）。**免安装绿色单文件 exe**，数据与配置在 `%APPDATA%\ClipNest\`，不写系统目录。
+
+### 会把剪贴板内容上传到服务器吗？
+
+不会。**纯本地、零网络**：只有本地 SQLite 数据库；日志不含剪贴板全文；带 `Clipboard Viewer Ignore` 标记的复制
+（常见于密码管理器）不会被记录。
+
+### 支持图片和文件复制吗？
+
+支持。文本、图片（截图）、文件列表三类都会入库；文件默认只记路径，**收藏时**才把实体复制进库，
+所以原文件删了收藏项也能粘贴出来。
+
+### 和 Ditto / CopyQ / ClipClip 等剪贴板工具有什么不同？
+
+| | ClipNest | Windows `Win+V` | Ditto | CopyQ |
+|---|---|---|---|---|
+| 实现 | Rust + egui，单文件 exe | 系统内置 | C++，需安装 | Qt，跨平台 |
+| 中文子串搜索 | ✓（FTS5 trigram） | ✗ | 部分支持 | ✓ |
+| 图片 / 文件历史 | ✓ / ✓ | 图片 ✓ / 文件 ✗ | 图片 ✓ | ✓ |
+| 深/浅色 + 磨砂玻璃界面 | ✓ | — | — | 皮肤可换 |
+| 开源协议 | MIT | 闭源 | GPL | GPL |
+
+差异点主要是：**单文件免安装、内存与体积小、界面克制、中文搜索友好**，代码全部开源可读（也是 Rust 学习项目）。
+
+### 占用多少内存？会开机自启吗？
+
+常驻内存约 57MB Private（单进程、窗口预创建，按快捷键 20–80ms 打开）；开机自启是可选项（HKCU 注册表），
+也可在托盘菜单里**暂停记录**。
+
+### 怎么升级和卸载？
+
+升级：下载新 exe 覆盖即可，数据库自动迁移。卸载：退出程序后删除 `%APPDATA%\ClipNest\` 目录；
+若开过开机自启，先在设置里关闭。
 
 ## 快捷键
 
@@ -139,7 +200,7 @@ cargo run -- --ui-preview picker        # 只预览 UI（假数据，开发用�
 
 > 磨砂透明度 35%（更接近终端，透出背后窗口）：
 
-![透明磨砂](docs/screenshots/picker-transparent.png)
+![ClipNest 磨砂透明度调节效果（Windows Acrylic 模糊）](docs/screenshots/picker-transparent.png)
 
 ## 架构（v1.2：单进程，窗口预创建）
 
@@ -211,6 +272,12 @@ clipnest.exe（单进程常驻）
 - 模块契约：[`docs/CONTRACT.md`](docs/CONTRACT.md)
 - 验收清单：[`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)
 - 验收结果：[`docs/ACCEPTANCE-RESULT.md`](docs/ACCEPTANCE-RESULT.md)
+
+## 相关项目
+
+- [exptab-rs](https://github.com/rosefinchlj/exptab-rs) — Windows 11 资源管理器「新窗口自动并入标签」工具，
+  同样是 Rust 单文件实现的学习项目。
+- 在线介绍页：[rosefinchlj.github.io/clipnest](https://rosefinchlj.github.io/clipnest/)
 
 ## 许可
 

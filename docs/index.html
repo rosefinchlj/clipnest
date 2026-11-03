@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipNest 剪贴匣 — Windows 剪贴板历史管理器（Rust 开源，单文件 exe）</title>
+<meta name="description" content="ClipNest（剪贴匣）是 Windows 剪贴板历史管理器：Win+V 的增强替代，支持中文搜索、图片与文件历史、收藏、回收站，本地 SQLite 存储、纯本地零联网。Rust + egui 实现，MIT 开源，免安装单文件 exe，适用于 Windows 10 / 11。">
+<meta name="keywords" content="剪贴板历史, Windows 剪贴板, 剪贴板管理器, clipboard manager, clipboard history, Win+V 替代, Rust 桌面应用, egui, eframe, 单文件 exe, ClipNest, 剪贴匣, 中文搜索">
+<meta name="author" content="rosefinchlj">
+<link rel="canonical" href="https://rosefinchlj.github.io/clipnest/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="ClipNest 剪贴匣">
+<meta property="og:title" content="ClipNest 剪贴匣 — Windows 剪贴板历史管理器（Rust 开源）">
+<meta property="og:description" content="Win+V 的增强替代：中文搜索、图片/文件历史、收藏与回收站，本地 SQLite、零联网，免安装单文件 exe。">
+<meta property="og:url" content="https://rosefinchlj.github.io/clipnest/">
+<meta property="og:image" content="https://rosefinchlj.github.io/clipnest/og.png">
+<meta property="og:locale" content="zh_CN">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="ClipNest 剪贴匣 — Windows 剪贴板历史管理器（Rust 开源）">
+<meta name="twitter:description" content="Win+V 的增强替代：中文搜索、图片/文件历史、收藏与回收站，本地 SQLite、零联网，单文件 exe。">
+<meta name="twitter:image" content="https://rosefinchlj.github.io/clipnest/og.png">
+<link rel="icon" href="https://raw.githubusercontent.com/rosefinchlj/clipnest/master/assets/icon.ico">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://rosefinchlj.github.io/clipnest/#website",
+      "name": "ClipNest 剪贴匣",
+      "url": "https://rosefinchlj.github.io/clipnest/",
+      "inLanguage": "zh-CN",
+      "author": { "@type": "Person", "name": "rosefinchlj", "url": "https://github.com/rosefinchlj" }
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://rosefinchlj.github.io/clipnest/#app",
+      "name": "ClipNest",
+      "alternateName": ["剪贴匣", "ClipNest 剪贴板管理器"],
+      "applicationCategory": "UtilitiesApplication",
+      "applicationSubCategory": "Clipboard Manager",
+      "operatingSystem": "Windows 10 (1809+) and Windows 11, x64",
+      "softwareVersion": "1.9.2",
+      "softwareRequirements": "Windows 10 1809+ / Windows 11 x64；无需安装与运行时依赖",
+      "fileSize": "9.05MB",
+      "inLanguage": "zh-CN",
+      "isAccessibleForFree": true,
+      "license": "https://opensource.org/licenses/MIT",
+      "url": "https://rosefinchlj.github.io/clipnest/",
+      "downloadUrl": "https://github.com/rosefinchlj/clipnest/releases/download/v1.9.2/ClipNest-v1.9.2-windows-x64.exe",
+      "installUrl": "https://github.com/rosefinchlj/clipnest/releases",
+      "screenshot": "https://rosefinchlj.github.io/clipnest/screenshots/picker.png",
+      "codeRepository": "https://github.com/rosefinchlj/clipnest",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" },
+      "author": { "@type": "Person", "name": "rosefinchlj", "url": "https://github.com/rosefinchlj" },
+      "keywords": "剪贴板历史, Windows 剪贴板管理器, clipboard manager, Win+V 替代, Rust, egui, open source, 开源"
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://rosefinchlj.github.io/clipnest/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "ClipNest 是什么？和 Windows 自带的 Win+V 剪贴板历史有什么区别？",
+          "acceptedAnswer": { "@type": "Answer", "text": "ClipNest 是第三方的 Windows 剪贴板历史管理器。Win+V 条数少、没有中文搜索、重启后容易丢失，也不支持文件；ClipNest 默认保存 5000 条（可调、可无限）到本地 SQLite，支持中文 FTS5 搜索、文本/图片/文件三类内容、收藏、回收站和容量治理，重启不丢。" }
+        },
+        {
+          "@type": "Question",
+          "name": "ClipNest 免费吗？开源协议是什么？",
+          "acceptedAnswer": { "@type": "Answer", "text": "完全免费开源，MIT 许可，可商用、可修改；exe 从 GitHub Releases 直接下载。" }
+        },
+        {
+          "@type": "Question",
+          "name": "ClipNest 支持哪些 Windows 版本？需要安装吗？",
+          "acceptedAnswer": { "@type": "Answer", "text": "支持 Windows 10 1809+ 与 Windows 11（x64）。免安装绿色单文件 exe，数据与配置保存在 %APPDATA%\\ClipNest\\，不写系统目录。" }
+        },
+        {
+          "@type": "Question",
+          "name": "ClipNest 会把剪贴板内容上传到服务器吗？",
+          "acceptedAnswer": { "@type": "Answer", "text": "不会。纯本地、零网络：只有本地 SQLite 数据库；日志不含剪贴板全文；带 Clipboard Viewer Ignore 标记的复制（常见于密码管理器）不会被记录。" }
+        },
+        {
+          "@type": "Question",
+          "name": "ClipNest 支持图片和文件复制吗？",
+          "acceptedAnswer": { "@type": "Answer", "text": "支持。文本、图片（截图）、文件列表三类都会入库；文件默认只记路径，收藏时才把实体复制进库，所以原文件删除后收藏项也能粘贴出来。" }
+        },
+        {
+          "@type": "Question",
+          "name": "ClipNest 和 Ditto、CopyQ、ClipClip 有什么区别？",
+          "acceptedAnswer": { "@type": "Answer", "text": "主要差异：单文件免安装（Rust + egui 编译为 9MB exe）、内存占用低（私有集约 57MB）、中文子串搜索友好（FTS5 trigram）、界面克制并支持深/浅色与 Acrylic 磨砂玻璃，全部代码 MIT 开源。" }
+        }
+      ]
+    }
+  ]
+}
+</script>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--fg:#e6edf3;--muted:#8b949e;--acc:#4c8bf5;--acc2:#7ee0c0;}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 15% -10%,#12233d 0%,#0d1117 55%) no-repeat,var(--bg);color:var(--fg);font:16px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  a{color:var(--acc);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:980px;margin:0 auto;padding:0 20px}
+  header{padding:64px 0 32px}
+  .badge{display:inline-block;font-size:13px;color:var(--acc2);border:1px solid #2a4a3f;background:#12251f;border-radius:999px;padding:2px 12px;margin-bottom:18px}
+  h1{font-size:clamp(30px,5vw,46px);line-height:1.25;margin:0 0 8px}
+  .sub{font-size:clamp(17px,2.4vw,21px);color:var(--muted);margin:0 0 26px}
+  .cta{display:flex;flex-wrap:wrap;gap:12px;margin:26px 0 8px}
+  .btn{display:inline-block;padding:12px 22px;border-radius:10px;font-weight:600;border:1px solid var(--border)}
+  .btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+  .btn.ghost{background:var(--panel);color:var(--fg)}
+  .meta{color:var(--muted);font-size:14px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;margin:18px 0 40px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px 20px}
+  .card h3{margin:0 0 6px;font-size:17px}
+  .card p{margin:0;color:var(--muted);font-size:15px}
+  h2{font-size:26px;margin:48px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  h3.q{font-size:18px;margin:26px 0 6px}
+  .faq p{color:var(--muted);margin:0}
+  .shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin:20px 0}
+  .shots figure{margin:0}
+  .shots img{width:100%;border-radius:12px;border:1px solid var(--border);display:block}
+  .shots figcaption{color:var(--muted);font-size:13px;margin-top:8px}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:15px}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:left}
+  th{background:var(--panel)}
+  footer{margin:56px 0 40px;padding-top:20px;border-top:1px solid var(--border);color:var(--muted);font-size:14px}
+  code{background:#1f2630;border-radius:5px;padding:1px 5px;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="badge">Rust 开源项目 · MIT · 单文件免安装</div>
+  <h1>ClipNest 剪贴匣 — Windows 剪贴板历史管理器</h1>
+  <p class="sub">Win+V 的增强替代：中文搜索、图片与文件历史、收藏与回收站，本地 SQLite 存储、纯本地零联网。<br>
+  ClipNest is a fast, local-only clipboard history manager for Windows 10/11, written in Rust.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/rosefinchlj/clipnest/releases/download/v1.9.2/ClipNest-v1.9.2-windows-x64.exe">下载 exe（v1.9.2 · 9.05 MB）</a>
+    <a class="btn ghost" href="https://github.com/rosefinchlj/clipnest">GitHub 源码</a>
+    <a class="btn ghost" href="https://github.com/rosefinchlj/clipnest/releases">所有版本</a>
+  </div>
+  <p class="meta">Windows 10 1809+ / Windows 11 x64 · 免安装绿色版 · 数据在 <code>%APPDATA%\ClipNest\</code> · 开源协议 MIT</p>
+</header>
+
+<h2>核心功能</h2>
+<div class="grid">
+  <div class="card"><h3>剪贴板历史（默认 5000 条）</h3><p>可调、可无限；重启不丢，按容量自动治理老旧记录。</p></div>
+  <div class="card"><h3>中文子串搜索</h3><p>基于 SQLite FTS5 trigram，输入「剪贴板」也能命中「Windows 剪贴板历史」。</p></div>
+  <div class="card"><h3>文本 / 图片 / 文件</h3><p>截图直接入库；文件列表记路径，收藏时把实体复制进库，原文件删了也能粘贴。</p></div>
+  <div class="card"><h3>收藏与回收站</h3><p>常用片段置顶收藏；误删进回收站，可恢复再彻底清空。</p></div>
+  <div class="card"><h3>深 / 浅色 + Acrylic 磨砂</h3><p>裁切干净的候选窗，透明度可调，不遮挡工作区。</p></div>
+  <div class="card"><h3>低占用、无联网</h3><p>单进程常驻约 57 MB Private；窗口预创建，全局快捷键呼出 20–80 ms。</p></div>
+</div>
+
+<h2>界面截图</h2>
+<div class="shots">
+  <figure><img src="screenshots/picker.png" alt="ClipNest 剪贴板候选窗（深色主题，Windows 全局快捷键呼出）" loading="lazy"><figcaption>候选窗：全局快捷键呼出，回车即粘贴</figcaption></figure>
+  <figure><img src="screenshots/manager-history.png" alt="ClipNest 管理台历史列表（深色主题，搜索、分页、收藏与回收站）" loading="lazy"><figcaption>管理台：搜索、分页、收藏与回收站</figcaption></figure>
+  <figure><img src="screenshots/picker-light.png" alt="ClipNest 剪贴板候选窗（浅色主题，磨砂玻璃）" loading="lazy"><figcaption>浅色主题 · 磨砂玻璃</figcaption></figure>
+  <figure><img src="screenshots/manager-settings.png" alt="ClipNest 设置页（深色主题，容量治理与快捷键配置）" loading="lazy"><figcaption>设置：容量治理与快捷键</figcaption></figure>
+</div>
+
+<h2>和 Win+V / Ditto / CopyQ 的对比</h2>
+<table>
+  <thead><tr><th></th><th>ClipNest</th><th>Windows Win+V</th><th>Ditto</th><th>CopyQ</th></tr></thead>
+  <tbody>
+    <tr><td>实现</td><td>Rust + egui，单文件 exe</td><td>系统内置</td><td>C++，需安装</td><td>Qt，跨平台</td></tr>
+    <tr><td>中文子串搜索</td><td>✓（FTS5 trigram）</td><td>✗</td><td>部分支持</td><td>✓</td></tr>
+    <tr><td>图片 / 文件历史</td><td>✓ / ✓</td><td>图片 ✓ / 文件 ✗</td><td>图片 ✓</td><td>✓</td></tr>
+    <tr><td>深/浅色 + 磨砂玻璃</td><td>✓</td><td>—</td><td>—</td><td>皮肤可换</td></tr>
+    <tr><td>开源协议</td><td>MIT</td><td>闭源</td><td>GPL</td><td>GPL</td></tr>
+  </tbody>
+</table>
+<p class="meta">差异点主要是：单文件免安装、内存与体积小、界面克制、中文搜索友好，代码全部开源可读（也是 Rust 学习项目）。</p>
+
+<h2>常见问题（FAQ）</h2>
+<div class="faq">
+  <h3 class="q">ClipNest 是什么？和 Windows 自带的 Win+V 剪贴板历史有什么区别？</h3>
+  <p>ClipNest 是第三方的 Windows 剪贴板历史管理器。Win+V 条数少、没有中文搜索、重启后容易丢失，也不支持文件；ClipNest 默认保存 5000 条（可调、可无限）到本地 SQLite，支持中文 FTS5 搜索、文本/图片/文件三类内容、收藏、回收站和容量治理，重启不丢。</p>
+  <h3 class="q">免费吗？开源协议是什么？</h3>
+  <p>完全免费开源，MIT 许可，可商用、可修改；exe 从 GitHub Releases 直接下载。</p>
+  <h3 class="q">支持哪些 Windows 版本？需要安装吗？</h3>
+  <p>Windows 10 1809+ 与 Windows 11（x64）。免安装绿色单文件 exe，数据与配置在 <code>%APPDATA%\ClipNest\</code>，不写系统目录。</p>
+  <h3 class="q">会把剪贴板内容上传到服务器吗？</h3>
+  <p>不会。纯本地、零网络：只有本地 SQLite 数据库；日志不含剪贴板全文；带 <code>Clipboard Viewer Ignore</code> 标记的复制（常见于密码管理器）不会被记录。</p>
+  <h3 class="q">支持图片和文件复制吗？</h3>
+  <p>支持。文本、图片（截图）、文件列表三类都会入库；文件默认只记路径，收藏时才把实体复制进库，所以原文件删了收藏项也能粘贴出来。</p>
+  <h3 class="q">怎么升级和卸载？</h3>
+  <p>升级：下载新 exe 覆盖即可，数据库自动迁移。卸载：退出程序后删除 <code>%APPDATA%\ClipNest\</code> 目录；若开过开机自启，先在设置里关闭。</p>
+</div>
+
+<h2>相关项目</h2>
+<p><a href="https://github.com/rosefinchlj/exptab-rs">exptab-rs</a> — Windows 11 资源管理器「新窗口自动并入标签」工具，同样是 Rust 单文件实现的学习项目。</p>
+
+<footer>
+  <p>© 2026 rosefinchlj · <a href="https://github.com/rosefinchlj/clipnest">GitHub</a> · <a href="https://github.com/rosefinchlj/clipnest/blob/master/LICENSE">MIT License</a> · <a href="https://github.com/rosefinchlj/clipnest/releases">Releases</a></p>
+  <p>关键词：剪贴板历史 · Windows 剪贴板管理器 · Win+V 替代 · 剪贴板搜索 · Rust 桌面应用 · egui · 单文件 exe · 开源剪贴板工具</p>
+</footer>
+</div>
+</body>
+</html>
