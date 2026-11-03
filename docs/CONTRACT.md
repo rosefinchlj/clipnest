@@ -88,7 +88,7 @@ pub type StoreResult<T> = Result<T, StoreError>;
 ### 2.2 行为约定
 
 - 内部模块建议：`db.rs`（schema/CRUD/search/retention）、`blob.rs`（内容寻址文件库）、
-  `export.rs`、`tests.rs`；`mod.rs` 只做线程与命令分发。
+  `export.rs`、`tests.rs`；`store.rs` 只做线程与命令分发。
 - 线程启动：打开 `data_dir/data.db`（WAL、synchronous=NORMAL、cache_size=-2048、foreign_keys=ON），
   `migrate()`；失败返回 Err（UI 弹错误对话框）。FTS5 创建失败 → `meta.fts_enabled=0` 走 LIKE。
 - 收到 `StoreCmd` 处理顺序：`Upsert` 去重/写库后发 `Event::ClipsChanged{total}`（每条最多一次，
@@ -172,7 +172,7 @@ UI 线程，由 Lead 在 `app.rs` 转发给 Store（保持 Sys 不依赖 Store�
   `write_clipboard(&PastePayload, data_dir: &Path) -> Result<(), ClipError>`；格式优先级
   HDROP > UNICODETEXT > PNG > DIBV5 > DIB；文本 ≤ `max_text_bytes`、图片 ≤ `max_image_pixels`、
   文件 ≤ `max_files_per_clip`；DIB 解析必须有单元测试（24/32bpp、top-down、BITFIELDS、V5）。
-- **clipboard 域接口（clipboard-dev 实现，sys 调用）**，`src/clipboard/mod.rs` 导出：
+- **clipboard 域接口（clipboard-dev 实现，sys 调用）**，`src/clipboard.rs` 导出：
 
 ```rust
 pub const SELF_MARKER_FORMAT: &str = "ClipNest.SelfWrite";

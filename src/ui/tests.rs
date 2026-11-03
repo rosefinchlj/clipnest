@@ -1,4 +1,4 @@
-//! UI 域单元测试（从 `mod.rs` 拆出，保持主文件 ≤800 行）。
+//! UI 域单元测试（从 `ui.rs` 拆出，保持主文件 ≤800 行）。
 //!
 //! 覆盖：搜索防抖/过期 gen 丢弃、翻页追加、收藏/删除乐观更新、设置保存动作、
 //! Win+V/热键状态展示、Toast 生命周期等。
@@ -110,7 +110,9 @@ fn search_debounce_eventually_dispatches_once() {
     let mut actions = Vec::new();
     // 未到期不发
     s.begin_frame(&ctx, &mut actions);
-    assert!(actions.iter().all(|a| !matches!(a, UiAction::Search { .. })));
+    assert!(actions
+        .iter()
+        .all(|a| !matches!(a, UiAction::Search { .. })));
     // 手动把到期时间提前
     if let Some(p) = &mut s.pending {
         p.due = Instant::now() - Duration::from_millis(1);

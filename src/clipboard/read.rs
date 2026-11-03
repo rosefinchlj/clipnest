@@ -231,4 +231,4 @@ pub(super) fn read_clipboard_bytes(format: u32, max_bytes: usize) -> Option<Vec<
 }
 
 // read.rs 本身不做单测：真实剪贴板读写冒烟在 `smoke.rs`（`#[ignore]`，手动运行）；
-// 纯函数部分（格式优先级、字节解析）都在 mod.rs / dib.rs / write.rs 覆盖。
+// 纯函数部分（格式优先级、字节解析）都在 clipboard.rs / dib.rs / write.rs 覆盖。
