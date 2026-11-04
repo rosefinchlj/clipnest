@@ -618,3 +618,24 @@
 ### 校验
 - `cargo test --release`：**158 passed / 0 failed / 1 ignored**。
 - 剪贴板「全部」列表截图：`docs/screenshots/picker.png`（置顶行不再金色，仅保留图钉/星标）。
+
+
+---
+
+## 28. v1.9.10（2026-11-04，关闭按钮图标修复）
+
+### 用户反馈
+- 管理台标题栏右侧出现两个「—」，看起来像两个最小化按钮；实际第二个是关闭按钮。
+
+### 根因
+- `src/ui/paint.rs::paint_close` 在已 `shrink(16)` 的 12×8 图标区内，又按 `width()*0.32` 做了一次 shrink，导致图标框只剩约 4×0.3px，两条对角线几乎水平，渲染成短横线。
+- 高 DPI 或窗口较窄时更明显。
+
+### 修复
+- `paint_close` 改为在中心取正方形图标框（`min(width,height)`），再小幅内缩，保证 ✕ 始终是清晰的对角交叉线。
+- `src/ui/manager.rs` 关闭图标绘制区域由 `close_rect.shrink(16)` 调整为 `shrink(12)`，图标更大更易辨认。
+- 新增 `close_icon_is_square_not_flat` 回归测试，断言关闭图标框为正方形且不小于 10px。
+
+### 校验
+- `cargo test --release`：**159 passed / 0 failed / 1 ignored**。
+- 标题栏截图：最小化为「—」、关闭为清晰「✕」。

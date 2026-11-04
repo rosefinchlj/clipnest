@@ -168,7 +168,7 @@ fn title_bar(state: &mut UiState, ui: &mut egui::Ui, full: Rect, actions: &mut V
     );
     paint::paint_close(
         &painter,
-        close_rect.shrink(16.0),
+        close_rect.shrink(12.0),
         if close_resp.hovered() {
             theme::text()
         } else {

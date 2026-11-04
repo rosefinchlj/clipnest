@@ -78,16 +78,22 @@ pub fn paint_search(painter: &egui::Painter, rect: Rect, color: Color32) {
     );
 }
 
+/// 关闭按钮的方形图标框，避免高 DPI 下 X 被横向压扁成短横线。
+fn close_icon_rect(rect: Rect) -> Rect {
+    let side = rect.width().min(rect.height());
+    Rect::from_center_size(rect.center(), Vec2::splat(side)).shrink(1.5)
+}
+
 /// 清除 ✕。
 pub fn paint_close(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let r = rect.shrink(rect.width() * 0.32);
+    let r = close_icon_rect(rect);
     painter.line_segment(
         [r.left_top(), r.right_bottom()],
-        Stroke::new(1.4_f32, color),
+        Stroke::new(1.6_f32, color),
     );
     painter.line_segment(
         [r.right_top(), r.left_bottom()],
-        Stroke::new(1.4_f32, color),
+        Stroke::new(1.6_f32, color),
     );
 }
 
@@ -430,4 +436,19 @@ pub fn paint_brand_mark(painter: &egui::Painter, rect: Rect) {
         Vec2::new(inner.width() * 0.44, inner.height() * 0.16),
     );
     painter.rect_filled(clip, CornerRadius::same(2), Color32::WHITE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_icon_is_square_not_flat() {
+        let icon = close_icon_rect(Rect::from_min_size(
+            Pos2::ZERO,
+            Vec2::new(20.0, 16.0),
+        ));
+        assert!((icon.width() - icon.height()).abs() < 0.01);
+        assert!(icon.width() >= 10.0, "close icon too small: {:?}", icon);
+    }
 }
