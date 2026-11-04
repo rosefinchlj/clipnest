@@ -227,6 +227,18 @@ pub fn success() -> Color32 {
 pub fn pinned() -> Color32 {
     palette().pinned
 }
+
+/// 置顶行的特殊底色：低透明度金色，叠在普通/选中/悬停底色之上。
+pub fn pinned_fill() -> Color32 {
+    let p = pinned();
+    Color32::from_rgba_unmultiplied(p.r(), p.g(), p.b(), 38)
+}
+
+/// 置顶且被选中时更明显的金色底，避免选中蓝把这些行的置顶标记盖掉。
+pub fn pinned_fill_strong() -> Color32 {
+    let p = pinned();
+    Color32::from_rgba_unmultiplied(p.r(), p.g(), p.b(), 72)
+}
 fn card_alpha() -> u8 {
     if !glass_enabled() {
         return 255;
@@ -699,6 +711,8 @@ mod tests {
         assert_eq!(danger(), Color32::from_rgb(0xFF, 0x6B, 0x6B));
         assert_eq!(success(), Color32::from_rgb(0x4A, 0xDE, 0x80));
         assert_eq!(pinned(), Color32::from_rgb(0xF5, 0xC4, 0x51));
+        assert_eq!(pinned_fill().a(), 38);
+        assert_eq!(pinned_fill_strong().a(), 72);
         assert_eq!(selection(), Color32::from_rgb(0x0F, 0x76, 0x6E));
         assert_eq!(selection_bar(), Color32::from_rgb(0x2D, 0xD4, 0xBF));
         assert_eq!(selection_text(), Color32::WHITE);

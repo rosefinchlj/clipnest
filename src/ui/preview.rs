@@ -542,7 +542,7 @@ fn files_item(id: i64, files: &[(&str, &str, u64, bool)], app: &str, minutes_ago
 
 /// 一份覆盖三种类型、不同时间/来源/收藏状态的演示数据。
 fn fake_items() -> Vec<ClipItem> {
-    vec![
+    let mut items = vec![
         text_item(
             1,
             "fn main() {\n    println!(\"Hello ClipNest\");\n}",
@@ -677,7 +677,12 @@ fn fake_items() -> Vec<ClipItem> {
             60 * 200,
             false,
         ),
-    ]
+    ];
+    // 预置一条置顶收藏，用于展示置顶行底色与「取消置顶」按钮。
+    if let Some(first) = items.first_mut() {
+        first.pinned = true;
+    }
+    items
 }
 
 /// 生成一张 96×96 的演示缩略图（模拟截图内容）。

@@ -42,6 +42,17 @@ fn new_state_has_pending_initial_query() {
 }
 
 #[test]
+fn enter_manager_selects_first_row_for_list_pages() {
+    let mut s = state();
+    s.selected = None;
+    s.enter_manager(ManagerPage::Favorites);
+    assert_eq!(s.selected, Some(0), "收藏页默认选中首行，置顶按钮才能出现");
+    s.selected = None;
+    s.enter_manager(ManagerPage::Settings);
+    assert_eq!(s.selected, None, "设置页不需要行选中");
+}
+
+#[test]
 fn apply_page_filters_stale_generation() {
     let mut s = state();
     s.active_gen = 5;

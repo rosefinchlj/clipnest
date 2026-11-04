@@ -405,22 +405,36 @@ fn table(
                     );
                     let hovered = resp.hovered();
                     if selected_single || in_multi {
-                        ui.painter().rect_filled(
-                            row_rect,
-                            CornerRadius::ZERO,
-                            theme::accent_fill(),
-                        );
+                        let fill = if item.pinned {
+                            theme::pinned_fill_strong()
+                        } else {
+                            theme::accent_fill()
+                        };
+                        ui.painter()
+                            .rect_filled(row_rect, CornerRadius::ZERO, fill);
                         if selected_single {
                             let bar = Rect::from_min_max(
                                 Pos2::new(row_rect.left(), row_rect.top() + 8.0),
                                 Pos2::new(row_rect.left() + 2.0, row_rect.bottom() - 8.0),
                             );
-                            ui.painter()
-                                .rect_filled(bar, CornerRadius::same(1), theme::accent());
+                            ui.painter().rect_filled(
+                                bar,
+                                CornerRadius::same(1),
+                                if item.pinned {
+                                    theme::pinned()
+                                } else {
+                                    theme::accent()
+                                },
+                            );
                         }
                     } else if hovered {
                         ui.painter()
                             .rect_filled(row_rect, CornerRadius::ZERO, theme::hover_fill());
+                    }
+                    // 置顶行始终叠一层金色底，和普通收藏行区分。
+                    if item.pinned {
+                        ui.painter()
+                            .rect_filled(row_rect, CornerRadius::ZERO, theme::pinned_fill());
                     }
                     paint_table_row(
                         state, ui, row_rect, &item, &cols, pin_mode, in_multi, actions,
@@ -628,7 +642,9 @@ fn paint_table_row(
             &painter,
             pin_center,
             7.0,
-            if item.pinned || pin_resp.hovered() {
+            if item.pinned {
+                theme::pinned()
+            } else if pin_resp.hovered() {
                 theme::accent()
             } else {
                 theme::text_weak()
@@ -778,8 +794,42 @@ fn detail_panel(
         x += w + 8.0;
     }
 
+    // 收藏项单独一行放置顶按钮：动作行已有 4 个按钮，再挤会溢出详情面板。
+    let mut extra_h = 0.0;
+    if item.favorited {
+        let label = if item.pinned {
+            "取消置顶"
+        } else {
+            "置顶此条"
+        };
+        let w = paint::text_width(ui, label, theme::font_body()) + 22.0;
+        let rect = Rect::from_min_size(
+            Pos2::new(inner.left(), btn_y + btn_h + 8.0),
+            Vec2::new(w, btn_h),
+        );
+        if widgets::button_at(ui, rect, label, widgets::ButtonKind::Secondary).clicked() {
+            let pinned = !item.pinned;
+            actions.push(UiAction::Pin {
+                id: item.id,
+                pinned,
+            });
+            if let Some(current) = state.items.iter_mut().find(|i| i.id == item.id) {
+                current.pinned = pinned;
+            }
+            state.toast(if pinned {
+                "已置顶"
+            } else {
+                "已取消置顶"
+            });
+        }
+        extra_h = btn_h + 8.0;
+    }
+
     // 内容区
-    let content_rect = Rect::from_min_max(Pos2::new(inner.left(), btn_y + btn_h + 12.0), inner.max);
+    let content_rect = Rect::from_min_max(
+        Pos2::new(inner.left(), btn_y + btn_h + 12.0 + extra_h),
+        inner.max,
+    );
     ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
         egui::ScrollArea::vertical()
             .id_salt("detail_scroll")

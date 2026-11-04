@@ -117,6 +117,12 @@ pub(crate) fn show(
         );
         state.search_focus = false;
         state.search_focused = out.text_response.has_focus();
+        // 输入法 Commit 同一帧，egui 可能因 Enter 让搜索框失焦；主动收回焦点。
+        if ime_event_this_frame {
+            out.text_response.request_focus();
+            state.search_focus = true;
+            state.search_focused = true;
+        }
         // 输入法组合中不搜索：等候选字上屏（Commit）后的下一帧再查。
         if (out.changed || out.cleared) && !state.ime_composing {
             state.schedule_search(false);

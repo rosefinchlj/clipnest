@@ -560,3 +560,22 @@
 - `cargo test --release` **154 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings。
 - 视觉：`docs/screenshots/picker-toast-light.png`（浅色主题下 Toast 文字为浅色）、`docs/screenshots/manager-settings.png` / `manager-settings-light.png`（三种选中配色）、`docs/screenshots/manager-favorites.png`（收藏页工具栏「置顶 / 取消置顶」按钮）。
 - 截图：`docs/screenshots/manager-settings.png`、`manager-settings-light.png`、`manager-favorites.png`、`picker.png` 更新为 v1.9.6。
+
+
+---
+
+## 25. v1.9.7（2026-11-04，置顶底色 / 置顶按钮 / 输入法焦点）
+
+### 用户反馈
+- 中文输入法回车问题解决了，但回车后搜索框没有焦点，无法继续输入。
+- 收藏列表看不到「置顶 / 取消置顶」按钮。
+- 置顶内容需要特殊背景色标记。
+
+### 根因与修复
+- 输入法 Commit 的同一帧，egui 可能因 Enter 让搜索框失焦；在 `src/ui/picker.rs` 检测到 IME 事件的帧主动 `request_focus()`，并把 `search_focus` 延续一帧，确保上屏后仍可继续输入。
+- 收藏页首次进入时 `selected` 可能为空，工具栏置顶按钮按“选中项”条件渲染而消失。`src/ui.rs::enter_manager` / `go_manager_page` 现在为列表页默认选中首行；`src/ui/pages/history.rs` 详情面板新增独立「置顶此条 / 取消置顶」按钮，工具栏按钮保留。
+- 置顶缺少视觉标记。`src/ui/theme.rs` 新增 `pinned_fill()`（金色 38 alpha）与 `pinned_fill_strong()`（金色 72 alpha）；`history.rs` 置顶行始终叠金色底，选中时用更强金色并保留金色左侧竖条；行内置顶图标置顶时改为金色。
+
+### 校验
+- `cargo test --release`：**155 passed / 0 failed / 1 ignored**。
+- 截图：`docs/screenshots/manager-favorites.png`（浅色主题，置顶行金色底 + 工具栏/详情面板置顶按钮）。

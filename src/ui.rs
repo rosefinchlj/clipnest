@@ -355,6 +355,10 @@ impl UiState {
             page,
             ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
         ) {
+            // 管理台列表默认选中第一行，工具栏的「置顶 / 取消置顶」等动作才有明确目标。
+            if self.selected.is_none() {
+                self.selected = Some(0);
+            }
             self.schedule_search(true);
         }
     }
@@ -792,6 +796,9 @@ impl UiState {
             page,
             ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
         ) {
+            if self.selected.is_none() {
+                self.selected = Some(0);
+            }
             self.schedule_search(true);
         }
         actions.push(UiAction::SelectManagerPage(page));
