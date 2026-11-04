@@ -39,7 +39,8 @@ pub fn apply_backdrop(hwnd: isize, light: bool, opacity_pct: u8) -> Result<&'sta
     // 终端式磨砂：即使滑到最低透明度，也要保留一个深色 tint 下限，
     // 否则白色/浅色窗口会把整个面板冲成浅灰，白字直接失去对比度。
     // 下限 150/255 ≈ 59% 深色 tint，仍能透出背后模糊，但文字始终可读。
-    let tint_alpha = (150 + (opacity_pct as u16).saturating_sub(35) * 60 / 65).clamp(150, 210) as u8;
+    let tint_alpha =
+        (150 + (opacity_pct as u16).saturating_sub(35) * 60 / 65).clamp(150, 210) as u8;
     let tint = if light {
         (246, 249, 255, tint_alpha)
     } else {
@@ -151,11 +152,34 @@ pub fn request_close_window(hwnd: isize) {
     if hwnd == 0 {
         return;
     }
+    // 直接销毁透明窗口时 DWM 投影会在原位置残留一帧；先移到屏幕外再关闭。
+    // 不能先 SW_HIDE：隐藏后 winit 的事件循环可能不再处理 WM_CLOSE，管理台进程会残留。
+    move_window_offscreen(hwnd);
     unsafe {
         PostMessageW(hwnd as _, WM_CLOSE, 0, 0);
     }
 }
 
+/// 把窗口移到屏幕外（保持 visible，事件循环仍能正常处理关闭消息）。
+pub fn move_window_offscreen(hwnd: isize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    if hwnd == 0 {
+        return;
+    }
+    unsafe {
+        SetWindowPos(
+            hwnd as _,
+            std::ptr::null_mut(),
+            -30000,
+            -30000,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
 
 /// 应用图标（从内嵌 PNG 解码），供 winit 设置窗口/任务栏图标。
 pub fn app_icon() -> Option<egui::IconData> {
@@ -192,7 +216,10 @@ pub fn find_window_by_title_prefix(prefix: &str) -> Option<isize> {
         prefix: &'a [u16],
         found: isize,
     }
-    unsafe extern "system" fn callback(hwnd: windows_sys::Win32::Foundation::HWND, lparam: isize) -> i32 {
+    unsafe extern "system" fn callback(
+        hwnd: windows_sys::Win32::Foundation::HWND,
+        lparam: isize,
+    ) -> i32 {
         let ctx = &mut *(lparam as *mut Ctx<'_>);
         if IsWindowVisible(hwnd) == 0 {
             return 1;
@@ -210,11 +237,18 @@ pub fn find_window_by_title_prefix(prefix: &str) -> Option<isize> {
         1
     }
     let prefix: Vec<u16> = prefix.encode_utf16().collect();
-    let mut ctx = Ctx { prefix: &prefix, found: 0 };
+    let mut ctx = Ctx {
+        prefix: &prefix,
+        found: 0,
+    };
     unsafe {
         EnumWindows(Some(callback), &mut ctx as *mut Ctx<'_> as isize);
     }
-    if ctx.found == 0 { None } else { Some(ctx.found) }
+    if ctx.found == 0 {
+        None
+    } else {
+        Some(ctx.found)
+    }
 }
 
 /// 按标题前缀请求关闭窗口。
@@ -223,7 +257,6 @@ pub fn close_window_by_title_prefix(prefix: &str) {
         request_close_window(hwnd);
     }
 }
-
 
 /// 强制把窗口切到前台并聚焦（托盘菜单/热键从隐藏状态唤起时，
 /// 仅靠 egui `ViewportCommand::Focus` 在部分场景会被前台锁拒绝）。

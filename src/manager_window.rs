@@ -38,6 +38,10 @@ pub fn run(page: ManagerPage, target_hwnd: isize) -> eframe::Result<()> {
         .with_transparent(true)
         .with_decorations(false)
         .with_resizable(true)
+        // 先创建在屏幕外，等首帧拿到真实 DPI 后再用 picker_position 定位。
+        // 如果直接以默认位置显示，透明窗口的投影会先在屏幕左侧闪一下。
+        .with_position([-30000.0, -30000.0])
+        .with_active(false)
         .with_visible(true)
         .with_taskbar(true);
     if let Some(icon) = crate::window::app_icon() {

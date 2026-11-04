@@ -457,3 +457,23 @@
 ### 校验
 - `cargo test --release` **150 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
 - 截图：`target/ui-picker.png`，已更新 `docs/screenshots/picker.png`。
+
+
+---
+
+## 21. v1.9.3（2026-11-02，管理台投影闪烁）
+
+### 用户反馈
+- 从托盘点击设置时，有个影子从左边一闪，然后界面显示在右边；关闭时界面消失后也会留下影子闪烁。
+
+### 根因
+- 管理台窗口创建时默认可见，winit 先在系统默认位置显示一帧，随后首帧才 `OuterPosition` 到光标附近；透明窗口的 DWM 投影就在旧位置闪一下。
+- 关闭时直接销毁透明窗口，DWM 投影可能残留一帧。
+
+### 修复
+- `src/manager_window.rs`：创建时放到屏幕外 `[-30000, -30000]`，`with_active(false)`；首帧拿到真实 DPI 后用 `picker_position` 定位并聚焦。
+- `src/window.rs`：`request_close_window` 先把窗口移到屏幕外再发 `WM_CLOSE`；不先 `SW_HIDE`，避免隐藏后 winit 不处理关闭消息、管理台进程残留。
+- 实测：窗口启动时先出现在屏幕外，再出现在光标附近；点击关闭按钮后进程正常退出。
+
+### 校验
+- `cargo test --release` **150 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
