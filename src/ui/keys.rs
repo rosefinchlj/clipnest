@@ -65,14 +65,18 @@ pub fn route_picker_keys(
     ctx: &egui::Context,
     allow_delete: bool,
     allow_arrows: bool,
+    allow_enter: bool,
 ) -> Vec<PickerCommand> {
     let mut out = Vec::new();
     ctx.input_mut(|i| {
-        // ---- 带修饰键（更具体）----
-        if i.consume_key(Modifiers::CTRL, Key::Enter) {
-            out.push(PickerCommand::PlainCopy);
-        } else if i.consume_key(Modifiers::NONE, Key::Enter) {
-            out.push(PickerCommand::Paste);
+        // 中文输入法组合中，Enter 是“确认候选字”，不能被吃掉变成粘贴。
+        if allow_enter {
+            // ---- 带修饰键（更具体）----
+            if i.consume_key(Modifiers::CTRL, Key::Enter) {
+                out.push(PickerCommand::PlainCopy);
+            } else if i.consume_key(Modifiers::NONE, Key::Enter) {
+                out.push(PickerCommand::Paste);
+            }
         }
 
         for (key, idx) in [
@@ -364,14 +368,27 @@ mod tests {
     fn route_enter_and_ctrl_enter() {
         let ctx = egui::Context::default();
         press(&ctx, Key::Enter, Modifiers::NONE);
-        assert_eq!(route_picker_keys(&ctx, true, true), vec![PickerCommand::Paste]);
+        assert_eq!(route_picker_keys(&ctx, true, true, true), vec![PickerCommand::Paste]);
         press(&ctx, Key::Enter, Modifiers::CTRL);
         assert_eq!(
-            route_picker_keys(&ctx, true, true),
+            route_picker_keys(&ctx, true, true, true),
             vec![PickerCommand::PlainCopy]
         );
         // 已消费的按键不会被重复处理
-        assert!(route_picker_keys(&ctx, true, true).is_empty());
+        assert!(route_picker_keys(&ctx, true, true, true).is_empty());
+    }
+
+    #[test]
+    fn route_does_not_consume_enter_while_ime_composing() {
+        let ctx = egui::Context::default();
+        press(&ctx, Key::Enter, Modifiers::NONE);
+        // 输入法组合中 Enter 用来确认候选字，必须留给 TextEdit。
+        assert!(route_picker_keys(&ctx, true, true, false).is_empty());
+        // 未消费的 Enter 仍可由后续正常帧处理。
+        assert_eq!(
+            route_picker_keys(&ctx, true, true, true),
+            vec![PickerCommand::Paste]
+        );
     }
 
     #[test]
@@ -380,7 +397,7 @@ mod tests {
         press(&ctx, Key::Num1, Modifiers::CTRL);
         press(&ctx, Key::Num9, Modifiers::CTRL);
         assert_eq!(
-            route_picker_keys(&ctx, true, true),
+            route_picker_keys(&ctx, true, true, true),
             vec![PickerCommand::QuickPaste(0), PickerCommand::QuickPaste(8)]
         );
     }
@@ -391,7 +408,7 @@ mod tests {
         press(&ctx, Key::ArrowLeft, Modifiers::NONE);
         press(&ctx, Key::ArrowRight, Modifiers::NONE);
         assert_eq!(
-            route_picker_keys(&ctx, true, true),
+            route_picker_keys(&ctx, true, true, true),
             vec![PickerCommand::FilterPrev, PickerCommand::FilterNext]
         );
 
@@ -399,7 +416,7 @@ mod tests {
         let ctx = egui::Context::default();
         press(&ctx, Key::ArrowLeft, Modifiers::NONE);
         press(&ctx, Key::ArrowRight, Modifiers::NONE);
-        assert!(route_picker_keys(&ctx, true, false).is_empty());
+        assert!(route_picker_keys(&ctx, true, false, true).is_empty());
     }
 
     #[test]
@@ -414,7 +431,7 @@ mod tests {
         press(&ctx, Key::Delete, Modifiers::NONE);
         // 路由按「先修饰键组合、后裸键」的固定顺序消费，返回顺序与匹配顺序一致
         assert_eq!(
-            route_picker_keys(&ctx, true, true),
+            route_picker_keys(&ctx, true, true, true),
             vec![
                 PickerCommand::FilterPrev,
                 PickerCommand::FilterNext,
@@ -433,7 +450,7 @@ mod tests {
         press(&ctx, Key::P, Modifiers::CTRL);
         press(&ctx, Key::Comma, Modifiers::CTRL);
         assert_eq!(
-            route_picker_keys(&ctx, true, true),
+            route_picker_keys(&ctx, true, true, true),
             vec![PickerCommand::TogglePin, PickerCommand::OpenSettings]
         );
     }

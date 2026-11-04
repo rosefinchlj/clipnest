@@ -529,3 +529,34 @@
 ### 校验
 - `cargo test --release` **151 passed / 0 failed / 1 ignored**；新增迁移与收藏/置顶互斥测试。
 - 截图：`docs/screenshots/picker.png`（收藏在最左、默认全部）、`docs/screenshots/manager-history.png`（历史页收藏过滤）、`docs/screenshots/manager-favorites.png`（收藏页星标 + 独立置顶）。
+
+---
+
+## 24. v1.9.6（2026-11-04，Toast / 置顶按钮 / 输入法 / 配色）
+
+### 用户反馈
+- 删除后出现的 Toast 文字看不清，全是黑色。
+- 收藏列表的置顶/取消置顶需要可见按钮，不想每次都右键。
+- 中文输入法还在输入拼音、尚未按空格上屏时就触发搜索；回车还会触发粘贴。
+- 希望选中强调色可自选，默认提供 3 种通用配色（当前玉石青绿）。
+
+### 根因与设计
+- Toast 背景固定为深色，但文字使用主题正文色；浅色主题正文是深色，形成黑字压深底。
+- 收藏页只有行内小图标和右键菜单，缺少工具栏级可发现入口。
+- 候选窗在搜索框绘制前就路由键盘，Enter 总被当作“粘贴”；同时输入法 Preedit 变化直接触发了搜索。
+- 候选强调色写死在主题色板里，没有用户设置入口。
+
+### 实现
+- `src/ui/widgets.rs`：新增 `toast_text_color()`，Toast 始终使用固定浅色文字（`#F4F7FB`），不再跟随主题正文色；补充主题无关的对比度单测。
+- `src/ui/pages/history.rs`：收藏页工具栏在「显示/隐藏详情」旁新增「置顶 / 取消置顶」按钮，仅选中收藏项时出现；行内置顶图标与右键菜单保留。
+- `src/ui.rs`：`UiState` 新增 `ime_composing`。
+- `src/ui/picker.rs`：路由键盘前读取 `egui::Event::Ime`（Preedit/Commit/Enabled/Disabled），组合期间把 `allow_enter=false`，并暂停搜索刷新；上屏/提交后再搜索。
+- `src/ui/keys.rs`：`route_picker_keys(..., allow_enter)`，IME 组合时不再消费 Enter/Ctrl+Enter、Delete 或方向键。
+- `src/model.rs`：新增 `SelectionPreset`（玉石青绿默认 / 靛蓝 / 琥珀）与 `Settings.selection_preset`，旧 settings.json 缺字段时默认玉石青绿。
+- `src/ui/theme.rs`：选中色改为运行时预设，深色竖条与浅色竖条分别按预设取色；新增预设单测。
+- `src/ui/pages/settings.rs`：外观卡片新增「选中配色」，保存后立即生效；启动与设置保存路径都会应用预设。
+
+### 校验
+- `cargo test --release` **154 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings。
+- 视觉：`docs/screenshots/picker-toast-light.png`（浅色主题下 Toast 文字为浅色）、`docs/screenshots/manager-settings.png` / `manager-settings-light.png`（三种选中配色）、`docs/screenshots/manager-favorites.png`（收藏页工具栏「置顶 / 取消置顶」按钮）。
+- 截图：`docs/screenshots/manager-settings.png`、`manager-settings-light.png`、`manager-favorites.png`、`picker.png` 更新为 v1.9.6。

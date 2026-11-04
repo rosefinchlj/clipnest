@@ -115,6 +115,38 @@ pub(crate) fn page(
         state.detail_open = !state.detail_open;
     }
 
+    // 收藏页选中收藏项后，工具栏直接给出置顶按钮，不必右键或去点行尾小图标。
+    let pin_target = if favorites || state.manager_filter == ClipFilter::Favorites {
+        state
+            .selected_item()
+            .filter(|item| item.favorited)
+            .map(|item| (item.id, item.pinned))
+    } else {
+        None
+    };
+    if let Some((id, pinned)) = pin_target {
+        let label = if pinned { "取消置顶" } else { "置顶" };
+        let pin_w = paint::text_width(ui, label, theme::font_body()) + 22.0;
+        let pin_rect = Rect::from_min_size(
+            Pos2::new(detail_rect.left() - pin_w - 8.0, btn_y),
+            Vec2::new(pin_w, btn_h),
+        );
+        if widgets::button_at(ui, pin_rect, label, widgets::ButtonKind::Secondary).clicked() {
+            actions.push(UiAction::Pin {
+                id,
+                pinned: !pinned,
+            });
+            if let Some(current) = state.items.iter_mut().find(|item| item.id == id) {
+                current.pinned = !pinned;
+            }
+            state.toast(if pinned {
+                "已取消置顶"
+            } else {
+                "已置顶"
+            });
+        }
+    }
+
     if search_changed {
         state.schedule_search(false);
     }

@@ -12,7 +12,9 @@
 //! 预览会真实运行 [`UiState`] 的渲染与交互（搜索过滤/选中/右键/设置页控件全部可用），
 //! 只是动作在本地消化（弹 toast 提示），不写数据库、不写设置、不动真实窗口。
 
-use crate::model::{ClipFilter, ClipItem, ClipKind, FileEntry, SearchPage, Settings, Stats};
+use crate::model::{
+    ClipFilter, ClipItem, ClipKind, FileEntry, SearchPage, Settings, Stats, ThemeMode,
+};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{theme, ManagerPage, UiAction, UiState, WindowMode};
 use eframe::egui::{self, Color32, Rect, Vec2};
@@ -52,6 +54,10 @@ pub fn ensure_installed(ctx: &egui::Context) {
 
 /// 渲染指定预览页（`picker` / `manager` / `favorites` / `settings` / `about`）。
 pub fn show(ctx: &egui::Context, mode: &str) {
+    // 截图自检用：允许在浅色主题下验证 toast/配色，不写入用户设置。
+    if std::env::var_os("CLIPNEST_PREVIEW_LIGHT").is_some() {
+        crate::ui::theme::set_light(true);
+    }
     ensure_installed(ctx);
 
     PREVIEW.with(|cell| {
@@ -175,6 +181,13 @@ impl PreviewState {
         });
         state.selected = Some(0);
         state.detail_open = true;
+        if mode == "picker" {
+            if let Ok(text) = std::env::var("CLIPNEST_PREVIEW_TOAST") {
+                if !text.is_empty() {
+                    state.toast(text);
+                }
+            }
+        }
 
         let mut thumbs = ThumbCache::new(ctx);
         // 为图片条目生成演示缩略图（真实环境由后台线程解码 blob 文件）
@@ -413,6 +426,9 @@ fn filter_items(items: &[ClipItem], text: &str, filter: ClipFilter) -> Vec<ClipI
 fn preview_settings() -> Settings {
     let mut settings = Settings::default();
     settings.ignore_apps = vec!["1password.exe".to_string(), "keepass.exe".to_string()];
+    if std::env::var_os("CLIPNEST_PREVIEW_SETTINGS_LIGHT").is_some() {
+        settings.theme = ThemeMode::Light;
+    }
     settings
 }
 

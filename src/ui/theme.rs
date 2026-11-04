@@ -9,7 +9,7 @@
 //!
 //! 动效（§7.4）：行悬停/选中 80ms、窗口 120ms、模式切换 150ms；不做花哨动效。
 
-use crate::model::ClipKind;
+use crate::model::{ClipKind, SelectionPreset};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
@@ -27,10 +27,6 @@ struct Palette {
     text_weak: Color32,
     accent: Color32,
     accent_hover: Color32,
-    /// 候选窗选中态底色（与操作蓝分开，选中更偏玉石绿）。
-    selection: Color32,
-    /// 选中态竖条/序号，深色主题用更亮的青绿保证可见。
-    selection_bar: Color32,
     danger: Color32,
     success: Color32,
     pinned: Color32,
@@ -64,8 +60,6 @@ const DARK: Palette = Palette {
     text_weak: Color32::from_rgb(0x7F, 0x8C, 0x9E),
     accent: Color32::from_rgb(0x6E, 0x8B, 0xFF),
     accent_hover: Color32::from_rgb(0x8A, 0xA2, 0xFF),
-    selection: Color32::from_rgb(0x0F, 0x76, 0x6E),
-    selection_bar: Color32::from_rgb(0x2D, 0xD4, 0xBF),
     danger: Color32::from_rgb(0xFF, 0x6B, 0x6B),
     success: Color32::from_rgb(0x4A, 0xDE, 0x80),
     pinned: Color32::from_rgb(0xF5, 0xC4, 0x51),
@@ -98,8 +92,6 @@ const LIGHT: Palette = Palette {
     text_weak: Color32::from_rgb(0x74, 0x80, 0x8F),
     accent: Color32::from_rgb(0x3E, 0x63, 0xDD),
     accent_hover: Color32::from_rgb(0x5B, 0x7C, 0xFA),
-    selection: Color32::from_rgb(0x0F, 0x76, 0x6E),
-    selection_bar: Color32::from_rgb(0x0F, 0x76, 0x6E),
     danger: Color32::from_rgb(0xD6, 0x45, 0x45),
     success: Color32::from_rgb(0x2F, 0x9E, 0x5F),
     pinned: Color32::from_rgb(0xB7, 0x86, 0x0B),
@@ -129,6 +121,25 @@ const LIGHT: Palette = Palette {
 static LIGHT_MODE: AtomicBool = AtomicBool::new(false);
 static GLASS_OPACITY: AtomicU8 = AtomicU8::new(75);
 static GLASS_ENABLED: AtomicBool = AtomicBool::new(true);
+static SELECTION_PRESET: AtomicU8 = AtomicU8::new(0);
+
+/// 切换候选窗选中态配色（由设置驱动）。
+pub fn set_selection_preset(preset: SelectionPreset) {
+    let value = match preset {
+        SelectionPreset::Jade => 0,
+        SelectionPreset::Indigo => 1,
+        SelectionPreset::Amber => 2,
+    };
+    SELECTION_PRESET.store(value, Ordering::Relaxed);
+}
+
+pub fn selection_preset() -> SelectionPreset {
+    match SELECTION_PRESET.load(Ordering::Relaxed) {
+        1 => SelectionPreset::Indigo,
+        2 => SelectionPreset::Amber,
+        _ => SelectionPreset::Jade,
+    }
+}
 
 /// 切换深/浅色（由设置驱动）；切换后需要重新调用 [`install_theme`]。
 pub fn set_light(light: bool) {
@@ -184,13 +195,28 @@ pub fn accent_hover() -> Color32 {
 pub fn selection_text() -> Color32 {
     Color32::WHITE
 }
+pub fn preset_color(preset: SelectionPreset) -> Color32 {
+    match preset {
+        SelectionPreset::Jade => Color32::from_rgb(0x0F, 0x76, 0x6E),
+        SelectionPreset::Indigo => Color32::from_rgb(0x4F, 0x46, 0xE5),
+        SelectionPreset::Amber => Color32::from_rgb(0xB4, 0x53, 0x09),
+    }
+}
+
 /// 实色选中底：用于过滤胶囊等需要承载白字的区域。
 pub fn selection() -> Color32 {
-    palette().selection
+    preset_color(selection_preset())
 }
-/// 选中态强调线：深色主题用更亮的青绿，浅色主题用深青绿。
+/// 选中态强调线/序号：深色主题用更亮的同色系，浅色主题用实色保证对比度。
 pub fn selection_bar() -> Color32 {
-    palette().selection_bar
+    if is_light() {
+        return selection();
+    }
+    match selection_preset() {
+        SelectionPreset::Jade => Color32::from_rgb(0x2D, 0xD4, 0xBF),
+        SelectionPreset::Indigo => Color32::from_rgb(0xA5, 0xB4, 0xFC),
+        SelectionPreset::Amber => Color32::from_rgb(0xFC, 0xD3, 0x4D),
+    }
 }
 pub fn danger() -> Color32 {
     palette().danger
@@ -271,7 +297,7 @@ pub fn hover_fill() -> Color32 {
 }
 
 pub fn selection_fill() -> Color32 {
-    let c = palette().selection;
+    let c = selection();
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 48)
 }
 
@@ -664,6 +690,7 @@ mod tests {
     fn dark_palette_matches_spec() {
         let _guard = TEST_LOCK.lock().unwrap();
         set_light(false);
+        set_selection_preset(SelectionPreset::Jade);
         assert_eq!(text(), Color32::from_rgb(0xE6, 0xED, 0xF3));
         assert_eq!(text_secondary(), Color32::from_rgb(0xA5, 0xB2, 0xC4));
         assert_eq!(text_weak(), Color32::from_rgb(0x7F, 0x8C, 0x9E));
@@ -680,6 +707,38 @@ mod tests {
         assert_eq!(border(), Color32::from_rgb(0x2A, 0x33, 0x40));
         assert_eq!(panel_base(), Color32::from_rgb(0x13, 0x18, 0x20));
         assert_eq!(window_base(), Color32::from_rgb(0x0E, 0x11, 0x16));
+    }
+
+    #[test]
+    fn selection_presets_are_distinct_and_theme_aware() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_light(false);
+        set_selection_preset(SelectionPreset::Jade);
+        let jade = selection();
+        let jade_bar = selection_bar();
+        set_selection_preset(SelectionPreset::Indigo);
+        let indigo = selection();
+        let indigo_bar = selection_bar();
+        set_selection_preset(SelectionPreset::Amber);
+        let amber = selection();
+        let amber_bar = selection_bar();
+        assert_eq!(
+            [jade, indigo, amber],
+            [
+                Color32::from_rgb(0x0F, 0x76, 0x6E),
+                Color32::from_rgb(0x4F, 0x46, 0xE5),
+                Color32::from_rgb(0xB4, 0x53, 0x09),
+            ]
+        );
+        assert_eq!(jade_bar, Color32::from_rgb(0x2D, 0xD4, 0xBF));
+        assert_eq!(indigo_bar, Color32::from_rgb(0xA5, 0xB4, 0xFC));
+        assert_eq!(amber_bar, Color32::from_rgb(0xFC, 0xD3, 0x4D));
+        // 浅色主题下竖条使用实色，保证白底上的对比度。
+        set_light(true);
+        set_selection_preset(SelectionPreset::Indigo);
+        assert_eq!(selection_bar(), indigo);
+        set_light(false);
+        set_selection_preset(SelectionPreset::Jade);
     }
 
     #[test]

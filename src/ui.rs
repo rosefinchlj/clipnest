@@ -203,6 +203,8 @@ pub struct UiState {
     search_text: String,
     search_focus: bool,
     search_focused: bool,
+    /// 搜索框是否正在中文/日文输入法组合中（Preedit 未上屏）。
+    ime_composing: bool,
     pending: Option<PendingSearch>,
     picker_filter: ClipFilter,
     manager_filter: ClipFilter,
@@ -252,6 +254,7 @@ impl UiState {
             search_text: String::new(),
             search_focus: true,
             search_focused: false,
+            ime_composing: false,
             pending: None,
             picker_filter: ClipFilter::All,
             manager_filter: ClipFilter::All,

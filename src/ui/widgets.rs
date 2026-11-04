@@ -536,12 +536,19 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
     }
 }
 
+/// Toast 文字色：toast 底色固定为深色，因此文字也固定用浅色，不随主题变化。
+pub fn toast_text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(0xF4, 0xF7, 0xFB)
+}
+
 /// 绘制 Toast（在 `bottom_center` 上方浮起；`alpha` 0..1 用于淡入淡出）。
 pub fn paint_toast(ui: &egui::Ui, bottom_center: Pos2, text: &str, alpha: f32) {
     if alpha <= 0.01 {
         return;
     }
-    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), theme::font_body(), theme::text()));
+    let galley = ui.fonts(|f| {
+        f.layout_no_wrap(text.to_owned(), theme::font_body(), toast_text_color())
+    });
     let size = galley.size() + Vec2::new(28.0, 18.0);
     // 轻微上浮：淡入时从下方 6px 处升起，淡出时回落；比只改透明度更有"落定"感。
     let lift = (1.0 - alpha).clamp(0.0, 1.0) * 6.0;
@@ -571,10 +578,12 @@ pub fn paint_toast(ui: &egui::Ui, bottom_center: Pos2, text: &str, alpha: f32) {
         ),
         StrokeKind::Inside,
     );
+    // toast 底色始终是深色；文字不能用主题正文色，否则浅色主题下会变成深色字，
+    // 在深色 toast 上几乎看不见。
     painter.galley(
         rect.min + Vec2::new(14.0, 9.0),
         galley,
-        theme::text().gamma_multiply(alpha),
+        toast_text_color().gamma_multiply(alpha),
     );
 }
 
@@ -828,6 +837,13 @@ mod tests {
             Rect::from_min_size(egui::pos2(40.0, 30.0), Vec2::splat(16.0))
         );
         assert_eq!(before, after, "checkbox_at 不应推进布局游标");
+    }
+
+    #[test]
+    fn toast_text_stays_light_regardless_of_theme() {
+        // toast 底板固定深色；浅色主题下正文色是深色，文字必须固定浅色。
+        let c = toast_text_color();
+        assert!(c.r() > 220 && c.g() > 220 && c.b() > 220);
     }
 
     #[test]

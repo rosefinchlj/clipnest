@@ -20,6 +20,7 @@ pub fn run(page: ManagerPage, target_hwnd: isize) -> eframe::Result<()> {
     let _ = crate::config::ensure_dirs();
     crate::logging::init(&crate::config::logs_dir(), &settings.log_level);
     crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
+    crate::ui::theme::set_selection_preset(settings.selection_preset);
     crate::ui::theme::set_glass_enabled(false);
     crate::logging::log(&format!(
         "管理台窗口进程启动（page={:?}，target={target_hwnd}）",
@@ -79,6 +80,7 @@ impl ManagerApp {
     fn new(cc: &eframe::CreationContext<'_>, page: ManagerPage, target_hwnd: isize) -> Self {
         let settings = crate::config::load_settings();
         crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
+        crate::ui::theme::set_selection_preset(settings.selection_preset);
         crate::ui::theme::set_glass_enabled(false);
         if std::env::var_os("CLIPNEST_SKIP_FONTS").is_none() {
             crate::ui::install_fonts(&cc.egui_ctx);
@@ -165,6 +167,7 @@ impl ManagerApp {
         }
         crate::ui::theme::set_glass_enabled(false);
         crate::ui::theme::set_light(next.theme == ThemeMode::Light);
+        crate::ui::theme::set_selection_preset(next.selection_preset);
         crate::ui::install_theme(ctx);
         self.ui.set_settings(&next);
         self.persist_settings();

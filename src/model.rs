@@ -470,6 +470,35 @@ impl ThemeMode {
     }
 }
 
+/// 候选窗选中态配色（与操作蓝分开，避免整屏都是蓝色）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionPreset {
+    /// 玉石青绿（默认）。
+    #[default]
+    Jade,
+    /// 靛蓝。
+    Indigo,
+    /// 琥珀。
+    Amber,
+}
+
+impl SelectionPreset {
+    pub const ALL: [SelectionPreset; 3] = [
+        SelectionPreset::Jade,
+        SelectionPreset::Indigo,
+        SelectionPreset::Amber,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SelectionPreset::Jade => "玉石青绿",
+            SelectionPreset::Indigo => "靛蓝",
+            SelectionPreset::Amber => "琥珀",
+        }
+    }
+}
+
 impl PasteKey {
     pub fn label(self) -> &'static str {
         match self {
@@ -485,6 +514,8 @@ impl PasteKey {
 pub struct Settings {
     /// 外观皮肤：深色 / 浅色。
     pub theme: ThemeMode,
+    /// 候选窗选中态配色。
+    pub selection_preset: SelectionPreset,
     /// 面板磨砂透明度（35–100，越低越透，类似终端）。
     pub glass_opacity: u8,
     /// 备用全局快捷键（Win+V 被接管时仍保留）。
@@ -517,6 +548,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeMode::Dark,
+            selection_preset: SelectionPreset::Jade,
             glass_opacity: 75,
             hotkey_picker: HotkeyChord::default(),
             pause_capture: false,
@@ -747,6 +779,12 @@ mod tests {
         let partial: Settings = serde_json::from_str(r#"{"max_items": 42}"#).unwrap();
         assert_eq!(partial.max_items, 42);
         assert_eq!(partial.max_image_bytes, 200 * 1024 * 1024);
+        // 旧版 settings.json 没有 selection_preset，应回退到默认玉石青绿。
+        assert_eq!(partial.selection_preset, SelectionPreset::Jade);
+        assert_eq!(
+            serde_json::to_string(&SelectionPreset::Amber).unwrap(),
+            "\"amber\""
+        );
     }
 
     #[test]

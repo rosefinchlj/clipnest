@@ -81,7 +81,16 @@ impl ClipNestApp {
     pub fn new(cc: &eframe::CreationContext<'_>, preview: Option<String>) -> Self {
         let settings = crate::config::load_settings();
         crate::ui::theme::set_light(settings.theme == ThemeMode::Light);
-        crate::ui::theme::set_glass_enabled(true);
+        // 截图自检用：预览时可在安装视觉前强制深色，避免用户浅色设置影响素材。
+        if preview.is_some() && std::env::var_os("CLIPNEST_PREVIEW_DARK").is_some() {
+            crate::ui::theme::set_light(false);
+        }
+        crate::ui::theme::set_selection_preset(settings.selection_preset);
+        // 预览候选窗保留磨砂；预览管理台时关闭，和真实管理台窗口一致（不透明背景）。
+        let glass = preview
+            .as_deref()
+            .map_or(true, |mode| mode == "picker");
+        crate::ui::theme::set_glass_enabled(glass);
         // 调试/截图用：临时覆盖磨砂透明度，不写回 settings.json。
         let dev_glass = std::env::var("CLIPNEST_DEV_GLASS")
             .ok()
@@ -415,14 +424,16 @@ impl ClipNestApp {
                 let pause_changed = next.pause_capture != self.settings.pause_capture;
                 let theme_changed = next.theme != self.settings.theme;
                 let glass_changed = next.glass_opacity != self.settings.glass_opacity;
+                let preset_changed = next.selection_preset != self.settings.selection_preset;
                 self.settings = next.clone();
                 if let Ok(mut shared) = self.settings_shared.lock() {
                     *shared = next.clone();
                 }
                 self.ui.set_settings(&next);
                 crate::ui::theme::set_glass_opacity(next.glass_opacity);
-                if theme_changed || glass_changed {
+                if theme_changed || glass_changed || preset_changed {
                     crate::ui::theme::set_light(next.theme == ThemeMode::Light);
+                    crate::ui::theme::set_selection_preset(next.selection_preset);
                     crate::ui::install_theme(ctx);
                     if let Some(hwnd) = self.hwnd {
                         let _ = crate::window::apply_backdrop(
@@ -644,6 +655,7 @@ impl ClipNestApp {
         let mut next = next;
         let theme_changed = next.theme != self.settings.theme;
         let glass_changed = next.glass_opacity != self.settings.glass_opacity;
+        let preset_changed = next.selection_preset != self.settings.selection_preset;
         let pause_changed = next.pause_capture != self.settings.pause_capture;
         // Sys 托盘可绕过 UI 直接修改 pause_capture/autostart（立即生效）；
         // 若发现 shared 与本侧不一致，说明是 Sys 改的，保存时以 Sys 的运行时值为准，避免回滚。
@@ -669,8 +681,9 @@ impl ClipNestApp {
         }
         self.ui.set_settings(&next);
         crate::ui::theme::set_glass_opacity(next.glass_opacity);
-        if theme_changed || glass_changed {
+        if theme_changed || glass_changed || preset_changed {
             crate::ui::theme::set_light(next.theme == ThemeMode::Light);
+            crate::ui::theme::set_selection_preset(next.selection_preset);
             crate::ui::install_theme(ctx);
             if let Some(hwnd) = self.hwnd {
                 let _ = crate::window::apply_backdrop(
@@ -773,6 +786,7 @@ impl ClipNestApp {
         }
         let theme_changed = next.theme != previous.theme;
         let glass_changed = next.glass_opacity != previous.glass_opacity;
+        let preset_changed = next.selection_preset != previous.selection_preset;
         let pause_changed = next.pause_capture != previous.pause_capture;
         crate::logging::log("检测到 settings.json 变化，正在应用新设置");
         self.settings = next.clone();
@@ -780,8 +794,9 @@ impl ClipNestApp {
             *shared = next.clone();
         }
         crate::ui::theme::set_glass_opacity(next.glass_opacity);
-        if theme_changed || glass_changed {
+        if theme_changed || glass_changed || preset_changed {
             crate::ui::theme::set_light(next.theme == ThemeMode::Light);
+            crate::ui::theme::set_selection_preset(next.selection_preset);
             crate::ui::install_theme(ctx);
             if let Some(hwnd) = self.hwnd {
                 let _ = crate::window::apply_backdrop(

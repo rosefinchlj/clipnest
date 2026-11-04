@@ -64,13 +64,38 @@ pub(crate) fn show(
         Pos2::new(full.right(), list_bottom),
     );
 
-    // ---- 1) 键盘路由（先于控件绘制，保证搜索框聚焦时 ↑↓/Tab/Enter 仍生效）----
+    // ---- 1) 输入法组合状态 + 键盘路由 ----
+    // 输入法未上屏时（Preedit），Enter 是确认候选字，不能当成粘贴；搜索也应等 Commit 后再触发。
+    let previous_ime = state.ime_composing;
+    let (ime_composing, ime_event_this_frame) = ui.ctx().input(|input| {
+        let mut composing = previous_ime;
+        let mut saw_ime_event = false;
+        for event in &input.events {
+            if let egui::Event::Ime(ime) = event {
+                saw_ime_event = true;
+                match ime {
+                    egui::ImeEvent::Preedit(text) => composing = !text.is_empty(),
+                    egui::ImeEvent::Commit(_) | egui::ImeEvent::Enabled | egui::ImeEvent::Disabled => {
+                        composing = false
+                    }
+                }
+            }
+        }
+        (composing, saw_ime_event)
+    });
+    state.ime_composing = ime_composing;
+    let ime_active = previous_ime || ime_composing || ime_event_this_frame;
+
+    // 先于控件绘制路由，保证搜索框聚焦时 ↑↓/Tab/Enter 仍生效。
     if state.confirm.is_none() {
         // 搜索框有文本时 Delete 留给文本框编辑（否则删一条记录会很反直觉）
-        let allow_delete = !(state.search_focused && !state.search_text.is_empty());
+        let allow_delete =
+            !ime_active && !(state.search_focused && !state.search_text.is_empty());
         // 同上：搜索中按 ←/→ 是移动光标；搜索框为空或未聚焦时切换分类。
-        let allow_arrows = !(state.search_focused && !state.search_text.is_empty());
-        let commands = keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows);
+        let allow_arrows =
+            !ime_active && !(state.search_focused && !state.search_text.is_empty());
+        let commands =
+            keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows, !ime_active);
         for command in commands {
             handle_command(state, command, list_rect.height(), actions);
         }
@@ -92,7 +117,8 @@ pub(crate) fn show(
         );
         state.search_focus = false;
         state.search_focused = out.text_response.has_focus();
-        if out.changed || out.cleared {
+        // 输入法组合中不搜索：等候选字上屏（Commit）后的下一帧再查。
+        if (out.changed || out.cleared) && !state.ime_composing {
             state.schedule_search(false);
         }
     });

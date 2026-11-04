@@ -4,7 +4,7 @@
 //! [`UiAction::SetSettings`] 交给 Lead 落盘；开自启/暂停/导出/清空等即时动作
 //! 通过对应 [`UiAction`] 发送。**UI 不直接写设置文件**。
 
-use crate::model::{fmt_size, PasteKey, Settings, ThemeMode};
+use crate::model::{fmt_size, PasteKey, SelectionPreset, Settings, ThemeMode};
 use crate::ui::{theme, widgets, UiAction, UiState};
 use eframe::egui::{self, Pos2, Rect, UiBuilder, Vec2};
 
@@ -86,6 +86,25 @@ fn appearance_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<
                 if mode != state.settings_draft.theme {
                     state.settings_draft.theme = mode;
                 }
+            },
+        );
+        setting_row(
+            ui,
+            "选中配色",
+            "候选窗选中行、左侧竖条与过滤胶囊的强调色；默认玉石青绿。保存后立即生效。",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    // 右侧是 RTL 布局，反向遍历让“玉石青绿 → 靛蓝 → 琥珀”从左到右显示。
+                    for preset in SelectionPreset::ALL.into_iter().rev() {
+                        ui.colored_label(theme::preset_color(preset), "●");
+                        ui.selectable_value(
+                            &mut state.settings_draft.selection_preset,
+                            preset,
+                            preset.label(),
+                        );
+                    }
+                });
             },
         );
         setting_row(
