@@ -307,6 +307,8 @@ fn render_list(
                         thumb: thumb.as_ref(),
                         selected,
                         ordinal: i + 1,
+                        highlight_pinned: state.picker_filter
+                            == crate::model::ClipFilter::Favorites,
                     },
                 );
                 if row.response.clicked() {

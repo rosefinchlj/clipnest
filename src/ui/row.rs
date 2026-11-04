@@ -18,6 +18,8 @@ pub struct ClipRow<'a> {
     pub selected: bool,
     /// 当前列表中的序号（从 1 开始，不是数据库 id）。
     pub ordinal: usize,
+    /// 是否处于收藏列表：只有收藏列表才用金色标记置顶。
+    pub highlight_pinned: bool,
 }
 
 /// 列表行输出。
@@ -43,9 +45,10 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
     let sel_t = if row.selected { 1.0 } else { 0.0 };
     let hover_t = ctx.animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.08);
 
-    // 背景 / 左侧竖条：置顶行始终保留金色底，选中时更明显。
+    // 背景 / 左侧竖条：只有收藏列表用金色底标记置顶，其他列表保持普通选中态。
     let painter = ui.painter().clone();
-    if row.item.pinned {
+    let pinned_highlight = row.item.pinned && row.highlight_pinned;
+    if pinned_highlight {
         painter.rect_filled(
             rect,
             CornerRadius::same(theme::RADIUS_ROW),
@@ -96,7 +99,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Align2::CENTER_CENTER,
         row.ordinal.to_string(),
         theme::font_mono(),
-        if row.selected && row.item.pinned {
+        if row.selected && pinned_highlight {
             theme::text()
         } else if row.selected {
             theme::selection_bar()
@@ -160,7 +163,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Pos2::new(text_left, rect.top() + 34.0),
         subtitle,
         FontId::new(theme::SIZE_AUX, egui::FontFamily::Proportional),
-        if row.item.pinned {
+        if pinned_highlight {
             theme::text()
         } else {
             theme::text_secondary()
@@ -174,7 +177,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Align2::RIGHT_TOP,
         fmt_relative_time(row.item.last_used_at),
         theme::font_aux(),
-        if row.item.pinned {
+        if pinned_highlight {
             theme::text()
         } else {
             theme::text_secondary()

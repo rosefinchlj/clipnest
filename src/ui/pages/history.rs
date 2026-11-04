@@ -467,7 +467,7 @@ fn table(
                     );
                     let hovered = resp.hovered();
                     if selected_single || in_multi {
-                        let fill = if item.pinned {
+                        let fill = if pin_mode && item.pinned {
                             theme::pinned_fill_strong()
                         } else {
                             theme::accent_fill()
@@ -482,7 +482,7 @@ fn table(
                             ui.painter().rect_filled(
                                 bar,
                                 CornerRadius::same(1),
-                                if item.pinned {
+                                if pin_mode && item.pinned {
                                     theme::pinned()
                                 } else {
                                     theme::accent()
@@ -493,8 +493,8 @@ fn table(
                         ui.painter()
                             .rect_filled(row_rect, CornerRadius::ZERO, theme::hover_fill());
                     }
-                    // 置顶行始终叠一层金色底，和普通收藏行区分。
-                    if item.pinned {
+                    // 只有收藏页/收藏筛选下，置顶行才叠金色底。
+                    if pin_mode && item.pinned {
                         ui.painter()
                             .rect_filled(row_rect, CornerRadius::ZERO, theme::pinned_fill());
                     }

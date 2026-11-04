@@ -601,3 +601,20 @@
 - `cargo test --release`：**158 passed / 0 failed / 1 ignored**。
 - 窄窗口截图：`docs/screenshots/manager-narrow.png`（885×558，表头与内容无重叠，详情无裁切）。
 - 剪贴板截图：`docs/screenshots/picker.png`（置顶行金色底 + 图钉/星标）。
+
+
+---
+
+## 27. v1.9.9（2026-11-04，置顶金色标记范围收敛）
+
+### 用户反馈
+- 只有收藏列表需要置顶特殊颜色，其他列表不用。
+
+### 修复
+- `src/ui/row.rs` 新增 `highlight_pinned`，仅当剪贴板当前筛选为「收藏」时才用金色底、金色竖条和高对比文字标记置顶行；其它分类保持普通选中/hover 样式。
+- `src/ui/pages/history.rs` 的金色置顶底也只在 `pin_mode`（收藏页或「收藏」筛选）时绘制；普通历史页选中置顶行仍使用正常选中色。
+- 置顶图钉按钮本身仍对所有已收藏条目显示，功能不受影响。
+
+### 校验
+- `cargo test --release`：**158 passed / 0 failed / 1 ignored**。
+- 剪贴板「全部」列表截图：`docs/screenshots/picker.png`（置顶行不再金色，仅保留图钉/星标）。
