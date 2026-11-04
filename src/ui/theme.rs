@@ -27,6 +27,10 @@ struct Palette {
     text_weak: Color32,
     accent: Color32,
     accent_hover: Color32,
+    /// 候选窗选中态底色（与操作蓝分开，选中更偏玉石绿）。
+    selection: Color32,
+    /// 选中态竖条/序号，深色主题用更亮的青绿保证可见。
+    selection_bar: Color32,
     danger: Color32,
     success: Color32,
     pinned: Color32,
@@ -60,6 +64,8 @@ const DARK: Palette = Palette {
     text_weak: Color32::from_rgb(0x7F, 0x8C, 0x9E),
     accent: Color32::from_rgb(0x6E, 0x8B, 0xFF),
     accent_hover: Color32::from_rgb(0x8A, 0xA2, 0xFF),
+    selection: Color32::from_rgb(0x0F, 0x76, 0x6E),
+    selection_bar: Color32::from_rgb(0x2D, 0xD4, 0xBF),
     danger: Color32::from_rgb(0xFF, 0x6B, 0x6B),
     success: Color32::from_rgb(0x4A, 0xDE, 0x80),
     pinned: Color32::from_rgb(0xF5, 0xC4, 0x51),
@@ -92,6 +98,8 @@ const LIGHT: Palette = Palette {
     text_weak: Color32::from_rgb(0x74, 0x80, 0x8F),
     accent: Color32::from_rgb(0x3E, 0x63, 0xDD),
     accent_hover: Color32::from_rgb(0x5B, 0x7C, 0xFA),
+    selection: Color32::from_rgb(0x0F, 0x76, 0x6E),
+    selection_bar: Color32::from_rgb(0x0F, 0x76, 0x6E),
     danger: Color32::from_rgb(0xD6, 0x45, 0x45),
     success: Color32::from_rgb(0x2F, 0x9E, 0x5F),
     pinned: Color32::from_rgb(0xB7, 0x86, 0x0B),
@@ -172,6 +180,18 @@ pub fn accent() -> Color32 {
 pub fn accent_hover() -> Color32 {
     palette().accent_hover
 }
+/// 候选窗选中态文字（选中胶囊使用实色底）。
+pub fn selection_text() -> Color32 {
+    Color32::WHITE
+}
+/// 实色选中底：用于过滤胶囊等需要承载白字的区域。
+pub fn selection() -> Color32 {
+    palette().selection
+}
+/// 选中态强调线：深色主题用更亮的青绿，浅色主题用深青绿。
+pub fn selection_bar() -> Color32 {
+    palette().selection_bar
+}
 pub fn danger() -> Color32 {
     palette().danger
 }
@@ -251,8 +271,8 @@ pub fn hover_fill() -> Color32 {
 }
 
 pub fn selection_fill() -> Color32 {
-    let c = palette().accent;
-    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 61)
+    let c = palette().selection;
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 48)
 }
 
 pub fn accent_soft() -> Color32 {
@@ -652,6 +672,9 @@ mod tests {
         assert_eq!(danger(), Color32::from_rgb(0xFF, 0x6B, 0x6B));
         assert_eq!(success(), Color32::from_rgb(0x4A, 0xDE, 0x80));
         assert_eq!(pinned(), Color32::from_rgb(0xF5, 0xC4, 0x51));
+        assert_eq!(selection(), Color32::from_rgb(0x0F, 0x76, 0x6E));
+        assert_eq!(selection_bar(), Color32::from_rgb(0x2D, 0xD4, 0xBF));
+        assert_eq!(selection_text(), Color32::WHITE);
         assert_eq!(card().to_opaque(), Color32::from_rgb(0x1A, 0x21, 0x2B));
         assert!(card().a() >= 200, "默认透明度下卡片仍需保持可读");
         assert_eq!(border(), Color32::from_rgb(0x2A, 0x33, 0x40));
@@ -683,6 +706,7 @@ mod tests {
         set_glass_opacity(75);
         set_glass_opacity(75);
         assert_eq!(accent_fill().a(), 31);
+        assert_eq!(selection_fill().a(), 48);
         assert_eq!(hover_fill().a(), 15);
         assert_eq!(divider().width, 1.0);
         assert_eq!(divider().color.a(), 20);

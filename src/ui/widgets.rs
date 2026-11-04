@@ -424,7 +424,7 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
                     .animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.09);
             let painter = ui.painter();
             let fill = if sel_t > 0.001 {
-                lerp_color(theme::hover_fill(), theme::accent(), sel_t)
+                lerp_color(theme::hover_fill(), theme::selection(), sel_t)
             } else {
                 theme::hover_fill().gamma_multiply(hov_t)
             };
@@ -435,7 +435,7 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
                 painter.rect_stroke(
                     rect,
                     radius,
-                    Stroke::new(1.0_f32, lerp_color(theme::border(), theme::accent(), sel_t)),
+                    Stroke::new(1.0_f32, lerp_color(theme::border(), theme::selection(), sel_t)),
                     StrokeKind::Inside,
                 );
             }
@@ -444,7 +444,7 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
                 Align2::CENTER_CENTER,
                 label,
                 FontId::new(theme::SIZE_AUX + 0.5, egui::FontFamily::Proportional),
-                lerp_color(theme::text_secondary(), Color32::WHITE, sel_t),
+                lerp_color(theme::text_secondary(), theme::selection_text(), sel_t),
             );
             if resp.clicked() && !selected {
                 *current = filter;

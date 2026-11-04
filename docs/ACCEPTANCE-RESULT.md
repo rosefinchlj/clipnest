@@ -477,3 +477,26 @@
 
 ### 校验
 - `cargo test --release` **150 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
+
+---
+
+## 22. v1.9.4（2026-11-04，候选窗选中色改为青绿）
+
+### 用户反馈
+- 候选窗选中的蓝色在深色主题下文字看着不舒服，浅色主题也很一般；希望换一个视觉合理的颜色。
+
+### 设计
+- 将「操作蓝」与「选中色」拆开：搜索焦点、主按钮继续使用蓝色；候选窗选中态改用玉石青绿，避免整屏蓝色发闷。
+- 深色主题：选中行半透明青绿 + 亮青绿竖条/序号，行文字保持主题白色；选中过滤胶囊使用深青绿实底 + 白字。
+- 浅色主题：使用同色相的深青绿（`#0F766E`），选中行为浅青绿底 + 深色文字，胶囊仍为深青绿底白字。
+- 选中底色保持半透明（alpha 48），不破坏 Acrylic 磨砂质感；不修改行标题/预览文字主色，避免对比度下降。
+
+### 实现
+- `src/ui/theme.rs`：`Palette` 新增 `selection` / `selection_bar`；新增 `selection()`、`selection_bar()`、`selection_text()`，`selection_fill()` 由蓝色改为青绿 48 alpha；深色竖条 `#2DD4BF`，浅色竖条 `#0F766E`。
+- `src/ui/row.rs`：选中行背景、左侧竖条、序号改用 `selection_*`。
+- `src/ui/widgets.rs::filter_chips`：选中胶囊的填充、描边、文字改用 `selection_*`。
+- 更新色板/alpha 单测断言。
+
+### 校验
+- `cargo test --release` **150 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
+- 截图：`docs/screenshots/picker.png`（深色）、`docs/screenshots/picker-light.png`（浅色）。

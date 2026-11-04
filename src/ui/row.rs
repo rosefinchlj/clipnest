@@ -47,7 +47,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         painter.rect_filled(
             rect,
             CornerRadius::same(theme::RADIUS_ROW),
-            theme::accent_fill().gamma_multiply(sel_t),
+            theme::selection_fill().gamma_multiply(sel_t),
         );
         let bar = Rect::from_min_max(
             Pos2::new(rect.left() + 1.0, rect.top() + 12.0),
@@ -56,7 +56,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         painter.rect_filled(
             bar,
             CornerRadius::same(1),
-            theme::accent().gamma_multiply(sel_t),
+            theme::selection_bar().gamma_multiply(sel_t),
         );
     } else if hover_t > 0.001 {
         painter.rect_filled(
@@ -79,7 +79,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         row.ordinal.to_string(),
         theme::font_mono(),
         if row.selected {
-            theme::accent()
+            theme::selection_bar()
         } else {
             theme::text_secondary()
         },
