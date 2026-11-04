@@ -3,7 +3,7 @@
 //! 全部按 spec §7 视觉规范自绘（深色卡片 + 细描边 + 圆角 + 强调色），
 //! 不依赖 egui 默认控件外观；图标见 [`crate::ui::paint`]（几何自绘，不用 emoji）。
 
-use crate::model::{ClipFilter, HotkeyChord};
+use crate::model::{ClipFilter, HotkeyChord, TimeRange};
 use crate::ui::{keys, paint, theme};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind,
@@ -405,15 +405,29 @@ pub use crate::ui::row::{clip_row, ClipRow};
 
 /// 过滤胶囊组（全部/文本/图片/文件/收藏）；返回是否切换了过滤。
 pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
+    chips(ui, current, &ClipFilter::all(), |filter| filter.label())
+}
+
+/// 时间范围胶囊：搜索框下方一行。
+pub fn time_range_chips(ui: &mut egui::Ui, current: &mut TimeRange) -> bool {
+    chips(ui, current, &TimeRange::all(), |range| range.label())
+}
+
+fn chips<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    current: &mut T,
+    values: &[T],
+    label: impl Fn(T) -> &'static str,
+) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = theme::GAP_S;
-        for filter in ClipFilter::all() {
-            let label = filter.label();
+        for value in values.iter().copied() {
+            let label = label(value);
             let width = paint::text_width(ui, label, theme::font_aux()) + 26.0;
             let (rect, resp) =
                 ui.allocate_exact_size(Vec2::new(width, theme::CHIP_HEIGHT), Sense::click());
-            let selected = *current == filter;
+            let selected = *current == value;
             let radius = CornerRadius::same(theme::RADIUS_CHIP);
             // 选中/悬停都做 120ms 过渡，避免胶囊背景瞬间跳变。
             let sel_t = ui
@@ -447,7 +461,7 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
                 lerp_color(theme::text_secondary(), theme::selection_text(), sel_t),
             );
             if resp.clicked() && !selected {
-                *current = filter;
+                *current = value;
                 changed = true;
             }
             if resp.hovered() {

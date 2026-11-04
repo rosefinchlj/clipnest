@@ -512,6 +512,7 @@ impl ClipNestApp {
             UiAction::Search {
                 text,
                 filter,
+                time_range,
                 offset,
                 trash,
                 gen,
@@ -525,6 +526,7 @@ impl ClipNestApp {
                     let _ = tx.send(StoreCmd::Search(SearchQuery {
                         text,
                         filter,
+                        time_range,
                         offset,
                         limit,
                         trash,

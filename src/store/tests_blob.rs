@@ -307,6 +307,7 @@ fn export_import_roundtrip() {
         .search(&SearchQuery {
             text: "导出".to_string(),
             filter: ClipFilter::All,
+            time_range: crate::model::TimeRange::All,
             offset: 0,
             limit: 10,
             trash: false,
@@ -323,6 +324,7 @@ fn export_import_roundtrip() {
         .search(&SearchQuery {
             text: "附件".to_string(),
             filter: ClipFilter::All,
+            time_range: crate::model::TimeRange::All,
             offset: 0,
             limit: 10,
             trash: false,

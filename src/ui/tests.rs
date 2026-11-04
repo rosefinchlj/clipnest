@@ -4,7 +4,7 @@
 //! Win+V/热键状态展示、Toast 生命周期等。
 
 use super::*;
-use crate::model::{ClipItem, ClipKind, SearchPage};
+use crate::model::{ClipItem, ClipKind, SearchPage, TimeRange};
 
 fn state() -> UiState {
     UiState::new(&egui::Context::default(), &Settings::default())
@@ -50,6 +50,17 @@ fn enter_manager_selects_first_row_for_list_pages() {
     s.selected = None;
     s.enter_manager(ManagerPage::Settings);
     assert_eq!(s.selected, None, "设置页不需要行选中");
+}
+
+#[test]
+fn entering_picker_or_manager_resets_time_range() {
+    let mut s = state();
+    s.picker_time_range = TimeRange::Last7Days;
+    s.enter_picker();
+    assert_eq!(s.picker_time_range, TimeRange::All);
+    s.manager_time_range = TimeRange::Last30Days;
+    s.enter_manager(ManagerPage::History);
+    assert_eq!(s.manager_time_range, TimeRange::All);
 }
 
 #[test]

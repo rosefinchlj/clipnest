@@ -284,10 +284,67 @@ impl ClipFilter {
     }
 }
 
+/// 列表时间范围筛选。按 `last_used_at` 计算。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TimeRange {
+    #[default]
+    All,
+    Today,
+    Last7Days,
+    Last30Days,
+    Last90Days,
+}
+
+impl TimeRange {
+    pub fn label(self) -> &'static str {
+        match self {
+            TimeRange::All => "全部时间",
+            TimeRange::Today => "今天",
+            TimeRange::Last7Days => "近7天",
+            TimeRange::Last30Days => "近30天",
+            TimeRange::Last90Days => "近90天",
+        }
+    }
+
+    pub fn all() -> [TimeRange; 5] {
+        [
+            TimeRange::All,
+            TimeRange::Today,
+            TimeRange::Last7Days,
+            TimeRange::Last30Days,
+            TimeRange::Last90Days,
+        ]
+    }
+
+    /// 起始时间戳（含）。`All` 返回 `None`。
+    pub fn cutoff_ms(self, now: i64) -> Option<i64> {
+        let day = 24 * 60 * 60 * 1000;
+        match self {
+            TimeRange::All => None,
+            TimeRange::Today => Some(local_midnight_ms(now).unwrap_or(now - day)),
+            TimeRange::Last7Days => Some(now - 7 * day),
+            TimeRange::Last30Days => Some(now - 30 * day),
+            TimeRange::Last90Days => Some(now - 90 * day),
+        }
+    }
+}
+
+/// 本地时区当天 00:00 的时间戳；时区异常时返回 `None`。
+fn local_midnight_ms(now: i64) -> Option<i64> {
+    use chrono::{Local, TimeZone};
+    let local = Local.timestamp_millis_opt(now).single()?;
+    let midnight = local.date_naive().and_hms_opt(0, 0, 0)?;
+    Local
+        .from_local_datetime(&midnight)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchQuery {
     pub text: String,
     pub filter: ClipFilter,
+    pub time_range: TimeRange,
     pub offset: usize,
     pub limit: usize,
     /// true 时查询回收站（deleted_at 非空）。
@@ -301,6 +358,7 @@ impl Default for SearchQuery {
         Self {
             text: String::new(),
             filter: ClipFilter::All,
+            time_range: TimeRange::All,
             offset: 0,
             limit: 200,
             trash: false,

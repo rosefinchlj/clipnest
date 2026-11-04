@@ -151,8 +151,19 @@ pub(crate) fn page(
         state.schedule_search(false);
     }
 
+    // ---- 时间范围（搜索框下方）----
+    let time_rect = Rect::from_min_size(
+        Pos2::new(inner.left(), toolbar_rect.bottom() + 8.0),
+        Vec2::new(inner.width(), theme::CHIP_HEIGHT),
+    );
+    ui.scope_builder(UiBuilder::new().max_rect(time_rect), |ui| {
+        if widgets::time_range_chips(ui, &mut state.manager_time_range) {
+            state.schedule_search(true);
+        }
+    });
+
     // ---- 批量操作条（多选时出现）----
-    let mut body_top = toolbar_rect.bottom() + 12.0;
+    let mut body_top = time_rect.bottom() + 12.0;
     if !state.multi_selected.is_empty() && !favorites {
         let batch_rect = Rect::from_min_size(
             Pos2::new(inner.left(), body_top),

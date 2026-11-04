@@ -341,6 +341,7 @@ fn search(
         .send(StoreCmd::Search(SearchQuery {
             text: text.to_string(),
             filter,
+            time_range: crate::model::TimeRange::All,
             offset,
             limit,
             trash: false,

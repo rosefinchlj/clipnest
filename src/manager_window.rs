@@ -253,6 +253,7 @@ impl ManagerApp {
             UiAction::Search {
                 text,
                 filter,
+                time_range,
                 offset,
                 trash,
                 gen,
@@ -261,6 +262,7 @@ impl ManagerApp {
                     let _ = tx.send(StoreCmd::Search(SearchQuery {
                         text,
                         filter,
+                        time_range,
                         offset,
                         limit: 500,
                         trash,

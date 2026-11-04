@@ -278,12 +278,17 @@ impl PreviewState {
                 UiAction::Search {
                     text,
                     filter,
+                    time_range,
                     offset,
                     trash,
                     gen,
                 } => {
                     let _ = trash;
-                    let items = filter_items(&self.all_items, &text, filter);
+                    let cutoff = time_range.cutoff_ms(crate::model::now_ms());
+                    let items: Vec<_> = filter_items(&self.all_items, &text, filter)
+                        .into_iter()
+                        .filter(|item| cutoff.map_or(true, |since| item.last_used_at >= since))
+                        .collect();
                     let total = items.len();
                     let page_items = items.into_iter().skip(offset).take(500).collect();
                     self.state.apply_search_page(SearchPage {

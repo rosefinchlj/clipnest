@@ -190,6 +190,7 @@ pub(crate) fn search_query(
     SearchQuery {
         text: text.to_string(),
         filter,
+        time_range: crate::model::TimeRange::All,
         offset,
         limit,
         trash: false,
@@ -432,6 +433,67 @@ fn search_filters() {
         .search(&search_query("关键词", ClipFilter::Image, 0, 100, 2))
         .unwrap();
     assert_eq!(page.total, 0);
+}
+
+#[test]
+fn time_range_filters_by_last_used() {
+    let (_dir, db) = open_db("time-range");
+    let now = now_ms();
+    let UpsertOutcome::Inserted(old_id) =
+        db.upsert(&text_input_at("旧记录", now - 40 * 86_400_000)).unwrap()
+    else {
+        panic!("应插入旧记录");
+    };
+    let UpsertOutcome::Inserted(recent_id) = db.upsert(&text_input_at("新记录", now)).unwrap() else {
+        panic!("应插入新记录");
+    };
+    db.conn
+        .execute(
+            "UPDATE clips SET last_used_at = ?1 WHERE id = ?2",
+            params![now - 40 * 86_400_000, old_id],
+        )
+        .unwrap();
+    db.conn
+        .execute(
+            "UPDATE clips SET last_used_at = ?1 WHERE id = ?2",
+            params![now, recent_id],
+        )
+        .unwrap();
+
+    let mut query = search_query("", ClipFilter::All, 0, 10, 1);
+    query.time_range = TimeRange::All;
+    assert_eq!(db.search(&query).unwrap().total, 2);
+
+    query.time_range = TimeRange::Last7Days;
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, recent_id);
+
+    query.time_range = TimeRange::Today;
+    assert_eq!(db.search(&query).unwrap().total, 1);
+
+    query.time_range = TimeRange::Last90Days;
+    assert_eq!(db.search(&query).unwrap().total, 2);
+}
+
+#[test]
+fn time_range_cutoffs_are_ordered() {
+    let now = 1_700_000_000_000i64;
+    assert_eq!(TimeRange::All.cutoff_ms(now), None);
+    let today = TimeRange::Today.cutoff_ms(now).unwrap();
+    assert!(today <= now && today > now - 2 * 86_400_000);
+    assert_eq!(
+        TimeRange::Last7Days.cutoff_ms(now),
+        Some(now - 7 * 86_400_000)
+    );
+    assert_eq!(
+        TimeRange::Last30Days.cutoff_ms(now),
+        Some(now - 30 * 86_400_000)
+    );
+    assert_eq!(
+        TimeRange::Last90Days.cutoff_ms(now),
+        Some(now - 90 * 86_400_000)
+    );
 }
 
 #[test]
@@ -806,6 +868,7 @@ fn trash_soft_delete_search_restore_and_purge() {
         .search(&SearchQuery {
             text: String::new(),
             filter: ClipFilter::All,
+            time_range: crate::model::TimeRange::All,
             offset: 0,
             limit: 10,
             trash: true,

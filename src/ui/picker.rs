@@ -57,7 +57,8 @@ pub(crate) fn show(
     }
     let search_top = full.top() + DRAG_STRIP;
     let chips_top = search_top + theme::SEARCH_HEIGHT + theme::GAP_S;
-    let list_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_S;
+    let time_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_XS;
+    let list_top = time_top + theme::CHIP_HEIGHT + theme::GAP_S;
     let list_bottom = (hint_top - theme::GAP_XS).max(list_top + theme::ROW_HEIGHT);
     let list_rect = Rect::from_min_max(
         Pos2::new(full.left(), list_top),
@@ -136,6 +137,17 @@ pub(crate) fn show(
     );
     ui.scope_builder(UiBuilder::new().max_rect(chips_rect), |ui| {
         if widgets::filter_chips(ui, &mut state.picker_filter) {
+            state.schedule_search(true);
+        }
+    });
+
+    // ---- 3b) 时间范围 ----
+    let time_rect = Rect::from_min_size(
+        Pos2::new(full.left(), time_top),
+        Vec2::new(full.width(), theme::CHIP_HEIGHT),
+    );
+    ui.scope_builder(UiBuilder::new().max_rect(time_rect), |ui| {
+        if widgets::time_range_chips(ui, &mut state.picker_time_range) {
             state.schedule_search(true);
         }
     });

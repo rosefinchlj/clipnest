@@ -639,3 +639,25 @@
 ### 校验
 - `cargo test --release`：**159 passed / 0 failed / 1 ignored**。
 - 标题栏截图：最小化为「—」、关闭为清晰「✕」。
+
+
+---
+
+## 29. v1.9.11（2026-11-05，时间范围筛选）
+
+### 用户反馈
+- 希望在搜索框下面加入时间范围可选项，按时间展示列表。
+
+### 实现
+- 新增 `TimeRange`：全部时间 / 今天 / 近7天 / 近30天 / 近90天，默认全部时间。
+- 候选窗在分类胶囊下方新增时间范围胶囊行；管理台历史/收藏/回收站在搜索框下方新增同样一行。
+- 时间条件按 `last_used_at` 过滤，与关键词、分类、收藏、回收站条件叠加；翻页与总数都使用同一条件。
+- 进入候选窗或切换管理台页面时重置为「全部时间」，避免筛选状态跨页面残留。
+- SQL 使用 `clips.last_used_at >= ?`，复用现有的 `idx_clips_order(last_used_at DESC)` 索引。
+
+### 校验
+- `cargo test --release`：**162 passed / 0 failed / 1 ignored**
+  - `time_range_filters_by_last_used`
+  - `time_range_cutoffs_are_ordered`
+  - `entering_picker_or_manager_resets_time_range`
+- 截图：`docs/screenshots/picker.png`、`docs/screenshots/manager-history.png` 均包含时间范围胶囊行。

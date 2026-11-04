@@ -26,7 +26,7 @@ pub use fonts::install_fonts;
 pub use theme::install_theme;
 pub use thumbs::ThumbCache;
 
-use crate::model::{ClipFilter, ClipId, ClipItem, SearchPage, Settings, Stats};
+use crate::model::{ClipFilter, ClipId, ClipItem, SearchPage, Settings, Stats, TimeRange};
 use eframe::egui;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -90,6 +90,7 @@ pub enum UiAction {
     Search {
         text: String,
         filter: ClipFilter,
+        time_range: TimeRange,
         offset: usize,
         trash: bool,
         gen: u64,
@@ -208,6 +209,8 @@ pub struct UiState {
     pending: Option<PendingSearch>,
     picker_filter: ClipFilter,
     manager_filter: ClipFilter,
+    picker_time_range: TimeRange,
+    manager_time_range: TimeRange,
 
     // ---- 反馈 ----
     toast: Option<ToastState>,
@@ -258,6 +261,8 @@ impl UiState {
             pending: None,
             picker_filter: ClipFilter::All,
             manager_filter: ClipFilter::All,
+            picker_time_range: TimeRange::All,
+            manager_time_range: TimeRange::All,
             toast: None,
             paused: settings.pause_capture,
             capturing: false,
@@ -351,6 +356,7 @@ impl UiState {
         self.manager_page = page;
         self.manager_search_focus = false;
         self.search_focus = false;
+        self.manager_time_range = TimeRange::All;
         if matches!(
             page,
             ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
@@ -368,6 +374,7 @@ impl UiState {
         self.mode = WindowMode::Picker;
         self.search_text.clear();
         self.picker_filter = ClipFilter::All;
+        self.picker_time_range = TimeRange::All;
         self.selected = Some(0);
         self.pending_scroll_row = Some(0);
         self.picker_scroll_offset = 0.0;
@@ -486,6 +493,7 @@ impl UiState {
                 actions.push(UiAction::Search {
                     text: self.search_text.clone(),
                     filter: self.effective_filter(),
+                    time_range: self.effective_time_range(),
                     offset: pending.offset,
                     trash: self.search_trash(),
                     gen: pending.gen,
@@ -534,6 +542,14 @@ impl UiState {
         self.mode == WindowMode::Manager && self.manager_page == ManagerPage::Trash
     }
 
+    /// 当前生效的时间范围。
+    pub(crate) fn effective_time_range(&self) -> TimeRange {
+        match self.mode {
+            WindowMode::Picker => self.picker_time_range,
+            WindowMode::Manager => self.manager_time_range,
+        }
+    }
+
     /// 单次查询条数：候选窗 200 / 管理台 500（spec §11）。
     fn list_limit(&self) -> usize {
         match self.mode {
@@ -579,6 +595,7 @@ impl UiState {
         actions.push(UiAction::Search {
             text: self.search_text.clone(),
             filter: self.effective_filter(),
+            time_range: self.effective_time_range(),
             offset: self.items.len(),
             trash: self.search_trash(),
             gen,
@@ -792,6 +809,7 @@ impl UiState {
         }
         self.manager_page = page;
         self.multi_selected.clear();
+        self.manager_time_range = TimeRange::All;
         if matches!(
             page,
             ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
