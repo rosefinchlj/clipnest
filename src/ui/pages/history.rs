@@ -2,7 +2,7 @@
 //!
 //! 表格列：多选框 / 类型 / 内容摘要 / 来源 / 时间 / 大小 / 收藏（spec §6.4）。
 
-use crate::model::{fmt_relative_time, fmt_size, ClipId, ClipItem, ClipKind};
+use crate::model::{fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, UiAction, UiState};
 use eframe::egui::{
@@ -159,15 +159,15 @@ pub(crate) fn page(
         {
             let ids: Vec<ClipId> = state.multi_selected.iter().copied().collect();
             for id in ids {
-                let pinned = state
+                let favorited = state
                     .items
                     .iter()
                     .find(|i| i.id == id)
-                    .map(|i| i.pinned)
+                    .map(|i| i.favorited)
                     .unwrap_or(false);
-                actions.push(UiAction::Pin {
+                actions.push(UiAction::Favorite {
                     id,
-                    pinned: !pinned,
+                    favorited: !favorited,
                 });
             }
             state.toast("已更新收藏状态");
@@ -194,7 +194,8 @@ pub(crate) fn page(
         (body_rect, Rect::from_min_size(Pos2::ZERO, Vec2::ZERO))
     };
 
-    table(state, ui, table_rect, actions);
+    let pin_mode = favorites || state.manager_filter == ClipFilter::Favorites;
+    table(state, ui, table_rect, pin_mode, actions);
     if show_detail && detail_rect.width() > 10.0 {
         detail_panel(state, ui, detail_rect, thumbs, actions);
     }
@@ -211,6 +212,7 @@ struct Columns {
     source_x: f32,
     time_x: f32,
     size_x: f32,
+    pin_x: f32,
     star_x: f32,
     summary_x: f32,
     summary_w: f32,
@@ -223,21 +225,23 @@ impl Columns {
         let source_w = 104.0;
         let time_w = 100.0;
         let size_w = 74.0;
-        let star_w = 34.0;
+        let action_w = 58.0;
         let x = rect.left() + 10.0;
         let check_x = x;
         let type_x = check_x + check_w;
         let summary_x = type_x + type_w;
-        let source_x = rect.right() - star_w - size_w - time_w - source_w;
+        let source_x = rect.right() - action_w - size_w - time_w - source_w;
         let time_x = source_x + source_w;
         let size_x = time_x + time_w;
-        let star_x = size_x + size_w;
+        let pin_x = size_x + size_w + 14.0;
+        let star_x = pin_x + 24.0;
         Self {
             check_x,
             type_x,
             source_x,
             time_x,
             size_x,
+            pin_x,
             star_x,
             summary_x,
             summary_w: (source_x - summary_x - 8.0).max(40.0),
@@ -246,7 +250,13 @@ impl Columns {
 }
 
 /// 表格：card 背景 + 表头 + 虚拟化行（44px）+ 多选/右键。
-fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiAction>) {
+fn table(
+    state: &mut UiState,
+    ui: &mut egui::Ui,
+    rect: Rect,
+    pin_mode: bool,
+    actions: &mut Vec<UiAction>,
+) {
     let painter = ui.painter().clone();
     painter.rect_filled(rect, CornerRadius::same(theme::RADIUS_CARD), theme::card());
     painter.rect_stroke(
@@ -380,7 +390,9 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
                         ui.painter()
                             .rect_filled(row_rect, CornerRadius::ZERO, theme::hover_fill());
                     }
-                    paint_table_row(state, ui, row_rect, &item, &cols, in_multi, actions);
+                    paint_table_row(
+                        state, ui, row_rect, &item, &cols, pin_mode, in_multi, actions,
+                    );
                     // 单击：选中 / Ctrl 多选 / Shift 范围选择
                     if resp.clicked() {
                         let ctrl = ui.ctx().input(|i| i.modifiers.ctrl);
@@ -419,7 +431,7 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
                         ui.set_width(190.0);
                         if widgets::menu_item(
                             ui,
-                            if item.pinned {
+                            if item.favorited {
                                 "取消收藏"
                             } else {
                                 "收藏"
@@ -427,10 +439,28 @@ fn table(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<U
                         )
                         .clicked()
                         {
-                            let pinned = !item.pinned;
+                            let favorited = !item.favorited;
+                            actions.push(UiAction::Favorite {
+                                id: item.id,
+                                favorited,
+                            });
+                            ui.close();
+                        }
+                        if pin_mode
+                            && item.favorited
+                            && widgets::menu_item(
+                                ui,
+                                if item.pinned {
+                                    "取消置顶"
+                                } else {
+                                    "置顶"
+                                },
+                            )
+                            .clicked()
+                        {
                             actions.push(UiAction::Pin {
                                 id: item.id,
-                                pinned,
+                                pinned: !item.pinned,
                             });
                             ui.close();
                         }
@@ -456,6 +486,7 @@ fn paint_table_row(
     rect: Rect,
     item: &ClipItem,
     cols: &Columns,
+    pin_mode: bool,
     in_multi: bool,
     actions: &mut Vec<UiAction>,
 ) {
@@ -525,32 +556,68 @@ fn paint_table_row(
         theme::font_aux(),
         theme::text_secondary(),
     );
-    // 收藏星标（可点击）
-    let star_center = Pos2::new(cols.star_x + 8.0, y);
+    // 收藏星标（可点击；置顶仅在收藏列表）
+    let star_center = Pos2::new(cols.star_x, y);
     let star_rect = Rect::from_center_size(star_center, Vec2::splat(20.0));
     let star_resp = ui.interact(
         star_rect,
         ui.id().with(("table_star", item.id)),
         Sense::click(),
     );
-    if item.pinned || star_resp.hovered() {
+    if item.favorited || star_resp.hovered() {
         paint::paint_star(
             &painter,
             star_center,
             7.0,
-            if item.pinned {
+            if item.favorited {
                 theme::pinned()
+            } else {
+                theme::text_weak()
+            },
+            item.favorited,
+        );
+    }
+    if star_resp.clicked() {
+        actions.push(UiAction::Favorite {
+            id: item.id,
+            favorited: !item.favorited,
+        });
+    }
+
+    if pin_mode && item.favorited {
+        let pin_center = Pos2::new(cols.pin_x, y);
+        let pin_rect = Rect::from_center_size(pin_center, Vec2::splat(20.0));
+        let pin_resp = ui.interact(
+            pin_rect,
+            ui.id().with(("table_pin", item.id)),
+            Sense::click(),
+        );
+        paint::paint_pin(
+            &painter,
+            pin_center,
+            7.0,
+            if item.pinned || pin_resp.hovered() {
+                theme::accent()
             } else {
                 theme::text_weak()
             },
             item.pinned,
         );
-    }
-    if star_resp.clicked() {
-        actions.push(UiAction::Pin {
-            id: item.id,
-            pinned: !item.pinned,
-        });
+        if pin_resp.clicked() {
+            let pinned = !item.pinned;
+            if let Some(current) = state.items.iter_mut().find(|it| it.id == item.id) {
+                current.pinned = pinned;
+            }
+            actions.push(UiAction::Pin {
+                id: item.id,
+                pinned,
+            });
+            state.toast(if pinned {
+                "已置顶"
+            } else {
+                "已取消置顶"
+            });
+        }
     }
 }
 
@@ -634,7 +701,7 @@ fn detail_panel(
         ("粘贴", widgets::ButtonKind::Primary, 0u8),
         ("仅复制", widgets::ButtonKind::Secondary, 1),
         (
-            if item.pinned {
+            if item.favorited {
                 "取消收藏"
             } else {
                 "收藏"
@@ -656,18 +723,18 @@ fn detail_panel(
                     });
                 }
                 2 => {
-                    let pinned = !item.pinned;
-                    actions.push(UiAction::Pin {
+                    let favorited = !item.favorited;
+                    actions.push(UiAction::Favorite {
                         id: item.id,
-                        pinned,
+                        favorited,
                     });
                     if let Some(current) = state.items.iter_mut().find(|i| i.id == item.id) {
-                        current.pinned = pinned;
+                        current.favorited = favorited;
+                        if !favorited {
+                            current.pinned = false;
+                        }
                     }
-                    if pinned && item.kind == ClipKind::Files {
-                        actions.push(UiAction::SaveFavoriteFiles(item.id));
-                    }
-                    state.toast(if pinned {
+                    state.toast(if favorited {
                         "已收藏"
                     } else {
                         "已取消收藏"

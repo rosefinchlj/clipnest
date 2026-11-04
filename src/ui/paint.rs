@@ -150,6 +150,38 @@ pub fn paint_star(
     }
 }
 
+/// 图钉（置顶）。
+pub fn paint_pin(painter: &egui::Painter, center: Pos2, radius: f32, color: Color32, filled: bool) {
+    let stroke = Stroke::new(1.4_f32, color);
+    if filled {
+        painter.circle_filled(
+            center + Vec2::new(0.0, -radius * 0.35),
+            radius * 0.42,
+            color,
+        );
+    } else {
+        painter.circle_stroke(
+            center + Vec2::new(0.0, -radius * 0.35),
+            radius * 0.42,
+            stroke,
+        );
+    }
+    painter.line_segment(
+        [
+            center + Vec2::new(0.0, -radius * 0.05),
+            center + Vec2::new(0.0, radius * 0.95),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            center + Vec2::new(-radius * 0.58, radius * 0.18),
+            center + Vec2::new(radius * 0.58, radius * 0.18),
+        ],
+        stroke,
+    );
+}
+
 /// 勾选标记（复选框/成功）。
 pub fn paint_check(painter: &egui::Painter, rect: Rect, color: Color32) {
     let c = rect.center();

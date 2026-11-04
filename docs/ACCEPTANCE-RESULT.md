@@ -500,3 +500,32 @@
 ### 校验
 - `cargo test --release` **150 passed / 0 failed / 1 ignored**；`cargo build --release` 0 warnings；`--selftest` PASS。
 - 截图：`docs/screenshots/picker.png`（深色）、`docs/screenshots/picker-light.png`（浅色）。
+
+---
+
+## 23. v1.9.5（2026-11-04，收藏与置顶解耦）
+
+### 用户反馈
+- 收藏大量内容后，因为收藏会自动置顶，想找刚复制的内容很不方便。
+- 希望收藏列表能单独支持置顶。
+- 希望收藏过滤放在最左边；默认仍选「全部」。
+
+### 根因与设计
+- 旧实现把「收藏」和「置顶」合并为同一个 `pinned` 标记：点星即置顶，历史、候选窗、收藏页共用同一排序，导致收藏一多就把新内容挤出视野。
+- 拆成两个独立标记：`favorited` 只表示收藏，`pinned` 只表示收藏列表内的置顶；`pinned` 仅在收藏页排序时生效。
+- 过滤顺序调整为 收藏 → 全部 → 文本 → 图片 → 文件，进入候选窗仍默认「全部」。
+- SQLite schema v1/v2 → v3：新增 `clips.favorited`，迁移时把旧 `pinned=1` 转为 `favorited=1` 并清除旧的自动置顶；以迁移前版本号判断，失败重试也安全。
+
+### 实现
+- `src/model.rs`：schema v3、`ClipItem.favorited`、`ClipFilter` 顺序、`StoreCmd::SetFavorited`。
+- `src/store/schema.rs`：`ensure_favorite_schema` 补列/迁移/索引。
+- `src/store/query.rs`：历史按 `last_used_at DESC`；收藏页按 `pinned DESC, last_used_at DESC`；收藏过滤 `favorited=1`。
+- `src/store/db.rs`：`set_favorited` 取消收藏时同时取消置顶；`set_pinned` 只允许收藏项。
+- `src/store/retention.rs`：自动清理保护 `favorited`，不再保护 `pinned`。
+- `src/store/export.rs`：导出格式 v2 区分收藏与置顶，兼容旧版导入。
+- UI：星标只收藏；收藏页行内新增独立置顶图标，右键菜单与批量/详情操作区分收藏/置顶；候选窗 `Ctrl+P` 只收藏，收藏过滤下才显示置顶菜单。
+- 管理台历史页也提供「收藏」过滤，置顶按钮只在收藏上下文中出现。
+
+### 校验
+- `cargo test --release` **151 passed / 0 failed / 1 ignored**；新增迁移与收藏/置顶互斥测试。
+- 截图：`docs/screenshots/picker.png`（收藏在最左、默认全部）、`docs/screenshots/manager-history.png`（历史页收藏过滤）、`docs/screenshots/manager-favorites.png`（收藏页星标 + 独立置顶）。

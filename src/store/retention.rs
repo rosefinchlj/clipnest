@@ -56,7 +56,7 @@ pub fn prune(db: &Db, settings: &Settings) -> StoreResult<PruneReport> {
     )?;
     if settings.max_items > 0 && total_before > settings.max_items as i64 {
         let excess = (total_before - settings.max_items as i64) as usize;
-        let ids = select_oldest_non_pinned(db, excess)?;
+        let ids = select_oldest_non_favorite(db, excess)?;
         let deleted = db.delete(&ids)?;
         report.deleted_clips += deleted;
         crate::logging::log(&format!(
@@ -77,7 +77,7 @@ pub fn prune(db: &Db, settings: &Settings) -> StoreResult<PruneReport> {
         {
             let mut stmt = db.conn.prepare(
                 "SELECT id, byte_len FROM clips
-                 WHERE kind = 1 AND pinned = 0 AND deleted_at IS NULL
+                 WHERE kind = 1 AND favorited = 0 AND deleted_at IS NULL
                  ORDER BY last_used_at ASC, id ASC",
             )?;
             let iter =
@@ -134,12 +134,12 @@ pub fn prune(db: &Db, settings: &Settings) -> StoreResult<PruneReport> {
 }
 
 /// 取最旧的非收藏条目 id（最多 `limit` 条）。
-fn select_oldest_non_pinned(db: &Db, limit: usize) -> StoreResult<Vec<i64>> {
+fn select_oldest_non_favorite(db: &Db, limit: usize) -> StoreResult<Vec<i64>> {
     if limit == 0 {
         return Ok(Vec::new());
     }
     let mut stmt = db.conn.prepare(
-        "SELECT id FROM clips WHERE pinned = 0 AND deleted_at IS NULL
+        "SELECT id FROM clips WHERE favorited = 0 AND deleted_at IS NULL
          ORDER BY last_used_at ASC, id ASC LIMIT ?1",
     )?;
     let iter = stmt.query_map(params![limit as i64], |row| row.get::<_, i64>(0))?;

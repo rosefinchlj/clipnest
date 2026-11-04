@@ -24,7 +24,7 @@ use crate::store::db::{Db, UpsertOutcome};
 use crate::store::{StoreError, StoreResult};
 
 /// 当前导出文件格式版本。
-pub const EXPORT_VERSION: u32 = 1;
+pub const EXPORT_VERSION: u32 = 2;
 
 /// 导出文档根。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +60,9 @@ pub struct ExportClip {
     pub last_used_at: i64,
     #[serde(default)]
     pub use_count: u32,
+    /// 收藏（v2 起独立于 pinned）。
+    #[serde(default)]
+    pub favorited: bool,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -167,9 +170,13 @@ pub fn import_json(db: &Db, path: &Path) -> StoreResult<ImportReport> {
         match db.import_upsert(&input, blob_id)? {
             UpsertOutcome::Inserted(id) => {
                 report.inserted += 1;
-                // 保留导出时的 pinned / 最近使用时间（导入是新行，需回写）
+                // v1 导出的 pinned 实际是收藏；v2 起 favorited 与 pinned 独立。
+                let legacy_favorite = doc.version < 2 && clip.pinned;
+                let favorited = clip.favorited || legacy_favorite;
+                let pinned = clip.pinned && favorited && !legacy_favorite;
+                // 保留导出时的收藏/置顶 / 最近使用时间（导入是新行，需回写）
                 db.conn.execute(
-                    "UPDATE clips SET last_used_at = ?1, use_count = ?2, pinned = ?3 WHERE id = ?4",
+                    "UPDATE clips SET last_used_at = ?1, use_count = ?2, favorited = ?3, pinned = ?4 WHERE id = ?5",
                     params![
                         if clip.last_used_at > 0 {
                             clip.last_used_at
@@ -177,7 +184,8 @@ pub fn import_json(db: &Db, path: &Path) -> StoreResult<ImportReport> {
                             clip.created_at
                         },
                         i64::from(clip.use_count.max(1)),
-                        i32::from(clip.pinned),
+                        i32::from(favorited),
+                        i32::from(pinned),
                         id
                     ],
                 )?;
@@ -196,7 +204,7 @@ pub fn import_json(db: &Db, path: &Path) -> StoreResult<ImportReport> {
 fn collect_clips(db: &Db) -> StoreResult<Vec<ExportClip>> {
     let mut stmt = db.conn.prepare(
         "SELECT id, kind, hash, preview, text, files_json, blob_id, byte_len, width, height,
-                created_at, last_used_at, use_count, pinned, source_app, source_title
+                created_at, last_used_at, use_count, favorited, pinned, source_app, source_title
          FROM clips ORDER BY created_at ASC, id ASC",
     )?;
     let iter = stmt.query_map([], |row| {
@@ -208,7 +216,8 @@ fn collect_clips(db: &Db) -> StoreResult<Vec<ExportClip>> {
         let width: Option<i64> = row.get(8)?;
         let height: Option<i64> = row.get(9)?;
         let use_count: i64 = row.get(12)?;
-        let pinned: i64 = row.get(13)?;
+        let favorited: i64 = row.get(13)?;
+        let pinned: i64 = row.get(14)?;
         Ok(ExportClip {
             kind: row.get(1)?,
             hash: row.get(2)?,
@@ -222,9 +231,10 @@ fn collect_clips(db: &Db) -> StoreResult<Vec<ExportClip>> {
             created_at: row.get(10)?,
             last_used_at: row.get(11)?,
             use_count: use_count.max(0) as u32,
+            favorited: favorited != 0,
             pinned: pinned != 0,
-            source_app: row.get(14)?,
-            source_title: row.get(15)?,
+            source_app: row.get(15)?,
+            source_title: row.get(16)?,
         })
     })?;
     let clips = iter.collect::<rusqlite::Result<Vec<_>>>()?;

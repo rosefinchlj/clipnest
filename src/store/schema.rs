@@ -1,4 +1,4 @@
-//! schema v2：建表、索引、FTS5（trigram 分词）、回收站列与同步触发器。
+//! schema v3：建表、索引、FTS5（trigram 分词）、回收站/收藏列与同步触发器。
 //!
 //! 设计要点：
 //! - 所有 DDL 都带 `IF NOT EXISTS`，`migrate` 幂等（spec §10.2）；
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS clips (
   created_at   INTEGER NOT NULL,
   last_used_at INTEGER NOT NULL,
   use_count    INTEGER NOT NULL DEFAULT 1,
+  favorited    INTEGER NOT NULL DEFAULT 0,
   pinned       INTEGER NOT NULL DEFAULT 0,
   source_app   TEXT,
   source_title TEXT,
@@ -92,6 +93,7 @@ pub fn migrate(conn: &mut Connection, options: DbOptions) -> StoreResult<Migrate
     }
 
     ensure_trash_schema(conn)?;
+    ensure_favorite_schema(conn, current < SCHEMA_VERSION)?;
     let outcome = ensure_fts(conn, options)?;
 
     if current < SCHEMA_VERSION {
@@ -126,6 +128,35 @@ fn ensure_trash_schema(conn: &Connection) -> StoreResult<()> {
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_clips_trash ON clips(deleted_at) WHERE deleted_at IS NOT NULL;",
+    )?;
+    Ok(())
+}
+
+/// v3 收藏列：老库把原来的 pinned 语义迁移为 favorited，并清除旧的自动置顶。
+/// 转换以迁移前版本号为准：仅当版本 < 3 时执行，成功后写入 v3，之后不再影响用户置顶。
+fn ensure_favorite_schema(conn: &Connection, legacy: bool) -> StoreResult<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = 'favorited'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? > 0;
+    if !has_column {
+        conn.execute(
+            "ALTER TABLE clips ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        crate::logging::log("Store: schema v3 已添加 favorited 列");
+    }
+    if legacy {
+        // 迁移失败可重试：版本号只在全部迁移成功后写入，故以版本为准而不是只看列。
+        conn.execute_batch(
+            "UPDATE clips SET favorited = pinned WHERE pinned = 1;
+             UPDATE clips SET pinned = 0;",
+        )?;
+        crate::logging::log("Store: schema v3 原收藏标记已迁移为收藏并取消自动置顶");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_clips_favorite ON clips(favorited, pinned DESC, last_used_at DESC);",
     )?;
     Ok(())
 }

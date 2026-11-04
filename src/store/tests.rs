@@ -289,11 +289,13 @@ fn upsert_dedupes_and_bumps_usage() {
     assert!(item.last_used_at >= before);
     assert_eq!(total_rows(&db), 1);
 
-    // 收藏后再复制：pinned 不被重置
+    // 收藏后再复制：收藏标记不被重置
+    assert!(db.set_favorited(id, true).unwrap());
     assert!(db.set_pinned(id, true).unwrap());
     db.upsert(&input).unwrap();
     let item = db.item(id).unwrap().unwrap();
-    assert!(item.pinned, "去重更新不得清除收藏标记");
+    assert!(item.favorited, "去重更新不得清除收藏标记");
+    assert!(item.pinned, "去重更新不得清除置顶标记");
     assert_eq!(item.use_count, 3);
     assert_eq!(total_rows(&db), 1);
 }
@@ -316,7 +318,6 @@ fn upsert_hash_unique_across_kinds() {
 // ---------------------------------------------------------------------------
 
 struct Sample {
-    text_ids: [i64; 3],
     image_ids: [i64; 2],
     file_ids: [i64; 2],
 }
@@ -348,9 +349,9 @@ fn seed_sample(db: &Db) -> Sample {
             .unwrap()
             .id(),
     ];
+    assert!(db.set_favorited(text_ids[0], true).unwrap());
     assert!(db.set_pinned(text_ids[0], true).unwrap());
     Sample {
-        text_ids,
         image_ids,
         file_ids,
     }
@@ -366,11 +367,10 @@ fn search_empty_query_sorted_and_paged() {
     assert_eq!(page.gen, 7);
     assert_eq!(page.total, 7);
     assert_eq!(page.items.len(), 3);
-    assert!(page.items[0].pinned, "收藏应排在最前");
-    assert_eq!(page.items[0].id, sample.text_ids[0]);
-    // 其余按 last_used_at 降序
-    assert_eq!(page.items[1].id, sample.file_ids[1]);
-    assert_eq!(page.items[2].id, sample.file_ids[0]);
+    // 全部列表保持纯时间序：收藏/置顶不应把旧内容顶到最前
+    assert_eq!(page.items[0].id, sample.file_ids[1]);
+    assert_eq!(page.items[1].id, sample.file_ids[0]);
+    assert_eq!(page.items[2].id, sample.image_ids[1]);
 
     // 分页不重叠、可覆盖全部
     let page2 = db
@@ -404,7 +404,7 @@ fn search_filters() {
         (ClipFilter::Text, 3),
         (ClipFilter::Image, 2),
         (ClipFilter::Files, 2),
-        (ClipFilter::Pinned, 1),
+        (ClipFilter::Favorites, 1),
     ] {
         let page = db.search(&search_query("", filter, 0, 100, 1)).unwrap();
         assert_eq!(page.total, expected, "过滤条件 {filter:?}");
@@ -414,7 +414,10 @@ fn search_filters() {
             ClipFilter::Text => assert!(page.items.iter().all(|i| i.kind == ClipKind::Text)),
             ClipFilter::Image => assert!(page.items.iter().all(|i| i.kind == ClipKind::Image)),
             ClipFilter::Files => assert!(page.items.iter().all(|i| i.kind == ClipKind::Files)),
-            ClipFilter::Pinned => assert!(page.items.iter().all(|i| i.pinned)),
+            ClipFilter::Favorites => {
+                assert!(page.items.iter().all(|i| i.favorited));
+                assert!(page.items[0].pinned, "收藏列表内置顶项应排在最前");
+            }
         }
     }
     // 图片过滤应包含示例图片条目
@@ -429,6 +432,22 @@ fn search_filters() {
         .search(&search_query("关键词", ClipFilter::Image, 0, 100, 2))
         .unwrap();
     assert_eq!(page.total, 0);
+}
+
+#[test]
+fn pin_requires_favorite_and_unfavorite_clears_pin() {
+    let (_dir, db) = open_db("favorite-pin");
+    let id = db.upsert(&text_input("收藏与置顶")).unwrap().id();
+    assert!(!db.set_pinned(id, true).unwrap(), "非收藏项不应允许置顶");
+    assert!(db.set_favorited(id, true).unwrap());
+    assert!(db.set_pinned(id, true).unwrap());
+    let item = db.item(id).unwrap().unwrap();
+    assert!(item.favorited && item.pinned);
+    // 取消收藏必须同时清除置顶，避免之后重新收藏时意外置顶
+    assert!(db.set_favorited(id, false).unwrap());
+    let item = db.item(id).unwrap().unwrap();
+    assert!(!item.favorited);
+    assert!(!item.pinned);
 }
 
 #[test]
@@ -581,13 +600,14 @@ fn search_special_characters_on_like_path() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn retention_prunes_oldest_non_pinned() {
+fn retention_prunes_oldest_non_favorite() {
     let (_dir, db) = open_db("retention-count");
     let mut ids = Vec::new();
     for index in 0..10 {
         let input = text_input_at(&format!("retention 文本 {index}"), 1_000 + index);
         ids.push(db.upsert(&input).unwrap().id());
     }
+    assert!(db.set_favorited(ids[0], true).unwrap());
     assert!(db.set_pinned(ids[0], true).unwrap());
     let mut settings = Settings::default();
     settings.max_items = 5;
@@ -618,6 +638,7 @@ fn retention_prunes_images_over_limit() {
         let blob_id = db.item(id).unwrap().unwrap().blob_id.unwrap();
         entries.push((id, blob::image_path(&dir, &blob_id)));
     }
+    assert!(db.set_favorited(entries[0].0, true).unwrap());
     assert!(db.set_pinned(entries[0].0, true).unwrap());
     let mut settings = Settings::default();
     settings.max_image_bytes = 1; // 除收藏外全部删除
@@ -659,7 +680,7 @@ fn retention_cleans_orphan_blobs() {
 }
 
 #[test]
-fn retention_keeps_pinned_when_over_image_limit() {
+fn retention_keeps_favorites_when_over_image_limit() {
     let (_dir, db) = open_db("retention-pinned");
     let mut ids = Vec::new();
     for index in 0..3 {
@@ -670,6 +691,7 @@ fn retention_keeps_pinned_when_over_image_limit() {
         ids.push(id);
     }
     for id in &ids {
+        assert!(db.set_favorited(*id, true).unwrap());
         assert!(db.set_pinned(*id, true).unwrap());
     }
     let mut settings = Settings::default();
@@ -726,7 +748,9 @@ fn schema_v1_migrates_trash_column() {
            source_app TEXT, source_title TEXT
          );
          CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-         INSERT INTO meta(key, value) VALUES ('schema_version', '1');",
+         INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+         INSERT INTO clips(kind, hash, preview, created_at, last_used_at, pinned)
+         VALUES (0, 'legacy-pinned', '老收藏', 1, 1, 1);",
     )
     .unwrap();
     drop(conn);
@@ -751,6 +775,16 @@ fn schema_v1_migrates_trash_column() {
         )
         .unwrap();
     assert_eq!(has_index, 1, "回收站索引应创建");
+    let (favorited, pinned): (i64, i64) = db
+        .conn
+        .query_row(
+            "SELECT favorited, pinned FROM clips WHERE hash = 'legacy-pinned'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(favorited, 1, "老收藏应迁移为 favorited");
+    assert_eq!(pinned, 0, "迁移后不应继续自动置顶");
 }
 
 #[test]

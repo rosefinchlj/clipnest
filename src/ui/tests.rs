@@ -134,7 +134,7 @@ fn enter_picker_resets_search_and_filter() {
     let mut s = state();
     s.mode = WindowMode::Manager;
     s.search_text = "旧搜索".into();
-    s.picker_filter = ClipFilter::Pinned;
+    s.picker_filter = ClipFilter::Favorites;
     s.enter_picker();
     assert_eq!(s.mode(), WindowMode::Picker);
     assert!(s.search_text.is_empty());
@@ -144,13 +144,23 @@ fn enter_picker_resets_search_and_filter() {
 }
 
 #[test]
-fn toggle_pin_and_delete_are_optimistic() {
+fn toggle_favorite_and_delete_are_optimistic() {
     let mut s = state();
     s.active_gen = 1;
     s.apply_search_page(page(1, 2));
     let mut actions = Vec::new();
-    s.toggle_pin(0, &mut actions);
-    assert!(s.items[0].pinned);
+    s.toggle_favorite(0, &mut actions);
+    assert!(s.items[0].favorited);
+    assert!(!s.items[0].pinned, "收藏不应自动置顶");
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        UiAction::Favorite {
+            favorited: true,
+            ..
+        }
+    )));
+    s.toggle_pinned(0, &mut actions);
+    assert!(s.items[0].pinned, "收藏后可以显式置顶");
     assert!(actions
         .iter()
         .any(|a| matches!(a, UiAction::Pin { pinned: true, .. })));
@@ -160,12 +170,12 @@ fn toggle_pin_and_delete_are_optimistic() {
 }
 
 #[test]
-fn favorites_page_forces_pinned_filter() {
+fn favorites_page_forces_favorites_filter() {
     let mut s = state();
     s.mode = WindowMode::Manager;
     s.manager_page = ManagerPage::Favorites;
     s.manager_filter = ClipFilter::Text;
-    assert_eq!(s.effective_filter(), ClipFilter::Pinned);
+    assert_eq!(s.effective_filter(), ClipFilter::Favorites);
     s.manager_page = ManagerPage::History;
     assert_eq!(s.effective_filter(), ClipFilter::Text);
 }

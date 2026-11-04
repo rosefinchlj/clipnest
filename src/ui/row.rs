@@ -155,20 +155,20 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
     let star_center = Pos2::new(rect.right() - 20.0, rect.bottom() - 19.0);
     let star_rect = Rect::from_center_size(star_center, Vec2::splat(18.0));
     let star_resp = ui.interact(star_rect, response.id.with("star"), Sense::click());
-    let show_star = row.item.pinned || row.selected || star_resp.hovered() || response.hovered();
+    let show_star = row.item.favorited || row.selected || star_resp.hovered() || response.hovered();
     if show_star {
         paint::paint_star(
             &painter,
             star_center,
             7.0,
-            if row.item.pinned {
+            if row.item.favorited {
                 theme::pinned()
             } else if star_resp.hovered() {
                 theme::pinned().gamma_multiply(0.8)
             } else {
                 theme::text_weak()
             },
-            row.item.pinned,
+            row.item.favorited,
         );
     }
 

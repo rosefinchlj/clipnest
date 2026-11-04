@@ -98,7 +98,9 @@ pub enum UiAction {
     Paste { id: ClipId, plain: bool },
     /// 粘贴前先取载荷（Lead 发 `StoreCmd::GetPastePayload`）。
     RequestPastePayload(ClipId),
-    /// 收藏/取消收藏。
+    /// 收藏/取消收藏（不改变排序）。
+    Favorite { id: ClipId, favorited: bool },
+    /// 置顶/取消置顶（仅收藏项）。
     Pin { id: ClipId, pinned: bool },
     /// 删除一批记录（移入回收站）。
     Delete { ids: Vec<ClipId> },
@@ -514,7 +516,7 @@ impl UiState {
         match self.mode {
             WindowMode::Picker => self.picker_filter,
             WindowMode::Manager => match self.manager_page {
-                ManagerPage::Favorites => ClipFilter::Pinned,
+                ManagerPage::Favorites => ClipFilter::Favorites,
                 ManagerPage::Trash => ClipFilter::All,
                 _ => self.manager_filter,
             },
@@ -596,22 +598,41 @@ impl UiState {
     }
 
     /// 收藏/取消收藏第 `index` 条（先乐观更新，Store 返回后会刷新）。
-    pub(crate) fn toggle_pin(&mut self, index: usize, actions: &mut Vec<UiAction>) {
+    pub(crate) fn toggle_favorite(&mut self, index: usize, actions: &mut Vec<UiAction>) {
         let Some(item) = self.items.get_mut(index) else {
             return;
         };
+        item.favorited = !item.favorited;
+        let favorited = item.favorited;
+        if !favorited {
+            item.pinned = false;
+        }
+        let id = item.id;
+        actions.push(UiAction::Favorite { id, favorited });
+        self.toast(if favorited {
+            "已收藏"
+        } else {
+            "已取消收藏"
+        });
+    }
+
+    /// 置顶/取消置顶第 `index` 条（仅收藏项可置顶）。
+    pub(crate) fn toggle_pinned(&mut self, index: usize, actions: &mut Vec<UiAction>) {
+        let Some(item) = self.items.get_mut(index) else {
+            return;
+        };
+        if !item.favorited {
+            self.toast("先收藏后才能置顶");
+            return;
+        }
         item.pinned = !item.pinned;
         let pinned = item.pinned;
         let id = item.id;
         actions.push(UiAction::Pin { id, pinned });
-        if pinned && self.items[index].kind == crate::model::ClipKind::Files {
-            // 收藏文件时把实体复制进数据目录（spec §12.2）
-            actions.push(UiAction::SaveFavoriteFiles(id));
-        }
         self.toast(if pinned {
-            "已收藏"
+            "已置顶"
         } else {
-            "已取消收藏"
+            "已取消置顶"
         });
     }
 
@@ -720,11 +741,11 @@ impl UiState {
         if ids.is_empty() {
             return;
         }
-        let any_pinned = self
+        let any_favorited = self
             .items
             .iter()
-            .any(|item| ids.contains(&item.id) && item.pinned);
-        if any_pinned {
+            .any(|item| ids.contains(&item.id) && item.favorited);
+        if any_favorited {
             self.confirm = Some(Confirm {
                 state: widgets::ConfirmState {
                     title: "删除收藏项".to_string(),

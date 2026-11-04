@@ -262,18 +262,26 @@ impl Store {
                 self.emit(Event::SearchPage(page));
                 Ok(false)
             }
-            StoreCmd::SetPinned { id, pinned } => {
-                if !self.db.set_pinned(id, pinned)? {
+            StoreCmd::SetFavorited { id, favorited } => {
+                if !self.db.set_favorited(id, favorited)? {
                     self.toast("记录已不存在".to_string());
                     return Ok(false);
                 }
                 *dirty = true;
-                if pinned {
+                if favorited {
                     if let Some(crate::model::ClipKind::Files) = self.db.clip_kind(id)? {
                         let settings = self.settings_snapshot();
                         self.report_favorite_copy(id, &settings)?;
                     }
                 }
+                Ok(false)
+            }
+            StoreCmd::SetPinned { id, pinned } => {
+                if !self.db.set_pinned(id, pinned)? {
+                    self.toast("只有收藏项可以置顶".to_string());
+                    return Ok(false);
+                }
+                *dirty = true;
                 Ok(false)
             }
             StoreCmd::Delete(ids) => {

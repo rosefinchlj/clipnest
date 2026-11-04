@@ -6,9 +6,7 @@ use crate::model::ClipItem;
 use crate::ui::keys::{self, PickerCommand};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, ManagerPage, UiAction, UiState};
-use eframe::egui::{
-    self, Align2, Pos2, Rect, UiBuilder, Vec2,
-};
+use eframe::egui::{self, Align2, Pos2, Rect, UiBuilder, Vec2};
 use std::time::Instant;
 
 /// 渲染候选窗（`ui` 为面板内容区，外层 frame 由 [`UiState::show`] 提供）。
@@ -54,11 +52,8 @@ pub(crate) fn show(
         theme::text_weak()
     };
     for offset in [-7.0_f32, 0.0, 7.0] {
-        ui.painter().circle_filled(
-            Pos2::new(handle.x + offset, handle.y),
-            1.6,
-            dot_color,
-        );
+        ui.painter()
+            .circle_filled(Pos2::new(handle.x + offset, handle.y), 1.6, dot_color);
     }
     let search_top = full.top() + DRAG_STRIP;
     let chips_top = search_top + theme::SEARCH_HEIGHT + theme::GAP_S;
@@ -204,7 +199,7 @@ fn handle_command(
         }
         PickerCommand::TogglePin => {
             if let Some(index) = state.selected {
-                state.toggle_pin(index, actions);
+                state.toggle_favorite(index, actions);
             }
         }
         PickerCommand::Delete => state.request_delete_selected(actions),
@@ -265,44 +260,39 @@ fn render_list(
             );
             scroll = scroll.vertical_scroll_offset(offset);
         }
-        let out = scroll.show_rows(
-            ui,
-            theme::ROW_HEIGHT,
-            state.items.len(),
-            |ui, range| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for i in range {
-                    let Some(item) = state.items.get(i).cloned() else {
-                        continue;
-                    };
-                    let thumb = item.blob_id.as_deref().and_then(|id| thumbs.get(id));
-                    let selected = state.selected == Some(i);
-                    let row = widgets::clip_row(
-                        ui,
-                        widgets::ClipRow {
-                            item: &item,
-                            thumb: thumb.as_ref(),
-                            selected,
-                            ordinal: i + 1,
-                        },
-                    );
-                    if row.response.clicked() {
-                        state.selected = Some(i);
-                        state.multi_selected.clear();
-                    }
-                    if row.response.double_clicked() {
-                        state.selected = Some(i);
-                        state.paste_item(i, false, actions);
-                    }
-                    if row.star_clicked {
-                        state.toggle_pin(i, actions);
-                    }
-                    row.response.context_menu(|ui| {
-                        row_context_menu(state, &item, i, actions, ui);
-                    });
+        let out = scroll.show_rows(ui, theme::ROW_HEIGHT, state.items.len(), |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for i in range {
+                let Some(item) = state.items.get(i).cloned() else {
+                    continue;
+                };
+                let thumb = item.blob_id.as_deref().and_then(|id| thumbs.get(id));
+                let selected = state.selected == Some(i);
+                let row = widgets::clip_row(
+                    ui,
+                    widgets::ClipRow {
+                        item: &item,
+                        thumb: thumb.as_ref(),
+                        selected,
+                        ordinal: i + 1,
+                    },
+                );
+                if row.response.clicked() {
+                    state.selected = Some(i);
+                    state.multi_selected.clear();
                 }
-            },
-        );
+                if row.response.double_clicked() {
+                    state.selected = Some(i);
+                    state.paste_item(i, false, actions);
+                }
+                if row.star_clicked {
+                    state.toggle_favorite(i, actions);
+                }
+                row.response.context_menu(|ui| {
+                    row_context_menu(state, &item, i, actions, ui);
+                });
+            }
+        });
         state.picker_scroll_offset = out.state.offset.y;
         // 滚动接近底部 → 加载更多（数据库分页）
         if !state.items.is_empty()
@@ -330,12 +320,36 @@ fn row_context_menu(
         state.paste_item(index, true, actions);
         ui.close();
     }
-    if widgets::menu_item(ui, "收藏 / 取消收藏").clicked() {
-        state.toggle_pin(index, actions);
+    if widgets::menu_item(
+        ui,
+        if item.favorited {
+            "取消收藏"
+        } else {
+            "收藏"
+        },
+    )
+    .clicked()
+    {
+        state.toggle_favorite(index, actions);
         ui.close();
     }
+    if state.picker_filter == crate::model::ClipFilter::Favorites && item.favorited {
+        if widgets::menu_item(
+            ui,
+            if item.pinned {
+                "取消置顶"
+            } else {
+                "置顶"
+            },
+        )
+        .clicked()
+        {
+            state.toggle_pinned(index, actions);
+            ui.close();
+        }
+    }
     ui.separator();
-    let delete_label = if item.pinned {
+    let delete_label = if item.favorited {
         "删除（收藏项需确认）"
     } else {
         "删除"
@@ -348,12 +362,7 @@ fn row_context_menu(
 }
 
 /// 空状态：无记录 / 搜索无结果（带「清除筛选」按钮）。
-fn empty_state(
-    state: &mut UiState,
-    ui: &mut egui::Ui,
-    rect: Rect,
-    actions: &mut Vec<UiAction>,
-) {
+fn empty_state(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiAction>) {
     let searching = !state.search_text.trim().is_empty()
         || state.picker_filter != crate::model::ClipFilter::All;
     let center_x = rect.center().x;
@@ -466,21 +475,12 @@ mod tests {
         // 选中行在视口内：不改变滚动位置。
         assert_eq!(scroll_offset_for_row(0.0, 1, viewport, content), 0.0);
         // 超出底部才滚动，且只滚到刚好露出。
-        assert_eq!(
-            scroll_offset_for_row(0.0, 8, viewport, content),
-            row * 3.0
-        );
+        assert_eq!(scroll_offset_for_row(0.0, 8, viewport, content), row * 3.0);
         // 最后一条：滚到底部上限。
         let bottom = content - viewport;
-        assert_eq!(
-            scroll_offset_for_row(0.0, 29, viewport, content),
-            bottom
-        );
+        assert_eq!(scroll_offset_for_row(0.0, 29, viewport, content), bottom);
         // 从最后一条 Up 到上一条：仍在视口内，禁止重新居中（修复闪烁）。
-        assert_eq!(
-            scroll_offset_for_row(bottom, 28, viewport, content),
-            bottom
-        );
+        assert_eq!(scroll_offset_for_row(bottom, 28, viewport, content), bottom);
         // 回绕到顶部时滚回顶部。
         assert_eq!(scroll_offset_for_row(bottom, 0, viewport, content), 0.0);
     }
@@ -526,13 +526,7 @@ mod tests {
         let mut s = make_state();
         fill(&mut s, 2);
         let actions = handle(&mut s, PickerCommand::PlainCopy);
-        assert!(matches!(
-            actions[1],
-            UiAction::Paste {
-                id: 0,
-                plain: true
-            }
-        ));
+        assert!(matches!(actions[1], UiAction::Paste { id: 0, plain: true }));
     }
 
     #[test]
@@ -543,7 +537,10 @@ mod tests {
         assert_eq!(s.selected, Some(4));
         assert!(matches!(
             actions[1],
-            UiAction::Paste { id: 4, plain: false }
+            UiAction::Paste {
+                id: 4,
+                plain: false
+            }
         ));
         // 越界数字不 panic
         let actions = handle(&mut s, PickerCommand::QuickPaste(99));
@@ -551,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_non_pinned_directly_and_pinned_asks_confirmation() {
+    fn delete_non_favorited_directly_and_favorited_asks_confirmation() {
         let mut s = make_state();
         fill(&mut s, 2);
         let actions = handle(&mut s, PickerCommand::Delete);
@@ -559,21 +556,25 @@ mod tests {
         // 收藏项 → 打开确认框，不直接删
         let mut s = make_state();
         fill(&mut s, 2);
-        s.items[0].pinned = true;
+        s.items[0].favorited = true;
         let actions = handle(&mut s, PickerCommand::Delete);
         assert!(actions.is_empty());
         assert!(s.confirm.is_some());
     }
 
     #[test]
-    fn toggle_pin_flips_and_emits() {
+    fn toggle_favorite_flips_and_emits() {
         let mut s = make_state();
         fill(&mut s, 2);
         let actions = handle(&mut s, PickerCommand::TogglePin);
-        assert!(s.items[0].pinned);
+        assert!(s.items[0].favorited);
+        assert!(!s.items[0].pinned, "收藏不应自动置顶");
         assert!(matches!(
             actions[0],
-            UiAction::Pin { pinned: true, .. }
+            UiAction::Favorite {
+                favorited: true,
+                ..
+            }
         ));
     }
 }

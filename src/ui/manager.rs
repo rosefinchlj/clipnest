@@ -316,7 +316,7 @@ fn nav(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiA
         format!(
             "共 {} 条 · 收藏 {} 条",
             keys::fmt_count(state.stats.total),
-            keys::fmt_count(state.stats.pinned)
+            keys::fmt_count(state.stats.favorited)
         ),
         theme::font_aux(),
         theme::text_weak(),

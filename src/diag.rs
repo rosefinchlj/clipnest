@@ -113,18 +113,24 @@ fn run_selftest_body(dir: &Path, check: &mut CheckFn<'_>) -> Result<(), String> 
 
     // 3) 收藏 + 置顶排序
     if text_id > 0 {
+        tx.send(StoreCmd::SetFavorited {
+            id: text_id,
+            favorited: true,
+        })
+        .map_err(|e| e.to_string())?;
+        let _ = wait_clips_changed(&events, WAIT);
         tx.send(StoreCmd::SetPinned {
             id: text_id,
             pinned: true,
         })
         .map_err(|e| e.to_string())?;
         let _ = wait_clips_changed(&events, WAIT);
-        let page3 = search(&events, &tx, "", ClipFilter::Pinned, 0, 20);
+        let page3 = search(&events, &tx, "", ClipFilter::Favorites, 0, 20);
         check(
             "收藏过滤",
             page3
                 .as_ref()
-                .map(|p| p.items.iter().any(|i| i.id == text_id && i.pinned))
+                .map(|p| p.items.iter().any(|i| i.id == text_id && i.favorited))
                 .unwrap_or(false),
             format!("total={}", page3.as_ref().map(|p| p.total).unwrap_or(0)),
         );
@@ -224,9 +230,9 @@ fn run_selftest_body(dir: &Path, check: &mut CheckFn<'_>) -> Result<(), String> 
         ),
     );
     // 收藏触发实体复制
-    tx.send(StoreCmd::SetPinned {
+    tx.send(StoreCmd::SetFavorited {
         id: file_id,
-        pinned: true,
+        favorited: true,
     })
     .map_err(|e| e.to_string())?;
     let _ = wait_clips_changed(&events, WAIT);

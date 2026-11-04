@@ -38,27 +38,38 @@ fn store_thread_processes_commands_and_shuts_down() {
     let (event_tx, event_rx) = mpsc::channel::<Event>();
     let settings = Arc::new(Mutex::new(Settings::default()));
     let ctx = eframe::egui::Context::default();
-    let mut handle = StoreHandle::spawn_at(dir, event_tx, settings, ctx).expect("Store 线程启动失败");
+    let mut handle =
+        StoreHandle::spawn_at(dir, event_tx, settings, ctx).expect("Store 线程启动失败");
     let tx = handle.cmd_tx();
 
     // Upsert → ClipsChanged
-    tx.send(StoreCmd::Upsert(text_input("线程测试文本"))).unwrap();
+    tx.send(StoreCmd::Upsert(text_input("线程测试文本")))
+        .unwrap();
     let event = recv_matching(&event_rx, Duration::from_secs(10), |event| {
         matches!(event, Event::ClipsChanged)
     });
     assert!(matches!(event, Event::ClipsChanged));
 
-    tx.send(StoreCmd::Upsert(text_input("线程测试文本二"))).unwrap();
+    tx.send(StoreCmd::Upsert(text_input("线程测试文本二")))
+        .unwrap();
     recv_matching(&event_rx, Duration::from_secs(10), |event| {
         matches!(event, Event::ClipsChanged)
     });
 
     // Search → SearchPage（gen 原样带回，过期 gen 由 UI 丢弃）
-    tx.send(StoreCmd::Search(search_query("", ClipFilter::All, 0, 10, 42)))
-        .unwrap();
-    let page = match recv_matching(&event_rx, Duration::from_secs(10), |event| {
-        matches!(event, Event::SearchPage(page) if page.gen == 42)
-    }) {
+    tx.send(StoreCmd::Search(search_query(
+        "",
+        ClipFilter::All,
+        0,
+        10,
+        42,
+    )))
+    .unwrap();
+    let page = match recv_matching(
+        &event_rx,
+        Duration::from_secs(10),
+        |event| matches!(event, Event::SearchPage(page) if page.gen == 42),
+    ) {
         Event::SearchPage(page) => page,
         _ => unreachable!(),
     };
@@ -77,15 +88,26 @@ fn store_thread_processes_commands_and_shuts_down() {
     };
     assert_eq!(payload.kind, ClipKind::Text);
     assert!(payload.text.is_some());
-    tx.send(StoreCmd::Search(search_query("", ClipFilter::All, 0, 10, 43)))
-        .unwrap();
-    let page = match recv_matching(&event_rx, Duration::from_secs(10), |event| {
-        matches!(event, Event::SearchPage(page) if page.gen == 43)
-    }) {
+    tx.send(StoreCmd::Search(search_query(
+        "",
+        ClipFilter::All,
+        0,
+        10,
+        43,
+    )))
+    .unwrap();
+    let page = match recv_matching(
+        &event_rx,
+        Duration::from_secs(10),
+        |event| matches!(event, Event::SearchPage(page) if page.gen == 43),
+    ) {
         Event::SearchPage(page) => page,
         _ => unreachable!(),
     };
-    assert_eq!(page.items[0].id, older_id, "取载荷后应置顶（粘贴后置顶语义）");
+    assert_eq!(
+        page.items[0].id, older_id,
+        "取载荷后应置顶（粘贴后置顶语义）"
+    );
     assert!(page.items[0].use_count >= 2);
 
     // RefreshStats → Stats
@@ -98,7 +120,15 @@ fn store_thread_processes_commands_and_shuts_down() {
     };
     assert_eq!(stats.total, 2);
 
-    // 收藏 → SetPinned 后置顶（ClipsChanged 会再次出现）
+    // 收藏 → 再显式置顶（两次 ClipsChanged）
+    tx.send(StoreCmd::SetFavorited {
+        id: newest_id,
+        favorited: true,
+    })
+    .unwrap();
+    recv_matching(&event_rx, Duration::from_secs(10), |event| {
+        matches!(event, Event::ClipsChanged)
+    });
     tx.send(StoreCmd::SetPinned {
         id: newest_id,
         pinned: true,
@@ -168,7 +198,9 @@ fn search_5000_rows_under_300ms() {
     seed_text_rows(&db, 5_000);
     assert_eq!(total_rows(&db), 5_000);
     // 预热（首次查询含语句准备）
-    let _ = db.search(&search_query("性能测试", ClipFilter::All, 0, 200, 0)).unwrap();
+    let _ = db
+        .search(&search_query("性能测试", ClipFilter::All, 0, 200, 0))
+        .unwrap();
     let page = db
         .search(&search_query("性能测试", ClipFilter::All, 0, 200, 1))
         .unwrap();

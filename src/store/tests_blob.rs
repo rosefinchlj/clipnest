@@ -275,6 +275,7 @@ fn export_import_roundtrip() {
         .upsert(&text_input_at("导出收藏文本", 3_000))
         .unwrap()
         .id();
+    db.set_favorited(pinned_id, true).unwrap();
     db.set_pinned(pinned_id, true).unwrap();
     let file_id = db
         .upsert(&files_input(&[file.as_path()], 4_000))
@@ -291,7 +292,7 @@ fn export_import_roundtrip() {
     assert!(report.bytes > 0);
     let doc = export::read_export(&export_path).unwrap();
     assert_eq!(doc.version, export::EXPORT_VERSION);
-    assert!(doc.clips.iter().any(|clip| clip.pinned));
+    assert!(doc.clips.iter().any(|clip| clip.favorited));
     assert!(export::contains_hash(&doc, &sha("导出文本一")));
 
     // 导入到全新数据库
@@ -300,7 +301,7 @@ fn export_import_roundtrip() {
     assert_eq!(imported.inserted, 4);
     assert_eq!(imported.skipped, 0);
     assert_eq!(total_rows(&db2), 4);
-    assert_eq!(db2.counts().unwrap().pinned, 1);
+    assert_eq!(db2.counts().unwrap().favorited, 1);
     // 文本内容与收藏状态一致
     let page = db2
         .search(&SearchQuery {
@@ -316,7 +317,7 @@ fn export_import_roundtrip() {
     assert!(page
         .items
         .iter()
-        .any(|item| item.pinned && item.text.as_deref() == Some("导出收藏文本")));
+        .any(|item| item.favorited && item.pinned && item.text.as_deref() == Some("导出收藏文本")));
     // 文件条目路径清单保留
     let files_page = db2
         .search(&SearchQuery {

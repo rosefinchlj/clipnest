@@ -540,12 +540,14 @@ impl ClipNestApp {
                 // UI 的 Paste 动作已携带载荷请求（GetPastePayload），这里不再重复请求，
                 // 否则 Store 每次取载荷都会 bump_used，导致一次粘贴 use_count +2。
             }
+            UiAction::Favorite { id, favorited } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::SetFavorited { id, favorited });
+                }
+            }
             UiAction::Pin { id, pinned } => {
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::SetPinned { id, pinned });
-                    if pinned {
-                        let _ = tx.send(StoreCmd::SaveFavoriteFiles(id));
-                    }
                 }
             }
             UiAction::Delete { ids } => {

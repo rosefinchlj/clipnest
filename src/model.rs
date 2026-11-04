@@ -13,7 +13,7 @@ pub const APP_NAME: &str = "ClipNest";
 /// 窗口标题。
 pub const APP_TITLE: &str = "ClipNest · 剪贴匣";
 /// 当前数据库 schema 版本。
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// 回收站保留时长：手动删除后 2 天自动彻底删除。
 pub const TRASH_RETENTION_MS: i64 = 2 * 24 * 60 * 60 * 1000;
@@ -115,6 +115,9 @@ pub struct ClipItem {
     pub created_at: i64,
     pub last_used_at: i64,
     pub use_count: u32,
+    /// 是否收藏（独立于置顶）；收藏项不会被容量清理。
+    pub favorited: bool,
+    /// 是否在列表中置顶；只有收藏项可置顶。
     pub pinned: bool,
     pub source_app: Option<String>,
     pub source_title: Option<String>,
@@ -231,52 +234,52 @@ pub struct PastePayload {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ClipFilter {
+    Favorites,
     #[default]
     All,
     Text,
     Image,
     Files,
-    Pinned,
 }
 
 impl ClipFilter {
     pub fn label(self) -> &'static str {
         match self {
+            ClipFilter::Favorites => "收藏",
             ClipFilter::All => "全部",
             ClipFilter::Text => "文本",
             ClipFilter::Image => "图片",
             ClipFilter::Files => "文件",
-            ClipFilter::Pinned => "收藏",
         }
     }
 
     pub fn all() -> [ClipFilter; 5] {
         [
+            ClipFilter::Favorites,
             ClipFilter::All,
             ClipFilter::Text,
             ClipFilter::Image,
             ClipFilter::Files,
-            ClipFilter::Pinned,
         ]
     }
 
     pub fn next(self) -> ClipFilter {
         match self {
+            ClipFilter::Favorites => ClipFilter::All,
             ClipFilter::All => ClipFilter::Text,
             ClipFilter::Text => ClipFilter::Image,
             ClipFilter::Image => ClipFilter::Files,
-            ClipFilter::Files => ClipFilter::Pinned,
-            ClipFilter::Pinned => ClipFilter::All,
+            ClipFilter::Files => ClipFilter::Favorites,
         }
     }
 
     pub fn prev(self) -> ClipFilter {
         match self {
-            ClipFilter::All => ClipFilter::Pinned,
-            ClipFilter::Pinned => ClipFilter::Files,
-            ClipFilter::Files => ClipFilter::Image,
-            ClipFilter::Image => ClipFilter::Text,
+            ClipFilter::Favorites => ClipFilter::Files,
+            ClipFilter::All => ClipFilter::Favorites,
             ClipFilter::Text => ClipFilter::All,
+            ClipFilter::Image => ClipFilter::Text,
+            ClipFilter::Files => ClipFilter::Image,
         }
     }
 }
@@ -322,7 +325,7 @@ pub struct Stats {
     pub text: usize,
     pub image: usize,
     pub files: usize,
-    pub pinned: usize,
+    pub favorited: usize,
     pub image_bytes: u64,
     pub favorite_file_bytes: u64,
     pub db_bytes: u64,
@@ -581,6 +584,12 @@ pub enum Event {
 pub enum StoreCmd {
     Upsert(ClipInput),
     Search(SearchQuery),
+    /// 收藏/取消收藏；不改变列表排序。
+    SetFavorited {
+        id: ClipId,
+        favorited: bool,
+    },
+    /// 置顶/取消置顶；只对收藏项生效。
     SetPinned {
         id: ClipId,
         pinned: bool,

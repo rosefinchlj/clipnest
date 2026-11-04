@@ -288,6 +288,29 @@ impl PreviewState {
                         "（预览）粘贴选中项"
                     });
                 }
+                UiAction::Favorite { id, favorited } => {
+                    for item in &mut self.all_items {
+                        if item.id == id {
+                            item.favorited = favorited;
+                            if !favorited {
+                                item.pinned = false;
+                            }
+                        }
+                    }
+                    for item in &mut self.state.items {
+                        if item.id == id {
+                            item.favorited = favorited;
+                            if !favorited {
+                                item.pinned = false;
+                            }
+                        }
+                    }
+                    self.state.toast(if favorited {
+                        "（预览）已收藏"
+                    } else {
+                        "（预览）已取消收藏"
+                    });
+                }
                 UiAction::Pin { id, pinned } => {
                     for item in &mut self.all_items {
                         if item.id == id {
@@ -300,9 +323,9 @@ impl PreviewState {
                         }
                     }
                     self.state.toast(if pinned {
-                        "（预览）已收藏"
+                        "（预览）已置顶"
                     } else {
-                        "（预览）已取消收藏"
+                        "（预览）已取消置顶"
                     });
                 }
                 UiAction::Delete { ids } => {
@@ -368,7 +391,7 @@ fn filter_items(items: &[ClipItem], text: &str, filter: ClipFilter) -> Vec<ClipI
             ClipFilter::Text => item.kind == ClipKind::Text,
             ClipFilter::Image => item.kind == ClipKind::Image,
             ClipFilter::Files => item.kind == ClipKind::Files,
-            ClipFilter::Pinned => item.pinned,
+            ClipFilter::Favorites => item.favorited,
         })
         .filter(|item| {
             if query.is_empty() {
@@ -399,7 +422,7 @@ fn fake_stats() -> Stats {
         text: 901,
         image: 178,
         files: 155,
-        pinned: 12,
+        favorited: 12,
         image_bytes: 180 * 1024 * 1024,
         favorite_file_bytes: 24 * 1024 * 1024,
         db_bytes: 32 * 1024 * 1024,
@@ -425,7 +448,8 @@ fn text_item(id: i64, text: &str, app: &str, minutes_ago: i64, pinned: bool) -> 
         created_at: ago(minutes_ago),
         last_used_at: ago(minutes_ago),
         use_count: 3,
-        pinned,
+        favorited: pinned,
+        pinned: false,
         deleted_at: None,
         source_app: Some(app.to_string()),
         source_title: None,
@@ -455,8 +479,9 @@ fn image_item(
         created_at: ago(minutes_ago),
         last_used_at: ago(minutes_ago),
         use_count: 1,
+        favorited: pinned,
+        pinned: false,
         deleted_at: None,
-        pinned,
         source_app: Some(app.to_string()),
         source_title: None,
     }
@@ -491,8 +516,9 @@ fn files_item(id: i64, files: &[(&str, &str, u64, bool)], app: &str, minutes_ago
         created_at: ago(minutes_ago),
         last_used_at: ago(minutes_ago),
         use_count: 1,
-        deleted_at: None,
+        favorited: false,
         pinned: false,
+        deleted_at: None,
         source_app: Some(app.to_string()),
         source_title: None,
     }
@@ -699,7 +725,7 @@ mod tests {
                 "缺少类型 {kind:?} 的假数据"
             );
         }
-        assert!(items.iter().any(|i| i.pinned), "缺少收藏假数据");
+        assert!(items.iter().any(|i| i.favorited), "缺少收藏假数据");
         assert!(items
             .iter()
             .any(|i| i.source_app.as_deref() == Some("chrome.exe")));
@@ -712,8 +738,8 @@ mod tests {
         let images = filter_items(&items, "", ClipFilter::Image);
         assert!(!images.is_empty());
         assert!(images.iter().all(|i| i.kind == ClipKind::Image));
-        let pinned = filter_items(&items, "", ClipFilter::Pinned);
-        assert!(pinned.iter().all(|i| i.pinned));
+        let favorites = filter_items(&items, "", ClipFilter::Favorites);
+        assert!(favorites.iter().all(|i| i.favorited));
         // 中文子串搜索
         let hits = filter_items(&items, "周会", ClipFilter::All);
         assert!(!hits.is_empty());

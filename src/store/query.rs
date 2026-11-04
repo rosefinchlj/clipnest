@@ -2,7 +2,7 @@
 //!
 //! 全部为 [`Db`] 的 `impl` 块，与 [`crate::store::db`] 分离以控制单文件行数。
 //! 搜索实现要点（spec §11）：
-//! - 空查询按 `pinned DESC, last_used_at DESC` 分页；
+//! - 普通列表按 `last_used_at DESC` 分页；收藏列表内按 `pinned DESC, last_used_at DESC` 分页；
 //! - 文本 ≥3 字符且 FTS 可用 → `clips_fts MATCH '"…"'`（双引号翻倍转义，避免注入）；
 //! - 更短、含路径分隔符或 FTS 关闭 → `LIKE '%'||?||'%' ESCAPE '\'`（转义 `% _ \`）；
 //! - 含 `/` 或 `\` 时额外用另一分隔符再匹配一次，路径分隔符等价（spec §11）。
@@ -22,11 +22,16 @@ use crate::store::StoreResult;
 /// 条目列（顺序必须与 [`row_to_item`] 一致）。
 const ITEM_COLUMNS: &str = "clips.id, clips.kind, clips.preview, clips.text, clips.files_json, \
      clips.blob_id, clips.byte_len, clips.width, clips.height, clips.created_at, \
-     clips.last_used_at, clips.use_count, clips.pinned, clips.source_app, clips.source_title, \
-     clips.deleted_at";
+     clips.last_used_at, clips.use_count, clips.favorited, clips.pinned, clips.source_app, \
+     clips.source_title, clips.deleted_at";
 
-/// 统一排序：收藏优先、最近使用优先、id 兜底保证稳定分页。
-const ORDER_BY: &str = "ORDER BY clips.pinned DESC, clips.last_used_at DESC, clips.id DESC";
+/// 统一排序：最近使用优先、id 兜底保证稳定分页。
+///
+/// 置顶只在收藏列表内生效；普通列表保持纯时间序，避免收藏把新内容压下去。
+const ORDER_BY: &str = "ORDER BY clips.last_used_at DESC, clips.id DESC";
+/// 收藏列表排序：置顶优先，再按最近使用。
+const FAVORITES_ORDER_BY: &str =
+    "ORDER BY clips.pinned DESC, clips.last_used_at DESC, clips.id DESC";
 
 impl Db {
     /// 读取单条（含 files 解析）。
@@ -55,7 +60,7 @@ impl Db {
             ClipFilter::Text => conditions.push("clips.kind = 0".to_string()),
             ClipFilter::Image => conditions.push("clips.kind = 1".to_string()),
             ClipFilter::Files => conditions.push("clips.kind = 2".to_string()),
-            ClipFilter::Pinned => conditions.push("clips.pinned = 1".to_string()),
+            ClipFilter::Favorites => conditions.push("clips.favorited = 1".to_string()),
         }
 
         let text = query.text.trim();
@@ -108,6 +113,8 @@ impl Db {
         let offset = query.offset as i64;
         let order_by = if query.trash {
             "ORDER BY clips.deleted_at DESC, clips.id DESC"
+        } else if query.filter == ClipFilter::Favorites {
+            FAVORITES_ORDER_BY
         } else {
             ORDER_BY
         };
@@ -131,24 +138,25 @@ impl Db {
 
     /// 容量统计（RefreshStats / 底部提示条）。
     pub fn counts(&self) -> StoreResult<Stats> {
-        let (total, text, image, files, pinned): (i64, i64, i64, i64, i64) = self.conn.query_row(
-            "SELECT COUNT(*),
-                    COALESCE(SUM(CASE WHEN kind = 0 THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN kind = 1 THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN kind = 2 THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN pinned = 1 THEN 1 ELSE 0 END), 0)
-             FROM clips WHERE deleted_at IS NULL",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )?;
+        let (total, text, image, files, favorited): (i64, i64, i64, i64, i64) =
+            self.conn.query_row(
+                "SELECT COUNT(*),
+                        COALESCE(SUM(CASE WHEN kind = 0 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN kind = 1 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN kind = 2 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN favorited = 1 THEN 1 ELSE 0 END), 0)
+                 FROM clips WHERE deleted_at IS NULL",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
         let image_bytes: i64 = self.conn.query_row(
             "SELECT COALESCE(SUM(byte_len), 0) FROM clips WHERE kind = 1 AND deleted_at IS NULL",
             [],
@@ -159,7 +167,7 @@ impl Db {
             text: text.max(0) as usize,
             image: image.max(0) as usize,
             files: files.max(0) as usize,
-            pinned: pinned.max(0) as usize,
+            favorited: favorited.max(0) as usize,
             image_bytes: image_bytes.max(0) as u64,
             favorite_file_bytes: blob::favorite_file_bytes(&self.conn)?,
             db_bytes: self.db_file_bytes(),
@@ -262,7 +270,8 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipItem> {
     let width: Option<i64> = row.get(7)?;
     let height: Option<i64> = row.get(8)?;
     let use_count: i64 = row.get(11)?;
-    let pinned: i64 = row.get(12)?;
+    let favorited: i64 = row.get(12)?;
+    let pinned: i64 = row.get(13)?;
     Ok(ClipItem {
         id: row.get(0)?,
         kind: ClipKind::from_i32(kind_raw).unwrap_or_default(),
@@ -276,10 +285,11 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipItem> {
         created_at: row.get(9)?,
         last_used_at: row.get(10)?,
         use_count: use_count.max(0) as u32,
+        favorited: favorited != 0,
         pinned: pinned != 0,
-        source_app: row.get(13)?,
-        source_title: row.get(14)?,
-        deleted_at: row.get(15)?,
+        source_app: row.get(14)?,
+        source_title: row.get(15)?,
+        deleted_at: row.get(16)?,
     })
 }
 

@@ -254,8 +254,8 @@ impl Db {
         tx.execute(
             "INSERT INTO clips
                (kind, hash, text, preview, blob_id, files_json, byte_len, width, height,
-                created_at, last_used_at, use_count, pinned, source_app, source_title)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1, 0, ?11, ?12)",
+                created_at, last_used_at, use_count, favorited, pinned, source_app, source_title)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1, 0, 0, ?11, ?12)",
             params![
                 input.kind.as_i32(),
                 input.hash,
@@ -321,10 +321,23 @@ impl Db {
     // 收藏 / 删除 / 清空
     // -----------------------------------------------------------------------
 
-    /// 设置收藏标记；返回是否存在该条目。
+    /// 设置收藏标记；取消收藏时一并取消置顶。返回是否存在该条目。
+    pub fn set_favorited(&self, id: ClipId, favorited: bool) -> StoreResult<bool> {
+        let changed = self.conn.execute(
+            "UPDATE clips
+             SET favorited = ?1,
+                 pinned = CASE WHEN ?1 = 0 THEN 0 ELSE pinned END
+             WHERE id = ?2 AND deleted_at IS NULL",
+            params![i32::from(favorited), id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// 设置置顶；只有收藏项可置顶。返回是否实际更新。
     pub fn set_pinned(&self, id: ClipId, pinned: bool) -> StoreResult<bool> {
         let changed = self.conn.execute(
-            "UPDATE clips SET pinned = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            "UPDATE clips SET pinned = ?1
+             WHERE id = ?2 AND deleted_at IS NULL AND (?1 = 0 OR favorited = 1)",
             params![i32::from(pinned), id],
         )?;
         Ok(changed > 0)
