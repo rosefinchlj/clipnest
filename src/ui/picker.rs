@@ -320,6 +320,9 @@ fn render_list(
                 if row.star_clicked {
                     state.toggle_favorite(i, actions);
                 }
+                if row.pin_clicked {
+                    state.toggle_pinned(i, actions);
+                }
                 row.response.context_menu(|ui| {
                     row_context_menu(state, &item, i, actions, ui);
                 });
@@ -365,7 +368,7 @@ fn row_context_menu(
         state.toggle_favorite(index, actions);
         ui.close();
     }
-    if state.picker_filter == crate::model::ClipFilter::Favorites && item.favorited {
+    if item.favorited {
         if widgets::menu_item(
             ui,
             if item.pinned {

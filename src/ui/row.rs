@@ -27,6 +27,8 @@ pub struct ClipRowOutput {
     pub rect: Rect,
     /// 本帧是否点了收藏星标。
     pub star_clicked: bool,
+    /// 本帧是否点了置顶图标。
+    pub pin_clicked: bool,
 }
 
 /// 64px 列表行：类型徽标/40×40 缩略图（圆角 8）+ 标题单行 + 预览单行 +
@@ -41,14 +43,32 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
     let sel_t = if row.selected { 1.0 } else { 0.0 };
     let hover_t = ctx.animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.08);
 
-    // 背景 / 左侧竖条
+    // 背景 / 左侧竖条：置顶行始终保留金色底，选中时更明显。
     let painter = ui.painter().clone();
-    if sel_t > 0.001 {
+    if row.item.pinned {
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(theme::RADIUS_ROW),
+            if row.selected {
+                theme::pinned_fill_strong()
+            } else {
+                theme::pinned_fill()
+            },
+        );
+    } else if sel_t > 0.001 {
         painter.rect_filled(
             rect,
             CornerRadius::same(theme::RADIUS_ROW),
             theme::selection_fill().gamma_multiply(sel_t),
         );
+    } else if hover_t > 0.001 {
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(theme::RADIUS_ROW),
+            theme::hover_fill().gamma_multiply(hover_t),
+        );
+    }
+    if row.selected {
         let bar = Rect::from_min_max(
             Pos2::new(rect.left() + 1.0, rect.top() + 12.0),
             Pos2::new(rect.left() + 3.0, rect.bottom() - 12.0),
@@ -56,13 +76,11 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         painter.rect_filled(
             bar,
             CornerRadius::same(1),
-            theme::selection_bar().gamma_multiply(sel_t),
-        );
-    } else if hover_t > 0.001 {
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(theme::RADIUS_ROW),
-            theme::hover_fill().gamma_multiply(hover_t),
+            if row.item.pinned {
+                theme::pinned()
+            } else {
+                theme::selection_bar()
+            },
         );
     }
 
@@ -78,7 +96,9 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Align2::CENTER_CENTER,
         row.ordinal.to_string(),
         theme::font_mono(),
-        if row.selected {
+        if row.selected && row.item.pinned {
+            theme::text()
+        } else if row.selected {
             theme::selection_bar()
         } else {
             theme::text_secondary()
@@ -124,7 +144,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
 
     // 中：标题 + 预览（各单行省略）
     let text_left = icon_rect.right() + 10.0;
-    let text_right = rect.right() - 96.0;
+    let text_right = rect.right() - 116.0;
     let title = row.item.title();
     paint::paint_elided(
         ui,
@@ -140,7 +160,11 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Pos2::new(text_left, rect.top() + 34.0),
         subtitle,
         FontId::new(theme::SIZE_AUX, egui::FontFamily::Proportional),
-        theme::text_secondary(),
+        if row.item.pinned {
+            theme::text()
+        } else {
+            theme::text_secondary()
+        },
         text_right - text_left,
     );
 
@@ -150,7 +174,11 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         Align2::RIGHT_TOP,
         fmt_relative_time(row.item.last_used_at),
         theme::font_aux(),
-        theme::text_secondary(),
+        if row.item.pinned {
+            theme::text()
+        } else {
+            theme::text_secondary()
+        },
     );
     let star_center = Pos2::new(rect.right() - 20.0, rect.bottom() - 19.0);
     let star_rect = Rect::from_center_size(star_center, Vec2::splat(18.0));
@@ -172,7 +200,27 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         );
     }
 
-    if response.hovered() || star_resp.hovered() {
+    // 置顶按钮：收藏项才允许置顶，星标左侧显示小图钉。
+    let pin_center = Pos2::new(rect.right() - 44.0, rect.bottom() - 19.0);
+    let pin_rect = Rect::from_center_size(pin_center, Vec2::splat(18.0));
+    let pin_resp = ui.interact(pin_rect, response.id.with("pin"), Sense::click());
+    if row.item.favorited {
+        paint::paint_pin(
+            &painter,
+            pin_center,
+            6.5,
+            if row.item.pinned {
+                theme::text()
+            } else if pin_resp.hovered() {
+                theme::accent()
+            } else {
+                theme::text_weak()
+            },
+            row.item.pinned,
+        );
+    }
+
+    if response.hovered() || star_resp.hovered() || pin_resp.hovered() {
         ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
@@ -184,6 +232,7 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         response,
         rect,
         star_clicked: star_resp.clicked(),
+        pin_clicked: row.item.favorited && pin_resp.clicked(),
     }
 }
 

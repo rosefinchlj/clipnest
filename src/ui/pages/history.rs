@@ -248,15 +248,44 @@ struct Columns {
     star_x: f32,
     summary_x: f32,
     summary_w: f32,
+    show_source: bool,
+    show_size: bool,
 }
 
 impl Columns {
     fn new(rect: Rect) -> Self {
-        let check_w = 34.0;
-        let type_w = 58.0;
-        let source_w = 104.0;
-        let time_w = 100.0;
-        let size_w = 74.0;
+        // 窄窗口下隐藏「来源」列并压缩类型/时间列，保证摘要列仍有可读宽度。
+        let compact = rect.width() < 620.0;
+        let narrow = rect.width() < 400.0;
+        let check_w = if narrow {
+            24.0
+        } else if compact {
+            28.0
+        } else {
+            34.0
+        };
+        let type_w = if narrow {
+            36.0
+        } else if compact {
+            44.0
+        } else {
+            58.0
+        };
+        let source_w = if compact { 0.0 } else { 104.0 };
+        let time_w = if narrow {
+            60.0
+        } else if compact {
+            64.0
+        } else {
+            100.0
+        };
+        let size_w = if narrow {
+            0.0
+        } else if compact {
+            58.0
+        } else {
+            74.0
+        };
         let action_w = 58.0;
         let x = rect.left() + 10.0;
         let check_x = x;
@@ -276,7 +305,9 @@ impl Columns {
             pin_x,
             star_x,
             summary_x,
-            summary_w: (source_x - summary_x - 8.0).max(40.0),
+            summary_w: (source_x - summary_x - 8.0).max(20.0),
+            show_source: !compact,
+            show_size: !narrow,
         }
     }
 }
@@ -323,22 +354,53 @@ fn table(
             state.multi_selected.clear();
         }
     }
-    // 表头文字
+    // 表头文字：列宽不足时省略，避免「内容摘要 / 来源 / 时间」互相压字。
     let head_font = theme::font_aux();
     let head_color = theme::text_weak();
-    for (x, label) in [
-        (cols.type_x, "类型"),
-        (cols.summary_x, "内容摘要"),
-        (cols.source_x, "来源"),
-        (cols.time_x, "时间"),
-        (cols.size_x, "大小"),
-    ] {
-        painter.text(
-            Pos2::new(x, header_rect.center().y),
-            Align2::LEFT_CENTER,
-            label,
+    let head_y = header_rect.center().y - theme::SIZE_AUX * 0.5;
+    let type_head_w = (cols.summary_x - cols.type_x - 4.0).max(0.0);
+    paint::paint_elided(
+        ui,
+        Pos2::new(cols.type_x, head_y),
+        "类型",
+        head_font.clone(),
+        head_color,
+        type_head_w,
+    );
+    paint::paint_elided(
+        ui,
+        Pos2::new(cols.summary_x, head_y),
+        "内容摘要",
+        head_font.clone(),
+        head_color,
+        (cols.source_x - cols.summary_x - 8.0).max(0.0),
+    );
+    if cols.show_source {
+        paint::paint_elided(
+            ui,
+            Pos2::new(cols.source_x, head_y),
+            "来源",
             head_font.clone(),
             head_color,
+            (cols.time_x - cols.source_x - 4.0).max(0.0),
+        );
+    }
+    paint::paint_elided(
+        ui,
+        Pos2::new(cols.time_x, head_y),
+        "时间",
+        head_font.clone(),
+        head_color,
+        (if cols.show_size { cols.size_x } else { cols.pin_x - 8.0 } - cols.time_x).max(0.0),
+    );
+    if cols.show_size {
+        paint::paint_elided(
+            ui,
+            Pos2::new(cols.size_x, head_y),
+            "大小",
+            head_font,
+            head_color,
+            (cols.pin_x - cols.size_x - 10.0).max(0.0),
         );
     }
     // 表头分隔线
@@ -578,14 +640,16 @@ fn paint_table_row(
         .as_deref()
         .map(|s| s.trim_end_matches(".exe").to_string())
         .unwrap_or_else(|| "—".to_string());
-    paint::paint_elided(
-        ui,
-        Pos2::new(cols.source_x, y - theme::SIZE_AUX * 0.5),
-        source,
-        theme::font_aux(),
-        theme::text_secondary(),
-        96.0,
-    );
+    if cols.show_source {
+        paint::paint_elided(
+            ui,
+            Pos2::new(cols.source_x, y - theme::SIZE_AUX * 0.5),
+            source,
+            theme::font_aux(),
+            theme::text_secondary(),
+            (cols.time_x - cols.source_x - 4.0).max(0.0),
+        );
+    }
     // 时间
     painter.text(
         Pos2::new(cols.time_x, y),
@@ -594,14 +658,16 @@ fn paint_table_row(
         theme::font_aux(),
         theme::text_secondary(),
     );
-    // 大小
-    painter.text(
-        Pos2::new(cols.size_x, y),
-        Align2::LEFT_CENTER,
-        fmt_size(item.byte_len),
-        theme::font_aux(),
-        theme::text_secondary(),
-    );
+    // 大小（极窄窗口隐藏，优先保住摘要与时间）
+    if cols.show_size {
+        painter.text(
+            Pos2::new(cols.size_x, y),
+            Align2::LEFT_CENTER,
+            fmt_size(item.byte_len),
+            theme::font_aux(),
+            theme::text_secondary(),
+        );
+    }
     // 收藏星标（可点击；置顶仅在收藏列表）
     let star_center = Pos2::new(cols.star_x, y);
     let star_rect = Rect::from_center_size(star_center, Vec2::splat(20.0));
@@ -717,12 +783,13 @@ fn detail_panel(
         fmt_size(item.byte_len),
         item.source_app.as_deref().unwrap_or("来源未知")
     );
-    painter.text(
+    paint::paint_elided(
+        ui,
         Pos2::new(inner.left(), inner.top() + 26.0),
-        Align2::LEFT_TOP,
         meta,
         theme::font_aux(),
         theme::text_weak(),
+        inner.width(),
     );
 
     // 第二行元信息：捕获时间 + 来源窗口标题（这两个字段在列表里不展示）
@@ -733,12 +800,13 @@ fn detail_panel(
             meta2.push_str(title);
         }
     }
-    painter.text(
+    paint::paint_elided(
+        ui,
         Pos2::new(inner.left(), inner.top() + 42.0),
-        Align2::LEFT_TOP,
         meta2,
         theme::font_aux(),
         theme::text_weak(),
+        inner.width(),
     );
 
     // 操作按钮行
@@ -836,7 +904,18 @@ fn detail_panel(
             .auto_shrink([false, false])
             .show(ui, |ui| match item.kind {
                 ClipKind::Text => {
-                    let mut text = item.text.clone().unwrap_or_default();
+                    // 少数条目只有摘要没有正文（例如外部写入的历史记录），
+                    // 回退到 preview，避免详情区出现一大片空白。
+                    let body = item
+                        .text
+                        .as_deref()
+                        .filter(|t| !t.trim().is_empty())
+                        .unwrap_or(item.preview.as_str());
+                    let mut text = if body.trim().is_empty() {
+                        "（无文本内容）".to_string()
+                    } else {
+                        body.to_string()
+                    };
                     ui.add(
                         egui::TextEdit::multiline(&mut text)
                             .font(theme::font_mono())
@@ -901,4 +980,39 @@ fn detail_panel(
                 }
             });
     });
+}
+
+
+#[cfg(test)]
+mod columns_tests {
+    use super::*;
+
+    fn rect(width: f32) -> Rect {
+        Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 400.0))
+    }
+
+    #[test]
+    fn compact_columns_hide_source_and_keep_summary_readable() {
+        let cols = Columns::new(rect(460.0));
+        assert!(!cols.show_source);
+        assert!(cols.summary_w >= 120.0);
+        assert!(cols.star_x < 460.0);
+        assert!(cols.star_x > cols.size_x);
+    }
+
+    #[test]
+    fn narrow_columns_hide_size_and_keep_summary() {
+        let cols = Columns::new(rect(300.0));
+        assert!(!cols.show_source);
+        assert!(!cols.show_size);
+        assert!(cols.summary_w >= 80.0);
+        assert!(cols.star_x < 300.0);
+    }
+
+    #[test]
+    fn wide_columns_show_source() {
+        let cols = Columns::new(rect(760.0));
+        assert!(cols.show_source);
+        assert!(cols.summary_w >= 120.0);
+    }
 }
