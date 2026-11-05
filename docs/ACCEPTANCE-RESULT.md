@@ -775,3 +775,18 @@
   - 新增 `route_ctrl_f_focuses_search_even_without_enter_or_delete`；
   - 新增 `ctrl_f_refocuses_search_box`。
 - 截图：`docs/screenshots/picker.png`、`docs/screenshots/picker-light.png`（搜索框右侧 `Ctrl+F` 键帽）。
+
+## 36. v1.9.18（2026-11-05，发布版静态链接运行库）
+
+### 用户反馈
+- 准备把 exe 发给别人使用，确认对方双击能否启动。
+
+### 实现
+- 新增 `.cargo/config.toml`，对 `x86_64-pc-windows-msvc` 固定 `rustflags = ["-C", "target-feature=+crt-static"]`。
+- 发布版由动态 MSVC CRT 改为静态 CRT：exe 的 PE 导入表不再包含 `VCRUNTIME140.dll` 与 `api-ms-win-crt-*`，只依赖 Windows 自带的系统 DLL。
+- 目标机器无需安装 VC++ 2015–2022 运行库；单个 `clipnest.exe` 复制到任意目录后双击即可启动，数据目录由 `%APPDATA%` 动态创建。
+
+### 校验
+- PE 导入表解析确认无 `VCRUNTIME140.dll` / `api-ms-win-crt-*`。
+- 将 exe 单独复制到临时目录，并指定全新的 `CLIPNEST_DATA_DIR` 启动，进程保持运行；日志确认版本 `1.9.18`、数据库与目录自动创建、托盘与快捷键注册成功。
+- 构建后的 exe 约 9.4 MB，仍为单文件；`--selftest` 14 项通过。

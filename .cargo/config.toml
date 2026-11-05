@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-msvc]
+# 静态链接 MSVC CRT：发布的单个 exe 不依赖 VCRUNTIME140.dll / VC++ 运行库，
+# 其他 Windows 10/11 x64 机器下载后双击即可启动。
+rustflags = ["-C", "target-feature=+crt-static"]
