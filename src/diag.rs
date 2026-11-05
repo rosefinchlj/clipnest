@@ -312,14 +312,33 @@ fn run_selftest_body(dir: &Path, check: &mut CheckFn<'_>) -> Result<(), String> 
     let _ = wait_clips_changed(&events, WAIT);
     let page_after_clear = search(&events, &tx, "", ClipFilter::All, 0, 50);
     check(
-        "清空历史",
+        "清空历史保留收藏",
         page_after_clear
+            .as_ref()
+            .map(|p| p.total == 1)
+            .unwrap_or(false),
+        format!(
+            "total={}",
+            page_after_clear.as_ref().map(|p| p.total).unwrap_or(0)
+        ),
+    );
+
+    tx.send(StoreCmd::Clear {
+        delete_blobs: true,
+        include_favorites: true,
+    })
+    .map_err(|e| e.to_string())?;
+    let _ = wait_clips_changed(&events, WAIT);
+    let page_after_clear_all = search(&events, &tx, "", ClipFilter::All, 0, 50);
+    check(
+        "清空历史含收藏",
+        page_after_clear_all
             .as_ref()
             .map(|p| p.total == 0)
             .unwrap_or(false),
         format!(
             "total={}",
-            page_after_clear.as_ref().map(|p| p.total).unwrap_or(0)
+            page_after_clear_all.as_ref().map(|p| p.total).unwrap_or(0)
         ),
     );
 

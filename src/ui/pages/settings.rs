@@ -675,31 +675,6 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
             state.settings_draft.exit_clear_policy.description(),
         ));
         ui.add_space(14.0);
-        ui.label(theme::row_title("退出时自动清理"));
-        ui.add_space(4.0);
-        setting_row(
-            ui,
-            "退出 ClipNest 时清理历史",
-            "清理由 Store 线程完成，确认落盘后才退出进程",
-            |ui| {
-                let mut policy = state.settings_draft.exit_clear_policy;
-                egui::ComboBox::from_id_salt("exit_clear_policy")
-                    .selected_text(policy.label())
-                    .width(170.0)
-                    .show_ui(ui, |ui| {
-                        for candidate in ExitClearPolicy::ALL {
-                            ui.selectable_value(&mut policy, candidate, candidate.label());
-                        }
-                    });
-                if policy != state.settings_draft.exit_clear_policy {
-                    state.settings_draft.exit_clear_policy = policy;
-                }
-            },
-        );
-        ui.label(theme::weak(
-            state.settings_draft.exit_clear_policy.description(),
-        ));
-        ui.add_space(14.0);
         ui.label(theme::row_title("危险操作"));
         ui.add_space(6.0);
         ui.horizontal(|ui| {

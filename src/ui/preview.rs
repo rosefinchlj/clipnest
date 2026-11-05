@@ -89,7 +89,11 @@ fn maybe_save_screenshot(ctx: &egui::Context, mode: &str) {
         counter.set(next);
         next
     });
-    if frame < 6 {
+    let shot_frame = std::env::var("CLIPNEST_PREVIEW_SHOT_FRAME")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(6);
+    if frame < shot_frame {
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
         return;
     }
