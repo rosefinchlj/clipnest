@@ -541,6 +541,7 @@ pub fn date_picker_modal(
     start: &mut Option<i64>,
     end: &mut Option<i64>,
     month: &mut i64,
+    allow_close: bool,
 ) -> Option<DatePickerAction> {
     let mut result = None;
     let start_date = start.and_then(date_of);
@@ -706,7 +707,10 @@ pub fn date_picker_modal(
             });
         });
     });
-    if result.is_none() && resp.should_close() {
+    // 打开弹窗的那一次点击本身也在 `ctx.input` 里；Modal 在同一帧会把它
+    // 当成「点击遮罩」并立刻关闭。打开首帧先忽略 should_close，下一帧起
+    // 才允许点击外部关闭。
+    if result.is_none() && allow_close && resp.should_close() {
         result = Some(DatePickerAction::Closed);
     }
     *month = date_start_ms(shown).unwrap_or(*month);

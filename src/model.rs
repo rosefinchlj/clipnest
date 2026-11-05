@@ -191,7 +191,7 @@ impl ClipItem {
                 truncate_chars(first.trim(), 80)
             }
             ClipKind::Image => format!(
-                "图片 {}×{}",
+                "图片 {}x{}",
                 self.width.unwrap_or(0),
                 self.height.unwrap_or(0)
             ),
@@ -224,8 +224,10 @@ impl ClipItem {
                     truncate_chars(rest.trim(), 120)
                 }
             }
+            // 图片行使用 ASCII `x` 和双空格分隔，避免 `×`/`·` 走 fallback 字体时
+            // 行高与普通文本行不一致，造成标题和副标题贴着/重叠的观感。
             ClipKind::Image => format!(
-                "{} · {}×{}",
+                "{}  {}x{}",
                 fmt_size(self.byte_len),
                 self.width.unwrap_or(0),
                 self.height.unwrap_or(0)
@@ -1504,7 +1506,7 @@ mod tests {
         item.kind = ClipKind::Image;
         item.width = Some(1920);
         item.height = Some(1080);
-        assert_eq!(item.title(), "图片 1920×1080");
+        assert_eq!(item.title(), "图片 1920x1080");
     }
 
     #[test]

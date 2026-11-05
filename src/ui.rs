@@ -279,6 +279,8 @@ pub struct UiState {
     date_picker_month: Option<i64>,
     date_picker_start: Option<i64>,
     date_picker_end: Option<i64>,
+    /// 弹窗打开首帧忽略「点击遮罩关闭」，否则打开它的同一次点击会立刻关掉。
+    date_picker_just_opened: bool,
 
     // ---- 反馈 ----
     toast: Option<ToastState>,
@@ -360,6 +362,7 @@ impl UiState {
             date_picker_month: None,
             date_picker_start: None,
             date_picker_end: None,
+            date_picker_just_opened: false,
             toast: None,
             paused: settings.pause_capture,
             capturing: false,

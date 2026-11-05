@@ -910,3 +910,26 @@
 ### 说明
 - 文件复制仍**不计算文件内容 hash**，只对剪贴板条目 hash + 文件路径字符串做 SHA-256；已有副本通过目录名与文件大小复用，不会每次复制。
 - 清理发生在退出/下次启动，不是固定延迟计时；运行期间反复收藏/取消不会触发删除，避免抖动。收藏副本目录仍固定，未新增自定义路径。
+
+## 42. v1.12.3（2026-11-05，候选窗下拉重叠 / 日期点击 / 图片行间距）
+
+### 用户反馈
+- 候选窗「任一关键词」「最近使用」两个下拉控件重叠。
+- 日期选择组件点击没反应。
+- 列表第一行/第二行也有重叠，似乎只有图片条目出现。
+
+### 实现
+- `src/ui/picker.rs`：`mode_rect` 宽度 88 → 104；与排序下拉的间距从 `theme::GAP_XS`（4px）增到 12px，避免 ComboBox 按钮的箭头/内边距超出传入矩形后相互覆盖。
+- `src/ui/pages/history.rs`：管理台「指定日期」按钮的纵坐标由 `time_rect.bottom() + 6.0` 改为 `basis_rect.bottom() + 6.0`，不再与「时间依据」整行重叠。
+- `src/ui/widgets.rs`、`src/ui.rs`、`src/ui/picker.rs`、`src/ui/pages/history.rs`：`date_picker_modal()` 增加 `allow_close` 参数；UI 状态新增 `date_picker_just_opened`，打开弹窗的首帧忽略 `Modal::should_close()`，避免打开它的同一次点击被当成点击遮罩而立刻关闭。
+- `src/model.rs`：图片条目标题改为 `图片 {w}x{h}`，副标题改为 `{size}  {w}x{h}`（ASCII `x`、双空格分隔），避免 `×`/`·` 走回退字体时行高/基线不一致造成两行文字拥挤的观感。
+
+### 校验
+- `cargo check --all-targets`：零错误。
+- `cargo test --release`：**237 passed / 0 failed / 1 ignored**。
+- `cargo build --release` + `tools/build-release.ps1` 9 尺寸图标 + `--selftest` 15 项 PASS。
+- 预览截图确认候选窗两个下拉已分离；图片行标题为 `图片 1920x1080`。
+
+### 说明
+- 日期弹窗首帧不响应外部点击，从第二帧起恢复点击遮罩/取消关闭。
+- 图片行改用 ASCII 尺寸格式，不改变实际尺寸、复制或粘贴行为。

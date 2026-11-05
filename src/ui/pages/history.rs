@@ -323,6 +323,7 @@ pub(crate) fn page(
                     state.date_picker_end = Some(end);
                     state.date_picker_month = Some(widgets::month_start_ms(start));
                     state.date_picker_open = true;
+                    state.date_picker_just_opened = true;
                 } else {
                     state.date_picker_open = false;
                 }
@@ -356,7 +357,7 @@ pub(crate) fn page(
             state.manager_custom_end = Some(end);
             let label = widgets::format_day_range(start, end);
             let date_rect = Rect::from_min_size(
-                Pos2::new(inner.left(), time_rect.bottom() + 6.0),
+                Pos2::new(inner.left(), basis_rect.bottom() + 6.0),
                 Vec2::new(210.0, theme::CHIP_HEIGHT),
             );
             ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
@@ -366,6 +367,7 @@ pub(crate) fn page(
                     state.date_picker_start = Some(start);
                     state.date_picker_end = Some(end);
                     state.date_picker_open = true;
+                    state.date_picker_just_opened = true;
                     state.date_picker_month = Some(widgets::month_start_ms(start));
                 }
             });
@@ -465,7 +467,9 @@ pub(crate) fn page(
         let mut month = state
             .date_picker_month
             .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
-        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month)
+        let allow_close = !state.date_picker_just_opened;
+        if let Some(action) =
+            widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month, allow_close)
         {
             state.date_picker_start = start;
             state.date_picker_end = end;
@@ -479,6 +483,7 @@ pub(crate) fn page(
         } else {
             state.date_picker_month = Some(month);
         }
+        state.date_picker_just_opened = false;
     }
 }
 

@@ -178,9 +178,11 @@ pub(crate) fn show(
         let mut left = full.left();
         let mode_rect = Rect::from_min_size(
             Pos2::new(left, meta_top),
-            Vec2::new(88.0, theme::CHIP_HEIGHT),
+            Vec2::new(104.0, theme::CHIP_HEIGHT),
         );
-        left = mode_rect.right() + theme::GAP_XS;
+        // ComboBox 的按钮会比传入矩形略宽（箭头/内边距），这里留出足够间距，
+        // 避免两个下拉的箭头/底框叠在一起。
+        left = mode_rect.right() + 12.0;
         let mode_options: Vec<(MatchMode, &str)> = MatchMode::all()
             .iter()
             .map(|mode| (*mode, mode.label()))
@@ -274,6 +276,7 @@ pub(crate) fn show(
                     state.date_picker_end = Some(end);
                     state.date_picker_month = Some(widgets::month_start_ms(start));
                     state.date_picker_open = true;
+                    state.date_picker_just_opened = true;
                 } else {
                     state.date_picker_open = false;
                 }
@@ -317,6 +320,7 @@ pub(crate) fn show(
                     state.date_picker_start = Some(start);
                     state.date_picker_end = Some(end);
                     state.date_picker_open = true;
+                    state.date_picker_just_opened = true;
                     state.date_picker_month = Some(widgets::month_start_ms(start));
                 }
             });
@@ -329,7 +333,9 @@ pub(crate) fn show(
         let mut month = state
             .date_picker_month
             .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
-        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month)
+        let allow_close = !state.date_picker_just_opened;
+        if let Some(action) =
+            widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month, allow_close)
         {
             state.date_picker_start = start;
             state.date_picker_end = end;
@@ -343,6 +349,7 @@ pub(crate) fn show(
         } else {
             state.date_picker_month = Some(month);
         }
+        state.date_picker_just_opened = false;
     }
 
     // ---- 4) 列表 / 空状态 ----
