@@ -429,6 +429,14 @@ impl PreviewState {
                     self.state.toast(format!("（预览）临时暂停：{}", pause.label()));
                 }
                 UiAction::RetryFileCopy(_) => self.state.toast("（预览）重试保存文件副本（未执行）"),
+                UiAction::IgnoreSourceApp(app) => {
+                    let changed = self.state.add_ignore_app(&app);
+                    self.state.toast(if changed {
+                        format!("（预览）已忽略来源应用：{}（未写磁盘）", app.trim())
+                    } else {
+                        format!("（预览）{} 已在忽略名单中", app.trim())
+                    });
+                }
                 UiAction::ExportJson => self.state.toast("（预览）导出 JSON（未执行）"),
                 UiAction::OpenDataDir => self.state.toast("（预览）打开数据目录（未执行）"),
                 UiAction::RefreshStats => self.state.toast("（预览）刷新统计"),

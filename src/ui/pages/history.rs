@@ -696,6 +696,19 @@ fn table(
                             });
                             ui.close();
                         }
+                        // A3：一键把来源应用加入忽略名单。
+                        if let Some(app) = item
+                            .source_app
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|app| !app.is_empty())
+                        {
+                            let label = format!("忽略来源应用：{app}");
+                            if widgets::menu_item(ui, &label).clicked() {
+                                actions.push(UiAction::IgnoreSourceApp(app.to_string()));
+                                ui.close();
+                            }
+                        }
                         if widgets::menu_item(ui, "删除").clicked() {
                             state.selected = Some(i);
                             state.request_delete_ids(vec![item.id], actions);
@@ -1019,6 +1032,32 @@ fn detail_panel(
             });
         }
         extra_h = btn_h + 8.0;
+    }
+
+    // A3：一键把来源应用加入忽略名单（已有来源且尚未忽略时展示）。
+    if let Some(app) = item
+        .source_app
+        .as_deref()
+        .map(str::trim)
+        .filter(|app| !app.is_empty())
+    {
+        let already = state
+            .settings
+            .ignore_apps
+            .iter()
+            .any(|x| x.eq_ignore_ascii_case(app));
+        if !already {
+            let label = "忽略此来源应用";
+            let w = (paint::text_width(ui, label, theme::font_body()) + 22.0).min(inner.width());
+            let rect = Rect::from_min_size(
+                Pos2::new(inner.left(), btn_y + btn_h + 8.0 + extra_h),
+                Vec2::new(w, btn_h),
+            );
+            if widgets::button_at(ui, rect, label, widgets::ButtonKind::Ghost).clicked() {
+                actions.push(UiAction::IgnoreSourceApp(app.to_string()));
+            }
+            extra_h += btn_h + 8.0;
+        }
     }
 
     // 内容区

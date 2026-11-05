@@ -310,7 +310,7 @@ impl ClipNestApp {
         if self.welcome_pending {
             self.welcome_pending = false;
             self.ui.toast(format!(
-                "欢迎使用 ClipNest！按 {} 打开面板，右键托盘图标可临时暂停或退出。",
+                "欢迎使用 ClipNest！按 {} 打开面板，右键托盘图标可临时暂停或退出；默认不随系统启动，需要可在设置里开启。",
                 self.settings.hotkey_picker.label()
             ));
             crate::logging::log("首次启动：已显示欢迎提示");
@@ -670,6 +670,21 @@ impl ClipNestApp {
                     let _ = tx.send(SysCmd::SetTempPause(pause));
                 }
                 self.ui.set_temp_pause(pause);
+            }
+            UiAction::IgnoreSourceApp(app) => {
+                // A3：一键忽略来源应用（密码管理器等），立即落盘供 Sys 线程读取。
+                if self.ui.add_ignore_app(&app) {
+                    self.settings.ignore_apps = self.ui.ignore_apps().to_vec();
+                    if let Ok(mut shared) = self.settings_shared.lock() {
+                        *shared = self.settings.clone();
+                    }
+                    self.persist_settings();
+                    self.ui
+                        .toast(format!("已忽略来源应用：{}（设置已保存）", app.trim()));
+                } else {
+                    self.ui
+                        .toast(format!("{} 已在忽略名单中", app.trim()));
+                }
             }
             UiAction::OpenManager => {
                 self.ui.enter_picker();

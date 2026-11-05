@@ -357,6 +357,22 @@ impl ManagerApp {
                 self.ui
                     .toast("临时暂停请在托盘菜单或主面板「设置」里操作");
             }
+            UiAction::IgnoreSourceApp(app) => {
+                // A3：管理台也可一键忽略来源应用，写设置文件并通知主进程热加载。
+                if self.ui.add_ignore_app(&app) {
+                    self.settings.ignore_apps = self.ui.ignore_apps().to_vec();
+                    if let Ok(mut shared) = self.settings_shared.lock() {
+                        *shared = self.settings.clone();
+                    }
+                    self.persist_settings();
+                    self.notify_main_settings();
+                    self.ui
+                        .toast(format!("已忽略来源应用：{}（设置已保存）", app.trim()));
+                } else {
+                    self.ui
+                        .toast(format!("{} 已在忽略名单中", app.trim()));
+                }
+            }
             UiAction::OpenManager => {}
             UiAction::OpenPicker => {
                 // 主界面不隐藏：主进程把候选窗带到前台，管理台保持打开。

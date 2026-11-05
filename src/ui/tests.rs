@@ -358,6 +358,26 @@ fn temp_pause_is_runtime_only_and_restorable() {
 }
 
 // ---------------------------------------------------------------------------
+// A3：忽略来源应用
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ignore_source_app_normalizes_and_deduplicates() {
+    let mut s = state();
+    assert!(s.add_ignore_app(" WeChat.EXE "));
+    assert!(
+        s.ignore_apps().iter().any(|x| x == "wechat.exe"),
+        "应转为小写并去掉空白"
+    );
+    assert!(
+        s.settings_draft.ignore_apps.iter().any(|x| x == "wechat.exe"),
+        "同时写入设置草稿，保存栏不会把新增名单覆盖掉"
+    );
+    assert!(!s.add_ignore_app("wechat.exe"), "重复添加应返回 false");
+    assert!(!s.add_ignore_app("   "), "空名称应返回 false");
+}
+
+// ---------------------------------------------------------------------------
 // A2：清空确认的默认范围
 // ---------------------------------------------------------------------------
 

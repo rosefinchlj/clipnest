@@ -129,6 +129,8 @@ pub enum UiAction {
     SetTempPause(TempPause),
     /// 重新检查一次文件副本状态（A4 失败重试）。
     RetryFileCopy(ClipId),
+    /// 把来源应用加入忽略名单并保存设置（A3 隐私）。
+    IgnoreSourceApp(String),
     /// 打开管理台。
     OpenManager,
     /// 回到候选窗。
@@ -446,6 +448,40 @@ impl UiState {
                     CopyState::NotNeeded => 0,
                 })
         })
+    }
+
+    /// 把来源应用加入忽略名单（A3 隐私）。
+    ///
+    /// 返回 `true` 表示名单确实变化（调用方负责落盘/同步 Sys 线程）；
+    /// 空名称或已在名单中返回 `false`。
+    pub fn add_ignore_app(&mut self, app: &str) -> bool {
+        let app = app.trim().to_ascii_lowercase();
+        if app.is_empty() {
+            return false;
+        }
+        if self
+            .settings
+            .ignore_apps
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&app))
+        {
+            return false;
+        }
+        self.settings.ignore_apps.push(app.clone());
+        if !self
+            .settings_draft
+            .ignore_apps
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&app))
+        {
+            self.settings_draft.ignore_apps.push(app);
+        }
+        true
+    }
+
+    /// 当前忽略名单（A3：忽略来源应用后调用方需要落盘）。
+    pub(crate) fn ignore_apps(&self) -> &[String] {
+        &self.settings.ignore_apps
     }
 
     /// 弹一条 toast。
