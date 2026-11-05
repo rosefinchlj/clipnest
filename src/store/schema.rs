@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS blobs (
   created_at INTEGER NOT NULL
 );
 
+-- 取消收藏后的文件实体待清理标记：退出或下次启动时删除副本，避免反复收藏/取消时抖动。
+-- clip 被永久删除时由外键级联清理；重新收藏会删除对应标记。
+CREATE TABLE IF NOT EXISTS favorite_cleanup (
+  clip_id   INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+  blob_id   TEXT    NOT NULL,
+  marked_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_favorite_cleanup_marked ON favorite_cleanup(marked_at);
+
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 "#;
 
@@ -187,9 +196,7 @@ fn ensure_rich_schema(conn: &Connection) -> StoreResult<()> {
         )? > 0;
         if !has_column {
             conn.execute(ddl, [])?;
-            crate::logging::log(&format!(
-                "Store: schema v4 已为 clips 添加 {column} 列"
-            ));
+            crate::logging::log(&format!("Store: schema v4 已为 clips 添加 {column} 列"));
         }
     }
     Ok(())

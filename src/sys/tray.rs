@@ -24,7 +24,6 @@ use crate::sys::thread::{WM_APP_MENU, WM_APP_TRAY};
 pub const MENU_OPEN: u32 = 1;
 pub const MENU_MANAGER: u32 = 2;
 pub const MENU_PAUSE: u32 = 3;
-pub const MENU_CLEAR: u32 = 4;
 pub const MENU_SETTINGS: u32 = 5;
 pub const MENU_AUTOSTART: u32 = 6;
 pub const MENU_QUIT: u32 = 7;
@@ -34,8 +33,6 @@ pub const MENU_PAUSE_15: u32 = 8;
 pub const MENU_PAUSE_60: u32 = 9;
 /// 临时暂停到本次运行结束（重启后恢复记录）。
 pub const MENU_PAUSE_RESTART: u32 = 10;
-/// 恢复记录（清除所有暂停）。
-pub const MENU_RESUME: u32 = 11;
 
 /// 托盘左键单击动作编码（通过 `WM_APP_TRAY` 的 wparam 传递）。
 pub const TRAY_LEFT_CLICK: u32 = 1;
@@ -56,8 +53,6 @@ pub struct TrayState {
     autostart_item: CheckMenuItem,
     /// 临时暂停状态文字（禁用项，只用于展示）。
     temp_status_item: MenuItem,
-    /// 「恢复记录」：只有存在暂停时才可点。
-    resume_item: MenuItem,
 }
 
 impl TrayState {
@@ -69,12 +64,10 @@ impl TrayState {
         self.autostart_item.set_checked(enabled);
     }
 
-    /// 更新临时暂停状态展示与「恢复记录」可用性（A3）。
-    pub fn set_temp_pause(&self, pause: TempPause, permanent_paused: bool) {
+    /// 更新临时暂停状态展示（A3）。
+    pub fn set_temp_pause(&self, pause: TempPause, _permanent_paused: bool) {
         self.temp_status_item
             .set_text(format!("临时暂停：{}", temp_pause_short(pause)));
-        self.resume_item
-            .set_enabled(!matches!(pause, TempPause::Off) || permanent_paused);
     }
 
     /// 托盘 tooltip 追加当前暂停状态（未暂停时恢复默认文案）。
@@ -119,14 +112,12 @@ fn menu_code(id: &str) -> Option<u32> {
         "tray.open" => Some(MENU_OPEN),
         "tray.manager" => Some(MENU_MANAGER),
         "tray.pause" => Some(MENU_PAUSE),
-        "tray.clear" => Some(MENU_CLEAR),
         "tray.settings" => Some(MENU_SETTINGS),
         "tray.autostart" => Some(MENU_AUTOSTART),
         "tray.quit" => Some(MENU_QUIT),
         "tray.pause15" => Some(MENU_PAUSE_15),
         "tray.pause60" => Some(MENU_PAUSE_60),
         "tray.pause_restart" => Some(MENU_PAUSE_RESTART),
-        "tray.resume" => Some(MENU_RESUME),
         _ => None,
     }
 }
@@ -142,12 +133,7 @@ pub fn install_event_handlers(hwnd: HWND) {
         if let Some(code) = menu_code(&id) {
             logging::debug(&format!("托盘菜单事件：{id}"));
             unsafe {
-                PostMessageW(
-                    target as HWND,
-                    WM_APP_MENU,
-                    code as usize,
-                    0,
-                );
+                PostMessageW(target as HWND, WM_APP_MENU, code as usize, 0);
             }
         }
     }));
@@ -183,7 +169,11 @@ fn tray_icon_target() -> (u32, u32) {
         } else {
             let dpi = GetDeviceCaps(dc, LOGPIXELSX as i32);
             ReleaseDC(std::ptr::null_mut(), dc);
-            if dpi <= 0 { 96 } else { dpi as u32 }
+            if dpi <= 0 {
+                96
+            } else {
+                dpi as u32
+            }
         }
     };
     let px = ((16 * dpi + 48) / 96).clamp(16, 48);
@@ -251,7 +241,9 @@ fn load_icon() -> Option<Icon> {
                         logging::debug(&format!("托盘图标加载成功：{}（{w}×{h}）", path.display()));
                         return Some(icon);
                     }
-                    Err(e) => logging::warn(&format!("托盘图标格式无效（{}）：{e}", path.display())),
+                    Err(e) => {
+                        logging::warn(&format!("托盘图标格式无效（{}）：{e}", path.display()))
+                    }
                 }
             }
             Err(e) => logging::warn(&format!("托盘图标解码失败（{}）：{e}", path.display())),
@@ -285,7 +277,6 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
         settings.pause_capture,
         None::<Accelerator>,
     );
-    let item_clear = MenuItem::with_id("tray.clear", "清空历史…", true, None::<Accelerator>);
     // A3：临时暂停（运行期生效，不写 settings.json）
     let temp_status_item = MenuItem::with_id(
         "tray.temp_status",
@@ -293,13 +284,14 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
         false,
         None::<Accelerator>,
     );
-    let item_pause15 =
-        MenuItem::with_id("tray.pause15", "暂停 15 分钟", true, None::<Accelerator>);
-    let item_pause60 =
-        MenuItem::with_id("tray.pause60", "暂停 1 小时", true, None::<Accelerator>);
-    let item_pause_restart =
-        MenuItem::with_id("tray.pause_restart", "暂停到重启", true, None::<Accelerator>);
-    let item_resume = MenuItem::with_id("tray.resume", "恢复记录", false, None::<Accelerator>);
+    let item_pause15 = MenuItem::with_id("tray.pause15", "暂停 15 分钟", true, None::<Accelerator>);
+    let item_pause60 = MenuItem::with_id("tray.pause60", "暂停 1 小时", true, None::<Accelerator>);
+    let item_pause_restart = MenuItem::with_id(
+        "tray.pause_restart",
+        "暂停到重启",
+        true,
+        None::<Accelerator>,
+    );
     let item_settings = MenuItem::with_id("tray.settings", "设置", true, None::<Accelerator>);
     let item_autostart = CheckMenuItem::with_id(
         "tray.autostart",
@@ -326,12 +318,6 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
         .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
     menu.append(&item_pause_restart)
         .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
-    menu.append(&item_resume)
-        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
-    menu.append(&PredefinedMenuItem::separator())
-        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
-    menu.append(&item_clear)
-        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
     menu.append(&item_settings)
@@ -343,7 +329,8 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
     menu.append(&item_quit)
         .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
 
-    let icon = load_icon().ok_or_else(|| "托盘图标创建失败（assets/icon.png 缺失且内置图标构造失败）".to_string())?;
+    let icon = load_icon()
+        .ok_or_else(|| "托盘图标创建失败（assets/icon.png 缺失且内置图标构造失败）".to_string())?;
     // 注意：不要把 menu 交给 tray-icon（它内部 TrackPopupMenu 没有 TPM_RETURNCMD，
     // 选中项只会发 WM_COMMAND 到无人处理的窗口，MenuEvent 永远不会触发）。
     // 菜单保存在 TrayState，右键时由 Sys 线程用 muda 的 show_context_menu_for_hwnd 弹出。
@@ -353,14 +340,13 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
         .build()
         .map_err(|e| format!("托盘创建失败：{e}"))?;
 
-    logging::log("托盘创建成功（打开面板/管理历史/暂停/临时暂停/清空/设置/开机自启/退出）");
+    logging::log("托盘创建成功（打开面板/管理历史/暂停/临时暂停/设置/开机自启/退出）");
     Ok(TrayState {
         tray,
         menu,
         pause_item: item_pause,
         autostart_item: item_autostart,
         temp_status_item,
-        resume_item: item_resume,
     })
 }
 
@@ -374,14 +360,12 @@ mod tests {
             MENU_OPEN,
             MENU_MANAGER,
             MENU_PAUSE,
-            MENU_CLEAR,
             MENU_SETTINGS,
             MENU_AUTOSTART,
             MENU_QUIT,
             MENU_PAUSE_15,
             MENU_PAUSE_60,
             MENU_PAUSE_RESTART,
-            MENU_RESUME,
         ];
         let mut sorted = codes.to_vec();
         sorted.sort_unstable();
@@ -390,7 +374,8 @@ mod tests {
         assert_eq!(menu_code("tray.open"), Some(MENU_OPEN));
         assert_eq!(menu_code("tray.quit"), Some(MENU_QUIT));
         assert_eq!(menu_code("tray.pause15"), Some(MENU_PAUSE_15));
-        assert_eq!(menu_code("tray.resume"), Some(MENU_RESUME));
+        assert_eq!(menu_code("tray.clear"), None);
+        assert_eq!(menu_code("tray.resume"), None);
         assert_eq!(menu_code("tray.temp_status"), None);
         assert_eq!(menu_code("unknown"), None);
     }

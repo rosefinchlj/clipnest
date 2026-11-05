@@ -109,8 +109,13 @@ pub(crate) fn show(
         let allow_delete = !ime_active && !(state.search_focused && !state.search_text.is_empty());
         // 同上：搜索中按 ←/→ 是移动光标；搜索框为空或未聚焦时切换分类。
         let allow_arrows = !ime_active && !(state.search_focused && !state.search_text.is_empty());
-        let commands =
-            keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows, !ime_active, !ime_active);
+        let commands = keys::route_picker_keys(
+            ui.ctx(),
+            allow_delete,
+            allow_arrows,
+            !ime_active,
+            !ime_active,
+        );
         for command in commands {
             handle_command(state, command, list_rect.height(), actions);
         }
@@ -121,11 +126,15 @@ pub(crate) fn show(
         Pos2::new(full.left(), search_top),
         Vec2::new(full.width(), theme::SEARCH_HEIGHT),
     );
+    let search_hint = match state.match_mode {
+        MatchMode::Any => "空格分词，命中任意一个即可",
+        MatchMode::All => "空格分词，每个词都必须命中",
+    };
     ui.scope_builder(UiBuilder::new().max_rect(search_rect), |ui| {
         let out = widgets::search_box(
             ui,
             &mut state.search_text,
-            "搜索剪贴板历史…",
+            search_hint,
             Some("Ctrl+F"),
             state.search_focus,
         );
@@ -163,29 +172,8 @@ pub(crate) fn show(
         Pos2::new(full.right() - 74.0, meta_top),
         Vec2::new(64.0, theme::CHIP_HEIGHT),
     );
-    let controls_right = toggle_rect.left() - theme::GAP_S;
-    // 来源下拉：0 = 全部来源，1..=n 对应 source_apps。
-    let source_labels: Vec<String> = std::iter::once("全部来源".to_string())
-        .chain(state.source_apps.iter().cloned())
-        .collect();
-    let source_options: Vec<(usize, &str)> = source_labels
-        .iter()
-        .enumerate()
-        .map(|(index, label)| (index, label.as_str()))
-        .collect();
-    let source_index = state
-        .source_app
-        .as_ref()
-        .and_then(|app| {
-            state
-                .source_apps
-                .iter()
-                .position(|candidate| candidate.eq_ignore_ascii_case(app))
-        })
-        .map_or(0, |index| index + 1);
     let mut next_mode = None;
     let mut next_sort = None;
-    let mut next_source = None;
     ui.scope_builder(UiBuilder::new().max_rect(meta_rect), |ui| {
         let mut left = full.left();
         let mode_rect = Rect::from_min_size(
@@ -216,37 +204,14 @@ pub(crate) fn show(
             Pos2::new(left, meta_top),
             Vec2::new(104.0, theme::CHIP_HEIGHT),
         );
-        left = sort_rect.right() + theme::GAP_XS;
         let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
             .iter()
             .map(|sort| (*sort, sort.label()))
             .collect();
-        if let Some(sort) = widgets::dropdown_at(
-            ui,
-            sort_rect,
-            "picker-sort",
-            state.sort,
-            &sort_options,
-        ) {
+        if let Some(sort) =
+            widgets::dropdown_at(ui, sort_rect, "picker-sort", state.sort, &sort_options)
+        {
             next_sort = Some(sort);
-        }
-        let source_width = (controls_right - left).max(96.0);
-        let source_rect = Rect::from_min_size(
-            Pos2::new(left, meta_top),
-            Vec2::new(source_width, theme::CHIP_HEIGHT),
-        );
-        if let Some(index) = widgets::dropdown_at(
-            ui,
-            source_rect,
-            "picker-source",
-            source_index,
-            &source_options,
-        ) {
-            next_source = Some(if index == 0 {
-                None
-            } else {
-                Some(state.source_apps.get(index - 1).cloned().unwrap_or_default())
-            });
         }
     });
     if let Some(mode) = next_mode {
@@ -255,10 +220,6 @@ pub(crate) fn show(
     if let Some(sort) = next_sort {
         state.set_sort(sort);
     }
-    if let Some(source) = next_source {
-        state.set_source_app(source);
-    }
-
     // ---- 3b) 日期筛选开关 + 时间范围 ----
     if widgets::button_at(ui, toggle_rect, "筛选", widgets::ButtonKind::Secondary).clicked() {
         state.picker_time_open = !time_open;
@@ -420,6 +381,26 @@ pub(crate) fn show(
             &text,
             alpha,
         );
+    }
+
+    // ---- 7) 底部 6px 竖向缩放抓手（无边框窗口）----
+    let grip_rect = Rect::from_min_max(
+        Pos2::new(full.left(), full.bottom() - 6.0),
+        full.right_bottom(),
+    );
+    let grip = ui.interact(
+        grip_rect,
+        egui::Id::new("picker-resize-grip"),
+        egui::Sense::drag(),
+    );
+    if grip.hovered() || grip.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    if grip.drag_started() {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::BeginResize(
+                egui::ResizeDirection::South,
+            ));
     }
 }
 

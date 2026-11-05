@@ -253,14 +253,6 @@ impl SysState {
                 until_ms: now_ms() + 60 * 60_000,
             }),
             tray::MENU_PAUSE_RESTART => self.set_temp_pause(TempPause::UntilRestart),
-            tray::MENU_RESUME => self.resume_capture(),
-            tray::MENU_CLEAR => {
-                // 清空需要 UI 二次确认（spec §6.4）
-                self.emit(Event::ManagerRequested {
-                    target_hwnd: self.last_external_fg,
-                });
-                self.toast("清空历史请在管理台确认");
-            }
             tray::MENU_SETTINGS => {
                 logging::log("托盘：打开设置");
                 self.emit(Event::SettingsRequested {
@@ -437,7 +429,9 @@ impl SysState {
                 if had_temp && !paused {
                     self.emit(Event::TempPauseChanged(TempPause::Off));
                 }
-                logging::log(&format!("SysCmd::SetPause -> {paused}（临时暂停已清除={had_temp}）"));
+                logging::log(&format!(
+                    "SysCmd::SetPause -> {paused}（临时暂停已清除={had_temp}）"
+                ));
                 self.toast(if paused {
                     "已暂停记录剪贴板"
                 } else {
@@ -519,7 +513,6 @@ impl SysState {
         });
         self.picker_hotkey = Some(registration);
         self.emit(Event::HotkeyStatus { ok, reason });
-
     }
 
     fn handle_paste(&mut self, payload: crate::model::PastePayload, target_hwnd: isize) {
@@ -541,7 +534,10 @@ impl SysState {
                     "自动粘贴完成：target={target_hwnd} 按键={}",
                     paste_key.label()
                 ));
-                self.emit(Event::PasteResult { ok: true, reason: None });
+                self.emit(Event::PasteResult {
+                    ok: true,
+                    reason: None,
+                });
             }
             Err(err) => {
                 logging::warn(&format!(

@@ -805,9 +805,10 @@ impl UiState {
         }
     }
 
-    /// 当前生效的来源筛选：回收站页不按来源过滤（页面上没有清除入口，避免隐藏筛选）。
+    /// 当前生效的来源筛选：回收站页不按来源过滤（页面上没有清除入口，避免隐藏筛选）；
+    /// 候选窗不提供来源筛选，始终不按来源过滤（管理台保留来源下拉）。
     pub(crate) fn effective_source_app(&self) -> Option<String> {
-        if self.search_trash() {
+        if self.search_trash() || self.mode == WindowMode::Picker {
             None
         } else {
             self.source_app.clone()

@@ -178,10 +178,19 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
     );
 
     // 右：相对时间（上）+ 星标（下）
+    let right_meta = if row.item.use_count > 0 {
+        format!(
+            "{} · {} 次",
+            fmt_relative_time(row.item.last_used_at),
+            row.item.use_count
+        )
+    } else {
+        fmt_relative_time(row.item.last_used_at)
+    };
     painter.text(
         Pos2::new(rect.right() - 12.0, rect.top() + 12.0),
         Align2::RIGHT_TOP,
-        fmt_relative_time(row.item.last_used_at),
+        right_meta,
         theme::font_aux(),
         if pinned_highlight {
             theme::text()

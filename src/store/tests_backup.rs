@@ -115,6 +115,8 @@ fn backup_roundtrip_restores_text_image_and_favorite_files() {
         .upsert(&files_input(&[&source_file], now_ms()))
         .expect("写入文件条目失败")
         .id();
+    db_a.set_favorited(files_id, true)
+        .expect("收藏文件条目失败");
     let copy = db_a
         .save_favorite_files(files_id, &Settings::default())
         .expect("保存收藏文件失败")
@@ -237,7 +239,8 @@ fn corrupted_zip_is_rejected_and_existing_db_untouched() {
         inspect_err.to_string().contains("zip") || inspect_err.to_string().contains("备份"),
         "错误信息应可读：{inspect_err}"
     );
-    let restore_err = backup::restore_backup(&db, &bad_path, None).expect_err("损坏 zip 应恢复失败");
+    let restore_err =
+        backup::restore_backup(&db, &bad_path, None).expect_err("损坏 zip 应恢复失败");
     let _ = restore_err;
     assert_eq!(clip_count(&db), before, "恢复失败不得改动现有数据库");
     let text: String = db
@@ -296,7 +299,8 @@ fn encrypted_database_backup_can_be_inspected_and_restored() {
     let preview = backup::inspect_backup(&backup_path, key.as_deref()).expect("检查加密备份失败");
     assert_eq!(preview.clips, 1);
     let (_dst_dir, dst) = open_db("enc-backup-dst");
-    let report = backup::restore_backup(&dst, &backup_path, key.as_deref()).expect("恢复加密备份失败");
+    let report =
+        backup::restore_backup(&dst, &backup_path, key.as_deref()).expect("恢复加密备份失败");
     assert_eq!(report.inserted, 1);
     assert_eq!(clip_count(&dst), 1);
 }

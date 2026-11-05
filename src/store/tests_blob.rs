@@ -149,6 +149,88 @@ fn file_entries_json_roundtrip() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn unfavorite_marks_copy_for_delayed_cleanup() {
+    let (dir, db) = open_db("favorite-cleanup");
+    let source_dir = temp_dir("favorite-cleanup-src");
+    let file = write_temp_file(&source_dir, "待清理.txt", b"cleanup body");
+    let id = db
+        .upsert(&files_input(&[file.as_path()], 1_000))
+        .unwrap()
+        .id();
+
+    db.set_favorited(id, true).unwrap();
+    db.save_favorite_files(id, &Settings::default())
+        .unwrap()
+        .expect("文件条目应复制实体");
+    let item = db.item(id).unwrap().unwrap();
+    let blob_id = item.blob_id.clone().expect("收藏后应有 blob_id");
+    let stored_dir = blob::favorite_files_dir(&dir, &blob_id);
+    assert!(stored_dir.is_dir());
+
+    // 取消收藏只写标记，不立即删除副本。
+    db.set_favorited(id, false).unwrap();
+    assert!(stored_dir.is_dir(), "取消收藏不应立即删副本");
+    let marked: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM favorite_cleanup WHERE clip_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marked, 1);
+    assert!(
+        db.save_favorite_files(id, &Settings::default())
+            .unwrap()
+            .is_none(),
+        "已取消收藏的条目不应再复制文件实体"
+    );
+
+    // 重新收藏会撤销标记；再次收藏不会重复复制。
+    db.set_favorited(id, true).unwrap();
+    let marked: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM favorite_cleanup WHERE clip_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marked, 0);
+    let again = db
+        .save_favorite_files(id, &Settings::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.copied, 0, "重新收藏应复用已有副本");
+
+    // 再取消收藏并执行退出清理：目录、blob 行、stored 标记、清理标记都应消失。
+    db.set_favorited(id, false).unwrap();
+    let report = db.cleanup_favorite_copies().unwrap();
+    assert_eq!(report.clips, 1);
+    assert!(!stored_dir.exists(), "清理后实体目录应删除");
+    let item = db.item(id).unwrap().unwrap();
+    assert!(item.files.iter().all(|entry| !entry.stored));
+    let blobs: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM blobs WHERE id = ?1",
+            params![blob_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(blobs, 0);
+    let marked: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM favorite_cleanup WHERE clip_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marked, 0);
+}
+
+#[test]
 fn favorite_files_copy_and_restore() {
     let (dir, db) = open_db("favorite");
     let source_dir = temp_dir("favorite-src");
@@ -160,6 +242,7 @@ fn favorite_files_copy_and_restore() {
         .id();
 
     // 收藏 → 复制实体
+    db.set_favorited(id, true).unwrap();
     let copy = db
         .save_favorite_files(id, &Settings::default())
         .unwrap()
@@ -233,6 +316,7 @@ fn favorite_copy_respects_limits() {
         .id();
 
     // 单文件上限：跳过复制
+    db.set_favorited(id, true).unwrap();
     let mut settings = Settings::default();
     settings.max_file_bytes = 1024;
     let copy = db.save_favorite_files(id, &settings).unwrap().unwrap();
@@ -281,6 +365,7 @@ fn export_import_roundtrip() {
         .upsert(&files_input(&[file.as_path()], 4_000))
         .unwrap()
         .id();
+    db.set_favorited(file_id, true).unwrap();
     db.save_favorite_files(file_id, &Settings::default())
         .unwrap()
         .unwrap();
@@ -301,7 +386,7 @@ fn export_import_roundtrip() {
     assert_eq!(imported.inserted, 4);
     assert_eq!(imported.skipped, 0);
     assert_eq!(total_rows(&db2), 4);
-    assert_eq!(db2.counts().unwrap().favorited, 1);
+    assert_eq!(db2.counts().unwrap().favorited, 2);
     // 文本内容与收藏状态一致
     let page = db2
         .search(&SearchQuery {

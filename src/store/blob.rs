@@ -457,10 +457,11 @@ pub fn find_stored_copy(dir: &Path, name: &str) -> Option<PathBuf> {
         return Some(exact);
     }
     let all = collect_files(dir);
-    if let Some(found) = all
-        .iter()
-        .find(|path| path.file_name().map(|n| n == safe_name.as_str()).unwrap_or(false))
-    {
+    if let Some(found) = all.iter().find(|path| {
+        path.file_name()
+            .map(|n| n == safe_name.as_str())
+            .unwrap_or(false)
+    }) {
         return Some(found.clone());
     }
     // 重名时复制名形如 `原名~2.ext`
@@ -475,7 +476,7 @@ pub fn find_stored_copy(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// 递归收集目录下所有文件。
-fn collect_files(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn collect_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
@@ -564,13 +565,7 @@ fn short_name(name: &str) -> String {
 pub fn sanitize_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|ch| {
-            if "\\/:*?\"<>|".contains(ch) {
-                '_'
-            } else {
-                ch
-            }
-        })
+        .map(|ch| if "\\/:*?\"<>|".contains(ch) { '_' } else { ch })
         .collect();
     let trimmed = cleaned.trim().trim_end_matches('.').trim();
     if trimmed.is_empty() {

@@ -413,7 +413,10 @@ fn ignore_source_app_normalizes_and_deduplicates() {
         "应转为小写并去掉空白"
     );
     assert!(
-        s.settings_draft.ignore_apps.iter().any(|x| x == "wechat.exe"),
+        s.settings_draft
+            .ignore_apps
+            .iter()
+            .any(|x| x == "wechat.exe"),
         "同时写入设置草稿，保存栏不会把新增名单覆盖掉"
     );
     assert!(!s.add_ignore_app("wechat.exe"), "重复添加应返回 false");
@@ -507,6 +510,7 @@ fn apply_source_apps_keeps_current_selection() {
 fn search_action_carries_match_mode_source_and_sort() {
     let mut s = state();
     let ctx = egui::Context::default();
+    s.mode = WindowMode::Manager;
     s.pending = None;
     s.active_gen = s.next_gen;
     s.search_text = "报告 会议".into();
@@ -536,6 +540,27 @@ fn search_action_carries_match_mode_source_and_sort() {
     assert!(s.set_sort(SortOrder::MostUsed));
     assert_eq!(s.sort, SortOrder::MostUsed);
     assert!(!s.set_sort(SortOrder::MostUsed), "相同值不重复查询");
+}
+
+#[test]
+fn picker_does_not_carry_source_filter() {
+    let mut s = state();
+    let ctx = egui::Context::default();
+    s.mode = WindowMode::Picker;
+    s.source_app = Some("chrome.exe".into());
+    s.pending = None;
+    s.active_gen = s.next_gen;
+    s.schedule_search(true);
+    let mut actions = Vec::new();
+    s.begin_frame(&ctx, &mut actions);
+    let search = actions
+        .iter()
+        .find_map(|action| match action {
+            UiAction::Search { source_app, .. } => Some(source_app.clone()),
+            _ => None,
+        })
+        .expect("应当发出 Search 动作");
+    assert_eq!(search, None, "候选窗不提供来源筛选");
 }
 
 #[test]

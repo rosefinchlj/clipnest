@@ -138,6 +138,18 @@ impl Store {
             }
         }
 
+        // 上次运行取消收藏但未退出清理的文件副本：启动时补一次。
+        match self.db.cleanup_favorite_copies() {
+            Ok(report) if report.clips > 0 || report.files > 0 || report.bytes > 0 => {
+                crate::logging::log(&format!(
+                    "Store 启动清理：删除 {} 条取消收藏的文件副本（{} 个文件，{} 字节）",
+                    report.clips, report.files, report.bytes
+                ));
+            }
+            Ok(_) => {}
+            Err(err) => crate::logging::warn(&format!("Store 启动清理收藏副本失败：{err}")),
+        }
+
         let mut dirty = false; // 需要发 ClipsChanged
         let mut stats_due = false; // 需要发 Stats
         let mut writes = 0usize; // 距上次 retention 的写入次数
@@ -216,6 +228,17 @@ impl Store {
             if shutdown {
                 break;
             }
+        }
+        // 退出时清理取消收藏的文件实体副本（延迟清理，避免反复收藏/取消抖动）。
+        match self.db.cleanup_favorite_copies() {
+            Ok(report) if report.clips > 0 || report.files > 0 || report.bytes > 0 => {
+                crate::logging::log(&format!(
+                    "Store 退出清理：删除 {} 条取消收藏的文件副本（{} 个文件，{} 字节）",
+                    report.clips, report.files, report.bytes
+                ));
+            }
+            Ok(_) => {}
+            Err(err) => crate::logging::warn(&format!("Store 退出清理收藏副本失败：{err}")),
         }
         // 退出前把 WAL 落盘，避免 -wal 文件残留
         if let Err(err) = self

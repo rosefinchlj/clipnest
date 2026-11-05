@@ -73,6 +73,17 @@ pub struct ClearOutcome {
     pub blobs: usize,
 }
 
+/// 取消收藏副本清理结果（退出/启动时调用）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FavoriteCleanupReport {
+    /// 处理的条目数。
+    pub clips: usize,
+    /// 物理删除的文件数。
+    pub files: usize,
+    /// 释放的字节数。
+    pub bytes: u64,
+}
+
 /// 独占的 SQLite 连接 + 数据目录 + FTS 能力标记。
 pub struct Db {
     pub conn: Connection,
@@ -455,15 +466,137 @@ impl Db {
     // -----------------------------------------------------------------------
 
     /// 设置收藏标记；取消收藏时一并取消置顶。返回是否存在该条目。
+    ///
+    /// 取消收藏不会立即删除文件实体，而是在 `favorite_cleanup` 写入标记；
+    /// 退出/下次启动时统一清理，避免用户反复收藏/取消时反复复制、删除大文件。
     pub fn set_favorited(&self, id: ClipId, favorited: bool) -> StoreResult<bool> {
-        let changed = self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
             "UPDATE clips
              SET favorited = ?1,
                  pinned = CASE WHEN ?1 = 0 THEN 0 ELSE pinned END
              WHERE id = ?2 AND deleted_at IS NULL",
             params![i32::from(favorited), id],
         )?;
+        if changed > 0 {
+            if favorited {
+                // 重新收藏：撤销待清理标记，现有副本继续复用。
+                tx.execute(
+                    "DELETE FROM favorite_cleanup WHERE clip_id = ?1",
+                    params![id],
+                )?;
+            } else {
+                // 先清掉旧标记，再只在确有文件实体时写入新标记。
+                tx.execute(
+                    "DELETE FROM favorite_cleanup WHERE clip_id = ?1",
+                    params![id],
+                )?;
+                tx.execute(
+                    "INSERT INTO favorite_cleanup (clip_id, blob_id, marked_at)
+                     SELECT id, blob_id, ?2 FROM clips
+                     WHERE id = ?1 AND kind = ?3 AND blob_id IS NOT NULL
+                       AND deleted_at IS NULL",
+                    params![id, now_ms(), ClipKind::Files.as_i32()],
+                )?;
+            }
+        }
+        tx.commit()?;
         Ok(changed > 0)
+    }
+
+    /// 清理取消收藏后遗留的文件实体副本（退出/启动时调用）。
+    ///
+    /// 只处理仍存在、且当前未收藏的条目；重新收藏会清掉标记，因此不会误删。
+    /// 删除副本后把 `files_json` 里的 `stored` 复位，重新收藏时会按源文件重新复制。
+    pub fn cleanup_favorite_copies(&self) -> StoreResult<FavoriteCleanupReport> {
+        let rows: Vec<(ClipId, String, Option<String>)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT c.id, fc.blob_id, c.files_json
+                 FROM favorite_cleanup fc
+                 JOIN clips c ON c.id = fc.clip_id
+                 WHERE c.favorited = 0",
+            )?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let mut report = FavoriteCleanupReport::default();
+        for (id, blob_id, files_json) in rows {
+            // 双保险：若复收藏标记尚未清除（例如手工改库），不要删除仍被收藏的实体。
+            let favorited: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM clips WHERE id = ?1 AND favorited = 1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            if favorited > 0 {
+                self.conn.execute(
+                    "DELETE FROM favorite_cleanup WHERE clip_id = ?1",
+                    params![id],
+                )?;
+                continue;
+            }
+            let dir = blob::favorite_files_dir(&self.data_dir, &blob_id);
+            let files = blob::collect_files(&dir).len();
+            let bytes: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COALESCE(byte_len, 0) FROM blobs WHERE id = ?1 AND kind = ?2",
+                    params![blob_id, blob::KIND_FILES],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            // DB 先提交，再删除物理目录；若删除失败，下次启动仍会看到标记并重试。
+            let tx = self.conn.unchecked_transaction()?;
+            if let Some(raw) = files_json {
+                if let Ok(mut entries) = serde_json::from_str::<Vec<FileEntry>>(&raw) {
+                    let mut changed = false;
+                    for entry in &mut entries {
+                        if entry.stored {
+                            entry.stored = false;
+                            entry.copy_state = None;
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        let json = serde_json::to_string(&entries)
+                            .map_err(|err| StoreError::Msg(format!("文件清单序列化失败：{err}")))?;
+                        tx.execute(
+                            "UPDATE clips SET files_json = ?1 WHERE id = ?2",
+                            params![json, id],
+                        )?;
+                    }
+                }
+            }
+            tx.execute(
+                "DELETE FROM blobs WHERE id = ?1 AND kind = ?2",
+                params![blob_id, blob::KIND_FILES],
+            )?;
+            tx.execute(
+                "DELETE FROM favorite_cleanup WHERE clip_id = ?1",
+                params![id],
+            )?;
+            tx.commit()?;
+            if dir.is_dir() {
+                if let Err(err) = std::fs::remove_dir_all(&dir) {
+                    crate::logging::warn(&format!(
+                        "清理收藏副本目录失败（{}）：{err}",
+                        dir.display()
+                    ));
+                }
+            }
+            report.clips += 1;
+            report.files += files;
+            report.bytes += bytes.max(0) as u64;
+        }
+        // 已经不存在/已收藏的残留标记统一清掉。
+        self.conn.execute(
+            "DELETE FROM favorite_cleanup
+             WHERE NOT EXISTS (SELECT 1 FROM clips WHERE clips.id = favorite_cleanup.clip_id)
+                OR EXISTS (SELECT 1 FROM clips WHERE clips.id = favorite_cleanup.clip_id AND favorited = 1)",
+            [],
+        )?;
+        Ok(report)
     }
 
     /// 设置置顶；只有收藏项可置顶。返回是否实际更新。
@@ -484,18 +617,20 @@ impl Db {
         id: ClipId,
         settings: &Settings,
     ) -> StoreResult<Option<FavoriteCopy>> {
-        let row: Option<(i32, Option<String>, Option<String>)> = self
+        let row: Option<(i32, Option<String>, Option<String>, i64)> = self
             .conn
             .query_row(
-                "SELECT kind, files_json, blob_id FROM clips WHERE id = ?1 AND deleted_at IS NULL",
+                "SELECT kind, files_json, blob_id, favorited
+                 FROM clips WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        let Some((kind, files_json, blob_id)) = row else {
+        let Some((kind, files_json, blob_id, favorited)) = row else {
             return Ok(None);
         };
-        if kind != ClipKind::Files.as_i32() {
+        if kind != ClipKind::Files.as_i32() || favorited == 0 {
+            // 收藏命令与取消收藏可能在队列里交错；已取消收藏就不再复制实体。
             return Ok(None);
         }
         let files: Vec<FileEntry> = files_json

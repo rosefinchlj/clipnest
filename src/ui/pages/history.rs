@@ -493,12 +493,14 @@ struct Columns {
     source_x: f32,
     time_x: f32,
     size_x: f32,
+    use_x: f32,
     pin_x: f32,
     star_x: f32,
     summary_x: f32,
     summary_w: f32,
     show_source: bool,
     show_size: bool,
+    show_use: bool,
 }
 
 impl Columns {
@@ -535,15 +537,23 @@ impl Columns {
         } else {
             74.0
         };
+        let use_w = if narrow {
+            0.0
+        } else if compact {
+            42.0
+        } else {
+            54.0
+        };
         let action_w = 58.0;
         let x = rect.left() + 10.0;
         let check_x = x;
         let type_x = check_x + check_w;
         let summary_x = type_x + type_w;
-        let source_x = rect.right() - action_w - size_w - time_w - source_w;
+        let source_x = rect.right() - action_w - use_w - size_w - time_w - source_w;
         let time_x = source_x + source_w;
         let size_x = time_x + time_w;
-        let pin_x = size_x + size_w + 14.0;
+        let use_x = size_x + size_w;
+        let pin_x = use_x + use_w + 14.0;
         let star_x = pin_x + 24.0;
         Self {
             check_x,
@@ -551,12 +561,14 @@ impl Columns {
             source_x,
             time_x,
             size_x,
+            use_x,
             pin_x,
             star_x,
             summary_x,
             summary_w: (source_x - summary_x - 8.0).max(20.0),
             show_source: !compact,
             show_size: !narrow,
+            show_use: !narrow,
         }
     }
 }
@@ -642,6 +654,8 @@ fn table(
         head_color,
         (if cols.show_size {
             cols.size_x
+        } else if cols.show_use {
+            cols.use_x
         } else {
             cols.pin_x - 8.0
         } - cols.time_x)
@@ -652,9 +666,19 @@ fn table(
             ui,
             Pos2::new(cols.size_x, head_y),
             "大小",
+            head_font.clone(),
+            head_color,
+            (cols.use_x - cols.size_x - 10.0).max(0.0),
+        );
+    }
+    if cols.show_use {
+        paint::paint_elided(
+            ui,
+            Pos2::new(cols.use_x, head_y),
+            "使用",
             head_font,
             head_color,
-            (cols.pin_x - cols.size_x - 10.0).max(0.0),
+            (cols.pin_x - cols.use_x - 10.0).max(0.0),
         );
     }
     // 表头分隔线
@@ -981,6 +1005,16 @@ fn paint_table_row(
             theme::text_secondary(),
         );
     }
+    // 使用次数（粘贴次数；窄窗口隐藏）
+    if cols.show_use {
+        painter.text(
+            Pos2::new(cols.use_x, y),
+            Align2::LEFT_CENTER,
+            format!("{} 次", item.use_count),
+            theme::font_aux(),
+            theme::text_secondary(),
+        );
+    }
     // 收藏星标（可点击；置顶仅在收藏列表）
     let star_center = Pos2::new(cols.star_x, y);
     let star_rect = Rect::from_center_size(star_center, Vec2::splat(20.0));
@@ -1091,8 +1125,7 @@ fn detail_panel(
     let mut tag_x = inner.left();
     {
         let tag_w = paint::text_width(ui, item.kind.label(), theme::font_aux()) + 16.0;
-        let tag_rect =
-            Rect::from_min_size(Pos2::new(tag_x, inner.top()), Vec2::new(tag_w, 20.0));
+        let tag_rect = Rect::from_min_size(Pos2::new(tag_x, inner.top()), Vec2::new(tag_w, 20.0));
         let mut child = ui.new_child(UiBuilder::new().max_rect(tag_rect));
         widgets::tag(&mut child, item.kind.label(), theme::kind_color(item.kind));
         tag_x = tag_rect.right() + 6.0;
@@ -1104,8 +1137,7 @@ fn detail_panel(
             theme::success()
         };
         let tag_w = paint::text_width(ui, label, theme::font_aux()) + 16.0;
-        let tag_rect =
-            Rect::from_min_size(Pos2::new(tag_x, inner.top()), Vec2::new(tag_w, 20.0));
+        let tag_rect = Rect::from_min_size(Pos2::new(tag_x, inner.top()), Vec2::new(tag_w, 20.0));
         let mut child = ui.new_child(UiBuilder::new().max_rect(tag_rect));
         widgets::tag(&mut child, label, color);
         tag_x = tag_rect.right() + 6.0;
@@ -1420,9 +1452,13 @@ fn detail_panel(
                         ui.horizontal(|ui| {
                             ui.label(theme::body(file.display_name()));
                             ui.label(
-                                egui::RichText::new(format!(" {} · {}", fmt_size(file.size), status))
-                                    .size(theme::SIZE_AUX)
-                                    .color(color),
+                                egui::RichText::new(format!(
+                                    " {} · {}",
+                                    fmt_size(file.size),
+                                    status
+                                ))
+                                .size(theme::SIZE_AUX)
+                                .color(color),
                             );
                         });
                         ui.label(theme::mono(file.path.clone()));
@@ -1436,8 +1472,12 @@ fn detail_panel(
                         if copy_state.retryable() {
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
-                                if widgets::button(ui, "重试保存副本", widgets::ButtonKind::Secondary)
-                                    .clicked()
+                                if widgets::button(
+                                    ui,
+                                    "重试保存副本",
+                                    widgets::ButtonKind::Secondary,
+                                )
+                                .clicked()
                                 {
                                     actions.push(UiAction::RetryFileCopy(item.id));
                                     state.toast("正在重试保存文件副本…");

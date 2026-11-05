@@ -881,3 +881,32 @@
 
 ### 说明
 - 收藏文件副本目前固定在 `数据目录\blobs\files\<hash>\`，不做用户自定义目录；取消收藏不删除副本，重复收藏复用已有副本。若后续需要自定义目录或清理未收藏副本，需要新增设置并处理备份/迁移兼容。
+
+## 41. v1.12.2（2026-11-05，收藏副本延迟清理 / 候选窗与托盘精简）
+
+### 用户反馈
+- 反复收藏/取消收藏是否会重新计算文件 hash、是否耗时？希望在数据库标记取消收藏，并在延迟一段时间或退出后自动清理。
+- 候选窗不需要「全部来源」；搜索框内提示要体现「任一/全部关键词」。
+- 候选窗支持上下拖动高度。
+- 列表显示使用次数（粘贴次数）。
+- 托盘菜单移除「恢复记录」「清空历史」。
+
+### 实现
+- `src/store/schema.rs`：新增 `favorite_cleanup(clip_id PRIMARY KEY, blob_id, marked_at)` 及 `idx_favorite_cleanup_marked`；旧库由 `CREATE TABLE IF NOT EXISTS` 自动补齐，不升 schema 版本。
+- `src/store/db.rs`：`set_favorited(false)` 在事务内为文件条目写入/刷新待清理标记，重新收藏时删除标记；新增 `cleanup_favorite_copies()`，退出/启动时删除未收藏条目的 `blobs/files/<blob_id>/`、`blobs` 行，把 `files_json` 的 `stored` 复位，并清理孤立标记。`save_favorite_files` 增加「已取消收藏则不再复制」的竞态保护，避免收藏复制命令与取消收藏交错时产生无主副本。
+- `src/store/blob.rs`：`collect_files` 提升为 `pub(crate)` 供清理统计文件数。
+- `src/store.rs`：Store 启动时清理上次退出遗留标记，Store 线程退出前再清理一次（WAL checkpoint 之前）。
+- `src/ui/picker.rs`：移除来源下拉与 `next_source`；搜索框占位按 `match_mode` 显示「空格分词，命中任意一个即可 / 空格分词，每个词都必须命中」；底部增加 6px 竖向拖拽区，`ViewportCommand::BeginResize(ResizeDirection::South)` 调整窗口高度。
+- `src/ui.rs`：`effective_source_app()` 在候选窗始终返回 None（管理台保留来源筛选）。
+- `src/ui/row.rs`：候选窗行右侧时间后追加「N 次」使用次数。
+- `src/ui/pages/history.rs`：管理台表格新增「使用」列（窄窗口隐藏），列宽与表头同步调整。
+- `src/sys/tray.rs`、`src/sys/state.rs`：移除托盘「清空历史…」「恢复记录」菜单项及 `MENU_CLEAR`/`MENU_RESUME` 处理；临时暂停仍保留，托盘「暂停记录」可清除永久+临时暂停。
+
+### 校验
+- `cargo test --release`：**237 passed / 0 failed / 1 ignored**（新增 `unfavorite_marks_copy_for_delayed_cleanup`、`picker_does_not_carry_source_filter`，并更新依赖收藏状态的文件复制/导出测试）。
+- `cargo check --all-targets`：零错误。
+- 手动验证建议：收藏一个文件条目 → 取消收藏 → 退出 ClipNest，确认 `数据目录\blobs\files\<blob_id>\` 被删除；再次收藏应重新复制源文件。候选窗不再出现来源下拉，底部拖动可改变高度，列表显示使用次数；托盘菜单无「清空历史」「恢复记录」。
+
+### 说明
+- 文件复制仍**不计算文件内容 hash**，只对剪贴板条目 hash + 文件路径字符串做 SHA-256；已有副本通过目录名与文件大小复用，不会每次复制。
+- 清理发生在退出/下次启动，不是固定延迟计时；运行期间反复收藏/取消不会触发删除，避免抖动。收藏副本目录仍固定，未新增自定义路径。
