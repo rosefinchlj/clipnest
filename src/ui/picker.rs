@@ -250,14 +250,6 @@ pub(crate) fn show(
             stroke,
         );
     }
-    if !time_open && state.picker_time_range != TimeRange::All {
-        ui.painter().circle_filled(
-            Pos2::new(toggle_rect.right() - 9.0, toggle_rect.top() + 8.0),
-            2.5,
-            theme::accent(),
-        );
-    }
-
     if time_open {
         let time_rect = Rect::from_min_size(
             Pos2::new(full.left(), time_top),
@@ -333,6 +325,8 @@ pub(crate) fn show(
     } else {
         render_list(state, ui, thumbs, actions, list_rect);
     }
+    // 选中行预览：图片 / 被截断的长文本，浮动卡片 + 淡入上浮动画。
+    paint_selection_preview(state, ui, thumbs, list_rect);
 
     // ---- 5) 底部提示条 ----
     let hint_rect = Rect::from_min_size(
@@ -686,7 +680,189 @@ fn row_context_menu(
     }
 }
 
-/// 空状态：无记录 / 搜索无结果（带「清除筛选」按钮）。
+/// 选中行是否值得弹预览：图片，或列表里放不下的长文本。
+fn preview_eligible(item: &ClipItem) -> bool {
+    match item.kind {
+        ClipKind::Image => item.blob_id.is_some(),
+        ClipKind::Text => item
+            .text
+            .as_deref()
+            .unwrap_or(item.preview.as_str())
+            .chars()
+            .count()
+            > 60
+            || item
+                .text
+                .as_deref()
+                .unwrap_or(item.preview.as_str())
+                .contains('\n'),
+        ClipKind::Files => false,
+    }
+}
+
+/// 选中行的浮动预览卡片：图片显示大图，长文本显示可滚动全文。
+///
+/// 卡片最后绘制（`Order::Foreground`），用淡入 + 上浮 6px 的 180ms 动画，
+/// 不拦截鼠标事件，列表仍可继续滚动/选择。
+fn paint_selection_preview(
+    state: &mut UiState,
+    ui: &mut egui::Ui,
+    thumbs: &mut ThumbCache,
+    list_rect: Rect,
+) {
+    let selected = state
+        .selected
+        .and_then(|idx| state.items.get(idx))
+        .cloned();
+    if state.date_picker_open || state.confirm.is_some() {
+        state.picker_preview_id = None;
+        state.picker_preview_at = None;
+        return;
+    }
+    let Some(item) = selected else {
+        state.picker_preview_id = None;
+        state.picker_preview_at = None;
+        return;
+    };
+    if !state.settings.preview_on_select || !preview_eligible(&item) {
+        state.picker_preview_id = None;
+        state.picker_preview_at = None;
+        return;
+    }
+    if state.picker_preview_id != Some(item.id) {
+        state.picker_preview_id = Some(item.id);
+        state.picker_preview_at = Some(Instant::now());
+    }
+    let Some(opened) = state.picker_preview_at else {
+        return;
+    };
+    let age = opened.elapsed().as_secs_f32();
+    let t = (age / 0.18).clamp(0.0, 1.0);
+    let ease = 1.0 - (1.0 - t).powi(3);
+    if t < 1.0 {
+        ui.ctx().request_repaint();
+    }
+
+    let card_w = if item.kind == ClipKind::Image {
+        380.0_f32.min(list_rect.width() - 32.0)
+    } else {
+        420.0_f32.min(list_rect.width() - 32.0)
+    };
+    let anchor = Pos2::new(
+        list_rect.center().x - card_w * 0.5,
+        (list_rect.center().y - 120.0 + (1.0 - ease) * 8.0).max(list_rect.top() + 8.0),
+    );
+    let keyword = state.search_text.clone();
+    let item_for_image = item.clone();
+    egui::Area::new(egui::Id::new("picker-selection-preview"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(anchor)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            ui.set_opacity(ease);
+            ui.set_max_width(card_w);
+            theme::popup_frame()
+                .inner_margin(egui::Margin::same(14))
+                .shadow(theme::window_shadow())
+                .show(ui, |ui| {
+                    ui.set_max_width(card_w - 28.0);
+                    match item_for_image.kind {
+                        ClipKind::Image => {
+                            ui.horizontal(|ui| {
+                                ui.label(theme::title("图片预览"));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(theme::weak(format!(
+                                            "{}x{} · {}",
+                                            item_for_image.width.unwrap_or(0),
+                                            item_for_image.height.unwrap_or(0),
+                                            crate::model::fmt_size(item_for_image.byte_len)
+                                        )));
+                                    },
+                                );
+                            });
+                            ui.add_space(8.0);
+                            if let Some(blob_id) = item_for_image.blob_id.as_deref() {
+                                if let Some(tex) = thumbs.get(blob_id) {
+                                    let (w, h) = fit_preview_size(
+                                        item_for_image.width,
+                                        item_for_image.height,
+                                        352.0,
+                                        236.0,
+                                    );
+                                    ui.add(
+                                        egui::Image::new(egui::load::SizedTexture::new(
+                                            tex.id(),
+                                            Vec2::new(w, h),
+                                        ))
+                                        .fit_to_exact_size(Vec2::new(w, h))
+                                        .corner_radius(egui::CornerRadius::same(8)),
+                                    );
+                                } else {
+                                    ui.label(theme::weak("图片加载中…"));
+                                }
+                            }
+                        }
+                        ClipKind::Text => {
+                            let full = item_for_image
+                                .text
+                                .as_deref()
+                                .unwrap_or(item_for_image.preview.as_str());
+                            let total_chars = full.chars().count();
+                            ui.horizontal(|ui| {
+                                ui.label(theme::title("文本预览"));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(theme::weak(format!(
+                                            "{total_chars} 字 · 使用 {} 次",
+                                            item_for_image.use_count
+                                        )));
+                                    },
+                                );
+                            });
+                            ui.add_space(6.0);
+                            let shown: String = full.chars().take(6000).collect();
+                            let wrap = (card_w - 36.0).max(160.0);
+                            let job = paint::layout_job_highlighted(
+                                &shown,
+                                theme::font_mono(),
+                                theme::text(),
+                                &keyword,
+                                theme::danger(),
+                                wrap,
+                            );
+                            egui::ScrollArea::vertical()
+                                .max_height(236.0)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    ui.add(egui::Label::new(job).wrap());
+                                    if total_chars > 6000 {
+                                        ui.add_space(4.0);
+                                        ui.label(theme::weak("…（仅预览前 6000 字）"));
+                                    }
+                                });
+                        }
+                        ClipKind::Files => {}
+                    }
+                });
+        });
+}
+
+/// 按原始宽高比缩放到给定最大尺寸内。
+fn fit_preview_size(
+    width: Option<u32>,
+    height: Option<u32>,
+    max_w: f32,
+    max_h: f32,
+) -> (f32, f32) {
+    let w = width.unwrap_or(0).max(1) as f32;
+    let h = height.unwrap_or(0).max(1) as f32;
+    let scale = (max_w / w).min(max_h / h).min(1.0);
+    ((w * scale).max(1.0), (h * scale).max(1.0))
+}
+
 fn empty_state(state: &mut UiState, ui: &mut egui::Ui, rect: Rect, actions: &mut Vec<UiAction>) {
     let searching = !state.search_text.trim().is_empty()
         || state.picker_filter != crate::model::ClipFilter::All;
@@ -772,6 +948,49 @@ mod tests {
         let mut actions = Vec::new();
         handle_command(state, command, theme::ROW_HEIGHT * 6.0, &mut actions);
         actions
+    }
+
+    #[test]
+    fn preview_only_for_images_and_long_text() {
+        let mut image = ClipItem {
+            kind: ClipKind::Image,
+            blob_id: Some("abc123".into()),
+            ..Default::default()
+        };
+        assert!(preview_eligible(&image));
+        image.blob_id = None;
+        assert!(!preview_eligible(&image));
+
+        let short = ClipItem {
+            kind: ClipKind::Text,
+            text: Some("短文本".into()),
+            ..Default::default()
+        };
+        assert!(!preview_eligible(&short));
+        let long = ClipItem {
+            kind: ClipKind::Text,
+            text: Some("长".repeat(80)),
+            ..Default::default()
+        };
+        assert!(preview_eligible(&long));
+        let multi_line = ClipItem {
+            kind: ClipKind::Text,
+            text: Some("第一行\n第二行".into()),
+            ..Default::default()
+        };
+        assert!(preview_eligible(&multi_line));
+        let files = ClipItem {
+            kind: ClipKind::Files,
+            ..Default::default()
+        };
+        assert!(!preview_eligible(&files));
+    }
+
+    #[test]
+    fn preview_size_keeps_aspect_ratio_and_limits() {
+        assert_eq!(fit_preview_size(Some(1920), Some(1080), 352.0, 236.0), (352.0, 198.0));
+        assert_eq!(fit_preview_size(Some(50), Some(40), 352.0, 236.0), (50.0, 40.0));
+        assert_eq!(fit_preview_size(None, None, 352.0, 236.0), (1.0, 1.0));
     }
 
     #[test]

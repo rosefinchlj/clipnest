@@ -993,6 +993,8 @@ pub struct Settings {
     pub ui_scale: f32,
     /// 时间范围筛选依据：最近使用（默认）或复制时间。
     pub time_filter_basis: TimeBasis,
+    /// 候选窗选中图片或长文本时，浮动显示内容预览。
+    pub preview_on_select: bool,
     pub hide_on_blur: bool,
 
     pub keep_clipboard_after_paste: bool,
@@ -1029,6 +1031,7 @@ impl Default for Settings {
             manager_size: [1060.0, 700.0],
             ui_scale: 1.0,
             time_filter_basis: TimeBasis::LastUsed,
+            preview_on_select: true,
             hide_on_blur: true,
 
             keep_clipboard_after_paste: true,

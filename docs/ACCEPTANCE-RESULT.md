@@ -983,3 +983,26 @@
 ### 说明
 - 弹窗仍不使用点击遮罩关闭，避免打开弹窗的同一次点击把它误关；需点「取消」或按 Esc。
 - 图片行行距修复沿用 v1.12.4。
+
+## 45. v1.13.0（2026-11-05，候选窗选中行预览 / 移除筛选蓝点）
+
+### 用户反馈
+- 筛选按钮右上角多了一个蓝点，看起来像未读标记。
+- 希望候选窗选中图片或溢出文本行时，弹出带弹框动画的预览，并在设置中提供预览开关。
+
+### 实现
+- `src/ui/picker.rs` 删除筛选按钮上的 active-filter 蓝点（它只表示时间筛选已生效）。
+- `src/model.rs` 新增 `Settings.preview_on_select`，默认 `true`；旧配置缺字段时按默认开启。
+- `src/ui/pages/settings.rs` 行为区新增「选中后预览图片 / 长文本」开关。
+- `src/ui.rs` 新增 `picker_preview_id` / `picker_preview_at`，按选中项变化驱动动画。
+- `src/ui/picker.rs` 新增 `paint_selection_preview`：
+  - 仅在候选窗、预览开关开启、且无日期弹窗/确认框时显示；
+  - 图片（有 `blob_id`）显示缩略图大图；文本超过 60 字或包含换行时显示完整正文，最多 6000 字，沿用关键字红色高亮；文件不预览；
+  - 使用 `egui::Area(Order::Foreground)` + `set_opacity` + ease-out 位移实现 180ms 淡入上浮；
+  - 卡片居中锚定列表区域，图片最大 352×236，文本卡片宽 420。
+- `src/ui/preview.rs` 新增 `CLIPNEST_PREVIEW_SELECT`，用于截图时指定选中下标。
+
+### 校验
+- `cargo test --release`：**239 passed / 0 failed / 1 ignored**（新增选中预览条件、等比缩放测试）。
+- 预览实测：选中图片显示「图片预览 / 1920x1080 · 2.20 MB」+ 大图；选中长文本显示「文本预览 / 88 字 · 使用 3 次」+ 完整正文；日期弹窗或确认框打开时预览自动隐藏。
+- `cargo build --release` + 9 尺寸图标 + `--selftest` 15 项 PASS。

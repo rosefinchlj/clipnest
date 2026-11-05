@@ -471,6 +471,18 @@ fn behavior_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<Ui
                 }
             },
         );
+        // 选中行内容预览
+        setting_row(
+            ui,
+            "选中后预览图片 / 长文本",
+            "候选窗中用 ↑↓ 或鼠标选中图片、长文本时，浮动显示大图或完整文字；关闭可减少打扰",
+            |ui| {
+                let mut v = state.settings_draft.preview_on_select;
+                if widgets::switch(ui, &mut v).changed() {
+                    state.settings_draft.preview_on_select = v;
+                }
+            },
+        );
         // 粘贴后保留剪贴板
         setting_row(
             ui,

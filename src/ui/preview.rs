@@ -188,6 +188,11 @@ impl PreviewState {
             elapsed_ms: 1,
         });
         state.selected = Some(0);
+        if let Ok(sel) = std::env::var("CLIPNEST_PREVIEW_SELECT") {
+            if let Ok(index) = sel.parse::<usize>() {
+                state.selected = Some(index);
+            }
+        }
         state.detail_open = true;
         if mode == "picker" {
             if let Ok(text) = std::env::var("CLIPNEST_PREVIEW_TOAST") {

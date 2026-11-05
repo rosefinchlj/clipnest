@@ -243,6 +243,10 @@ pub struct UiState {
     picker_scroll_offset: f32,
     /// 候选窗本次出现的时间（用于 160ms 淡入；不改变窗口本身的位置）。
     picker_appear_at: Option<Instant>,
+    /// 当前正在预览的条目 id（候选窗选中后浮动预览）。
+    picker_preview_id: Option<ClipId>,
+    /// 预览打开时间（用于弹出动画）。
+    picker_preview_at: Option<Instant>,
     stats: Stats,
 
     // ---- 搜索 ----
@@ -336,6 +340,8 @@ impl UiState {
             pending_scroll_row: None,
             picker_scroll_offset: 0.0,
             picker_appear_at: None,
+            picker_preview_id: None,
+            picker_preview_at: None,
             stats: Stats::default(),
             search_text: String::new(),
             search_focus: true,
