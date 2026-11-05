@@ -206,6 +206,12 @@ pub(crate) fn show(
         ) {
             next_mode = Some(mode);
         }
+        ui.interact(
+            mode_rect,
+            egui::Id::new("picker-match-mode-hint"),
+            egui::Sense::hover(),
+        )
+        .on_hover_text(state.match_mode.hint());
         let sort_rect = Rect::from_min_size(
             Pos2::new(left, meta_top),
             Vec2::new(104.0, theme::CHIP_HEIGHT),

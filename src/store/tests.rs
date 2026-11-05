@@ -1485,3 +1485,20 @@ fn database_encryption_roundtrip_and_disable() {
     let db = Db::open_in_dir(&dir, DbOptions::default()).expect("关闭加密后应能用明文打开");
     assert_eq!(db.counts().unwrap().total, 1);
 }
+
+#[test]
+fn database_encryption_auto_unlocks_from_env_key() {
+    let (dir, mut db) = open_db("db-encryption-auto-key");
+    db.upsert(&text_input_at("自动解锁测试", now_ms())).unwrap();
+    assert!(db.set_encryption(true).unwrap());
+    drop(db);
+
+    // 模拟应用重启：DbOptions::from_env 读取 db.key + 加密头，自动带出密钥。
+    let options = DbOptions::from_env(&dir);
+    assert!(
+        options.key_hex.is_some(),
+        "加密库重启时应自动从数据目录加载 DPAPI 保护的密钥"
+    );
+    let db = Db::open_in_dir(&dir, options).expect("重启后应能自动解锁加密库");
+    assert_eq!(db.counts().unwrap().total, 1);
+}

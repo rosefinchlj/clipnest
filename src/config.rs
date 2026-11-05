@@ -3,7 +3,7 @@
 //! 数据目录默认 `%APPDATA%\ClipNest`，可用环境变量 `CLIPNEST_DATA_DIR` 覆盖
 //! （自动化测试与 `--selftest` 使用临时目录，绝不碰用户真实数据）。
 
-use crate::model::Settings;
+use crate::model::{RuntimeState, Settings};
 use std::fs;
 use std::path::PathBuf;
 
@@ -47,6 +47,11 @@ pub fn restored_dir() -> PathBuf {
 
 pub fn settings_path() -> PathBuf {
     data_dir().join("settings.json")
+}
+
+/// 运行期状态文件（主进程写、管理台读；不持久化为用户设置）。
+pub fn runtime_state_path() -> PathBuf {
+    data_dir().join("runtime.json")
 }
 
 /// 创建所有需要的目录（幂等）。
@@ -109,5 +114,22 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
         serde_json::to_string_pretty(settings).map_err(|e| format!("序列化设置失败: {e}"))?;
     fs::write(&tmp, json).map_err(|e| format!("写临时设置失败: {e}"))?;
     fs::rename(&tmp, &path).map_err(|e| format!("替换设置文件失败: {e}"))?;
+    Ok(())
+}
+
+/// 读取主进程写入的运行期状态；缺失/损坏/正在写入时返回 None。
+pub fn read_runtime_state() -> Option<RuntimeState> {
+    let raw = fs::read_to_string(runtime_state_path()).ok()?;
+    serde_json::from_str::<RuntimeState>(&raw).ok()
+}
+
+/// 原子写运行期状态（先写 .tmp，再 rename 覆盖）。
+pub fn write_runtime_state(state: &RuntimeState) -> Result<(), String> {
+    ensure_dirs().map_err(|e| format!("创建数据目录失败: {e}"))?;
+    let path = runtime_state_path();
+    let tmp = path.with_extension("json.tmp");
+    let json = serde_json::to_string(state).map_err(|e| format!("序列化运行期状态失败: {e}"))?;
+    fs::write(&tmp, json).map_err(|e| format!("写临时运行期状态失败: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("替换运行期状态失败: {e}"))?;
     Ok(())
 }

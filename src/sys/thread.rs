@@ -15,7 +15,7 @@
 
 
 use crate::logging;
-use crate::model::{Event, Settings, SysCmd};
+use crate::model::{Event, Settings, SysCmd, TempPause};
 use crate::sys::state::SysState;
 use crate::sys::{hotkey, tray, util, SysDiag};
 use eframe::egui;
@@ -56,6 +56,8 @@ pub const ACTIVATE_MAGIC: usize = 0x434C_4E53;
 pub const QUIT_MAGIC: usize = 0x434C_4E51;
 /// 设置更新（子进程 → 主进程）：lpData 指向 UTF-8 JSON，cbData=字节数。
 pub const SETTINGS_MAGIC: usize = 0x434C_4E54;
+/// 临时暂停控制（子进程 → 主进程）：lpData 指向 `TempPause` 的 UTF-8 JSON。
+pub const TEMP_PAUSE_MAGIC: usize = 0x434C_4E50;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -130,7 +132,11 @@ fn dispatch_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Opt
             Some(0)
         }
         WM_TIMER if wparam == FOREGROUND_POLL_TIMER_ID => {
-            with_state(hwnd, |state| state.update_foreground());
+            with_state(hwnd, |state| {
+                state.update_foreground();
+                // 定时检查临时暂停到期，保证没有剪贴板活动时托盘/设置页也能恢复。
+                state.refresh_temp_pause();
+            });
             Some(0)
         }
         WM_COPYDATA => {
@@ -172,6 +178,17 @@ fn dispatch_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Opt
                         with_state(hwnd, |state| state.apply_external_settings(boxed));
                     }
                     Err(err) => logging::warn(&format!("子进程设置数据解析失败：{err}")),
+                }
+            } else if cds.dwData == TEMP_PAUSE_MAGIC && cds.cbData > 0 && cds.cbData <= 4096 {
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize)
+                };
+                match serde_json::from_slice::<TempPause>(bytes) {
+                    Ok(pause) => {
+                        logging::log("收到管理台子进程的临时暂停请求（WM_COPYDATA）");
+                        with_state(hwnd, |state| state.set_temp_pause(pause));
+                    }
+                    Err(err) => logging::warn(&format!("临时暂停数据解析失败：{err}")),
                 }
             }
             Some(1) // TRUE：消息已处理
@@ -469,6 +486,26 @@ pub fn send_settings_update(settings: &Settings) -> bool {
     };
     let cds = COPYDATASTRUCT {
         dwData: SETTINGS_MAGIC,
+        cbData: bytes.len() as u32,
+        lpData: bytes.as_ptr() as *mut _,
+    };
+    let ok = unsafe {
+        SendMessageW(hwnd as HWND, WM_COPYDATA, 0, &cds as *const COPYDATASTRUCT as isize)
+    };
+    ok != 0
+}
+
+/// 把临时暂停请求推送给主进程（管理台子进程用）。
+pub fn send_temp_pause_update(pause: TempPause) -> bool {
+    let hwnd = find_existing_instance();
+    if hwnd == 0 || unsafe { IsWindow(hwnd as HWND) } == 0 {
+        return false;
+    }
+    let Ok(bytes) = serde_json::to_vec(&pause) else {
+        return false;
+    };
+    let cds = COPYDATASTRUCT {
+        dwData: TEMP_PAUSE_MAGIC,
         cbData: bytes.len() as u32,
         lpData: bytes.as_ptr() as *mut _,
     };
