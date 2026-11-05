@@ -8,7 +8,9 @@
 //! - 粘贴直接写剪贴板并 `restore_and_paste` 到主进程传入的 target；
 //! - 设置保存后通过 WM_COPYDATA 通知主进程立即应用（同时落盘 settings.json）。
 
-use crate::model::{Event, SearchQuery, Settings, StoreCmd, ThemeMode};
+use crate::model::{
+    fmt_size, BackupEvent, Event, SearchQuery, Settings, StoreCmd, ThemeMode,
+};
 use crate::store::StoreHandle;
 use crate::ui::{ManagerPage, ThumbCache, UiAction, UiState};
 use eframe::egui;
@@ -233,6 +235,23 @@ impl ManagerApp {
                     }
                 }
                 Event::Toast(message) => self.ui.toast(message),
+                Event::Backup(event) => match event {
+                    BackupEvent::Created(report) => self.ui.toast(format!(
+                        "已创建完整备份：{} 条 / {} 张图片 / {} 个文件副本，共 {}",
+                        report.clips,
+                        report.images,
+                        report.favorite_files,
+                        fmt_size(report.bytes)
+                    )),
+                    BackupEvent::Inspected(preview) => self.ui.set_backup_preview(*preview),
+                    BackupEvent::Restored(report) => self.ui.toast(format!(
+                        "恢复完成：新增 {} 条，跳过 {} 条（重复或缺失），备份大小 {}",
+                        report.inserted,
+                        report.skipped,
+                        fmt_size(report.bytes)
+                    )),
+                    BackupEvent::Failed(reason) => self.ui.toast(reason),
+                },
                 Event::PastePayload(payload) => {
                     let Some((pending_id, plain)) = self.paste_pending else {
                         continue;
@@ -372,6 +391,32 @@ impl ManagerApp {
                         let _ = tx.send(StoreCmd::ExportJson { path: path.clone() });
                         self.ui.toast(format!("正在导出到 {}", path.display()));
                     }
+                }
+            }
+            UiAction::CreateBackup => {
+                let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                let default_name = format!("clipnest-backup-{stamp}.cnbak");
+                if let Some(path) =
+                    crate::ui::export_dialog::choose_backup_save_path(&default_name)
+                {
+                    if let Some(tx) = &self.store_tx {
+                        let _ = tx.send(StoreCmd::CreateBackup { path });
+                        self.ui.toast("正在创建完整备份…");
+                    }
+                }
+            }
+            UiAction::RestoreBackup => {
+                if let Some(path) = crate::ui::export_dialog::choose_backup_open_path() {
+                    if let Some(tx) = &self.store_tx {
+                        let _ = tx.send(StoreCmd::InspectBackup { path });
+                        self.ui.toast("正在检查备份文件…");
+                    }
+                }
+            }
+            UiAction::ConfirmRestore { path } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::RestoreBackup { path });
+                    self.ui.toast("正在恢复备份（合并导入）…");
                 }
             }
             UiAction::OpenDataDir => {

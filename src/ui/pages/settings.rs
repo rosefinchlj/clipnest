@@ -600,6 +600,23 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
                 actions.push(UiAction::RefreshStats);
             }
         });
+        ui.add_space(10.0);
+
+        ui.label(theme::row_title("完整备份 / 恢复"));
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if widgets::button(ui, "完整备份…", widgets::ButtonKind::Primary).clicked() {
+                actions.push(UiAction::CreateBackup);
+            }
+            if widgets::button(ui, "从备份恢复…", widgets::ButtonKind::Secondary).clicked() {
+                actions.push(UiAction::RestoreBackup);
+            }
+        });
+        ui.add_space(6.0);
+        ui.label(theme::weak(
+            "完整备份为单个 .cnbak 文件，包含数据库快照、图片/缩略图与收藏文件副本，并带 manifest 校验。\
+             恢复为合并导入：按内容 hash 去重、已存在的条目跳过，恢复失败不会破坏现有数据。",
+        ));
         ui.add_space(14.0);
         ui.label(theme::row_title("危险操作"));
         ui.add_space(6.0);
@@ -623,7 +640,8 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
         });
         ui.add_space(8.0);
         ui.label(theme::weak(
-            "提示：清空历史不可恢复（含回收站）；收藏项也会被清空。导出为 JSON；导入与重建索引计划在 v1.1 提供。",
+            "提示：清空历史不可恢复（含回收站）；收藏项也会被清空。迁移或换机请使用上方「完整备份」；\
+             导出 JSON 仅包含文本与元数据，不含图片与文件副本。",
         ));
     });
 }
