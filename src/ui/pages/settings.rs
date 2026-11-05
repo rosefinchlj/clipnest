@@ -4,7 +4,9 @@
 //! [`UiAction::SetSettings`] 交给 Lead 落盘；开自启/暂停/导出/清空等即时动作
 //! 通过对应 [`UiAction`] 发送。**UI 不直接写设置文件**。
 
-use crate::model::{fmt_size, PasteKey, SelectionPreset, Settings, ThemeMode};
+use crate::model::{
+    fmt_size, now_ms, ExitClearPolicy, PasteKey, SelectionPreset, Settings, TempPause, ThemeMode,
+};
 use crate::ui::{theme, widgets, UiAction, UiState};
 use eframe::egui::{self, Pos2, Rect, UiBuilder, Vec2};
 
@@ -487,7 +489,7 @@ fn behavior_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<Ui
         setting_row(
             ui,
             "暂停剪贴板记录",
-            "暂停后不采集新内容（托盘菜单也可切换）",
+            "暂停后不采集新内容（托盘菜单也可切换）；保存后重启仍生效",
             |ui| {
                 let mut v = state.settings_draft.pause_capture;
                 if widgets::switch(ui, &mut v).changed() {
@@ -503,6 +505,36 @@ fn behavior_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<Ui
                 }
             },
         );
+
+        // 临时暂停（A3：仅运行期有效，不写入设置文件）
+        ui.add_space(10.0);
+        ui.label(theme::row_title("临时暂停"));
+        ui.label(theme::weak(format!(
+            "仅本次运行有效，到期或重启 ClipNest 自动恢复；当前：{}",
+            state.temp_pause.label()
+        )));
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let active = !matches!(state.temp_pause, TempPause::Off);
+            if widgets::button(ui, "暂停 15 分钟", widgets::ButtonKind::Secondary).clicked() {
+                actions.push(UiAction::SetTempPause(TempPause::Timed {
+                    until_ms: now_ms() + 15 * 60_000,
+                }));
+            }
+            if widgets::button(ui, "暂停 1 小时", widgets::ButtonKind::Secondary).clicked() {
+                actions.push(UiAction::SetTempPause(TempPause::Timed {
+                    until_ms: now_ms() + 60 * 60_000,
+                }));
+            }
+            if widgets::button(ui, "暂停到重启", widgets::ButtonKind::Secondary).clicked() {
+                actions.push(UiAction::SetTempPause(TempPause::UntilRestart));
+            }
+            ui.add_enabled_ui(active, |ui| {
+                if widgets::button(ui, "恢复记录", widgets::ButtonKind::Primary).clicked() {
+                    actions.push(UiAction::SetTempPause(TempPause::Off));
+                }
+            });
+        });
     });
 }
 
@@ -601,6 +633,31 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
             }
         });
         ui.add_space(14.0);
+        ui.label(theme::row_title("退出时自动清理"));
+        ui.add_space(4.0);
+        setting_row(
+            ui,
+            "退出 ClipNest 时清理历史",
+            "清理由 Store 线程完成，确认落盘后才退出进程",
+            |ui| {
+                let mut policy = state.settings_draft.exit_clear_policy;
+                egui::ComboBox::from_id_salt("exit_clear_policy")
+                    .selected_text(policy.label())
+                    .width(170.0)
+                    .show_ui(ui, |ui| {
+                        for candidate in ExitClearPolicy::ALL {
+                            ui.selectable_value(&mut policy, candidate, candidate.label());
+                        }
+                    });
+                if policy != state.settings_draft.exit_clear_policy {
+                    state.settings_draft.exit_clear_policy = policy;
+                }
+            },
+        );
+        ui.label(theme::weak(
+            state.settings_draft.exit_clear_policy.description(),
+        ));
+        ui.add_space(14.0);
         ui.label(theme::row_title("危险操作"));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -623,7 +680,7 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
         });
         ui.add_space(8.0);
         ui.label(theme::weak(
-            "提示：清空历史不可恢复（含回收站）；收藏项也会被清空。导出为 JSON；导入与重建索引计划在 v1.1 提供。",
+            "提示：清空历史不可恢复（含回收站）。清空前会弹窗确认：默认只清空未收藏记录；勾选「同时清空收藏」并输入确认词，才会连收藏记录与副本一起删除。",
         ));
     });
 }

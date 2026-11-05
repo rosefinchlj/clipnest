@@ -48,6 +48,17 @@ impl UpsertOutcome {
     }
 }
 
+/// 清空历史的结果（A2）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClearOutcome {
+    /// 被删除的条目数（含回收站）。
+    pub cleared: usize,
+    /// 因收藏而保留下来的条目数。
+    pub kept: usize,
+    /// 涉及并释放的 blob 实体数。
+    pub blobs: usize,
+}
+
 /// 独占的 SQLite 连接 + 数据目录 + FTS 能力标记。
 pub struct Db {
     pub conn: Connection,
@@ -386,19 +397,27 @@ impl Db {
             settings.max_file_bytes,
             settings.max_favorite_file_bytes,
         )?;
-        // 只有确实存在实体目录时才把 blob_id 写回（超限/失败时保留「仅路径」语义）
+        // 只有确实存在实体目录时才把 blob_id 写回（超限/失败时保留「仅路径」语义）；
+        // copy_state（每个文件的副本状态）无论成败都写回，便于 UI 展示与「重试」。
         let has_entity = copy
             .blob_id
             .as_deref()
             .map(|blob_id| blob::favorite_files_dir(&self.data_dir, blob_id).is_dir())
             .unwrap_or(false);
-        if has_entity {
-            if let Some(blob_id) = copy.blob_id.as_deref() {
-                let json = serde_json::to_string(&copy.files)
-                    .map_err(|err| StoreError::Msg(format!("文件清单序列化失败：{err}")))?;
+        if has_entity || copy.files.iter().any(|file| file.copy_state.is_some()) {
+            let json = serde_json::to_string(&copy.files)
+                .map_err(|err| StoreError::Msg(format!("文件清单序列化失败：{err}")))?;
+            if has_entity {
+                if let Some(blob_id) = copy.blob_id.as_deref() {
+                    self.conn.execute(
+                        "UPDATE clips SET files_json = ?1, blob_id = COALESCE(blob_id, ?2) WHERE id = ?3",
+                        params![json, blob_id, id],
+                    )?;
+                }
+            } else {
                 self.conn.execute(
-                    "UPDATE clips SET files_json = ?1, blob_id = COALESCE(blob_id, ?2) WHERE id = ?3",
-                    params![json, blob_id, id],
+                    "UPDATE clips SET files_json = ?1 WHERE id = ?2",
+                    params![json, id],
                 )?;
             }
         }
@@ -543,19 +562,86 @@ impl Db {
         Ok(deleted)
     }
 
-    /// 清空历史。`delete_blobs=true` 时同时删除图片/文件副目录（spec §16：清理可复选）。
-    pub fn clear(&self, delete_blobs: bool) -> StoreResult<()> {
+    /// 清空历史（A2）：默认只删未收藏记录并保留收藏文件副本。
+    ///
+    /// - `include_favorites=false`：只删 `favorited = 0` 的行（含回收站中的未收藏项），
+    ///   收藏项、收藏文件实体副本目录和它们的 blob 行全部原样保留；
+    /// - `include_favorites=true`：连同收藏一起删除，并打开 `secure_delete`
+    ///   并在提交后 `VACUUM`，避免被删除的文本残留在数据库空闲页中；
+    /// - `delete_blobs=true` 时，被删除记录引用的图片/文件实体一并物理删除
+    ///   （收藏项若保留，其被共享的 blob 因引用计数未归零而不会被删）。
+    pub fn clear(&self, delete_blobs: bool, include_favorites: bool) -> StoreResult<ClearOutcome> {
+        // 含收藏的清空会把历史文本从页中抹掉：先开启 secure_delete。
+        if include_favorites {
+            let _ = self.conn.execute_batch("PRAGMA secure_delete = ON;");
+        }
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM clips", [])?;
-        // blob 元数据总是清空；物理文件是否删除由调用方决定（避免留下悬空引用）
-        tx.execute("DELETE FROM blobs", [])?;
+        // 1) 收集待删除行的 blob 引用（事务内读取，避免并发变化）。
+        let sql = if include_favorites {
+            "SELECT id, blob_id FROM clips"
+        } else {
+            "SELECT id, blob_id FROM clips WHERE favorited = 0"
+        };
+        let mut stmt = tx.prepare(sql)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, ClipId>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let kept: usize = if include_favorites {
+            0
+        } else {
+            tx.query_row(
+                "SELECT COUNT(*) FROM clips WHERE favorited = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )? as usize
+        };
+        // 2) 删除行（FTS 触发器同步删除索引）。
+        let cleared = if include_favorites {
+            tx.execute("DELETE FROM clips", [])?;
+            rows.len()
+        } else {
+            tx.execute("DELETE FROM clips WHERE favorited = 0", [])?
+        };
+        // 3) blob 引用：删除实体文件时走 release（引用计数归零才物理删除），
+        //    不删实体时只清空元数据行，保留磁盘文件（由 cleanup_orphans/设置决定）。
+        let mut blob_ids: Vec<String> = rows.into_iter().filter_map(|(_, blob)| blob).collect();
+        blob_ids.sort();
+        blob_ids.dedup();
+        for blob_id in &blob_ids {
+            if delete_blobs {
+                blob::release_blob(&tx, &self.data_dir, blob_id)?;
+            } else {
+                tx.execute("DELETE FROM blobs WHERE id = ?1", params![blob_id])?;
+            }
+        }
+        // 4) 没有被任何剩余条目引用的 blob 行一并清掉（不删磁盘文件，除非 delete_blobs）。
+        if include_favorites && !delete_blobs {
+            tx.execute("DELETE FROM blobs", [])?;
+        }
         tx.commit()?;
-        if delete_blobs {
+        // 5) 含收藏的清空后压缩数据库，抹掉空闲页中的残留内容。
+        if include_favorites {
+            let _ = self.conn.execute_batch("VACUUM;");
+            let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+        // 5.1) 删除实体且没有保留任何条目：清空 blobs 目录，顺带清掉旧版本遗留的孤儿文件。
+        if delete_blobs && kept == 0 {
             if let Err(err) = blob::remove_all_blob_dirs(&self.data_dir) {
                 crate::logging::warn(&format!("清空 blob 目录失败：{err}"));
             }
         }
-        Ok(())
+        crate::logging::log(&format!(
+            "清空历史：删除 {cleared} 条、保留收藏 {kept} 条、{} 个 blob 实体",
+            blob_ids.len()
+        ));
+        Ok(ClearOutcome {
+            cleared,
+            kept,
+            blobs: blob_ids.len(),
+        })
     }
 }
 

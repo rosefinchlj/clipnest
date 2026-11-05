@@ -241,6 +241,18 @@ fn main() {
                 logging::init(&config::logs_dir(), "info");
                 logging::log("检测到已有 ClipNest 实例，尝试唤起后退出");
                 let activated = sys::activate_existing_instance();
+                // A5：不静默退出 —— 用系统消息框明确告知用户，并提示旧版本如何重启。
+                let version = env!("CARGO_PKG_VERSION");
+                let text = if activated {
+                    format!(
+                        "ClipNest 已在运行（v{version}）。\n\n已唤起现有窗口。\n如果界面看起来是旧版本，请从托盘菜单退出 ClipNest 后重新启动新版本。"
+                    )
+                } else {
+                    format!(
+                        "ClipNest 已在运行（v{version}），但唤起现有窗口失败。\n\n请从托盘图标退出 ClipNest 后重新启动；若仍失败，请检查任务管理器中是否有残留的 ClipNest 进程。"
+                    )
+                };
+                sys::util::message_box("ClipNest · 剪贴匣", &text, true);
                 eprintln!(
                     "ClipNest 已在运行（{}），本实例退出",
                     if activated {

@@ -8,7 +8,7 @@
 use crate::clipboard;
 use crate::config;
 use crate::logging;
-use crate::model::{Event, Settings, SysCmd};
+use crate::model::{now_ms, Event, Settings, SysCmd, TempPause};
 use crate::sys::thread::HOTKEY_ID_PICKER;
 use crate::sys::{autostart, hotkey, paste, tray, util, SysDiag};
 use eframe::egui;
@@ -37,6 +37,8 @@ pub(crate) struct SysState {
     pub(crate) cmd_rx: Receiver<SysCmd>,
     /// 最近一个不属于本进程的前台窗口（粘贴目标兜底；托盘菜单/已唤出面板时使用）。
     pub(crate) last_external_fg: isize,
+    /// 运行期临时暂停（A3）：不写入 settings.json，重启即失效。
+    pub(crate) temp_pause: TempPause,
 }
 
 impl SysState {
@@ -96,9 +98,14 @@ impl SysState {
 
     /// `WM_CLIPBOARDUPDATE`：读取 → 归一化 → `Event::Captured`。
     pub(crate) fn on_clipboard_update(&mut self) {
+        self.refresh_temp_pause();
         let settings = self.settings_snapshot();
         if settings.pause_capture {
             logging::debug("剪贴板有变化，但已暂停记录，跳过");
+            return;
+        }
+        if self.temp_pause.is_active() {
+            logging::debug("剪贴板有变化，但处于临时暂停，跳过");
             return;
         }
 
@@ -184,6 +191,8 @@ impl SysState {
 
     /// 周期记录外部前台窗口（由 `WM_TIMER` 每 300ms 调用）。
     pub(crate) fn update_foreground(&mut self) {
+        // 借这个 300ms 的定时器顺带检查临时暂停是否到期（A3）。
+        self.refresh_temp_pause();
         let fg = util::foreground_window_handle();
         if fg == 0 {
             return;
@@ -226,6 +235,14 @@ impl SysState {
                 });
             }
             tray::MENU_PAUSE => self.toggle_pause(),
+            tray::MENU_PAUSE_15 => self.set_temp_pause(TempPause::Timed {
+                until_ms: now_ms() + 15 * 60_000,
+            }),
+            tray::MENU_PAUSE_60 => self.set_temp_pause(TempPause::Timed {
+                until_ms: now_ms() + 60 * 60_000,
+            }),
+            tray::MENU_PAUSE_RESTART => self.set_temp_pause(TempPause::UntilRestart),
+            tray::MENU_RESUME => self.resume_capture(),
             tray::MENU_CLEAR => {
                 // 清空需要 UI 二次确认（spec §6.4）
                 self.emit(Event::ManagerRequested {
@@ -260,15 +277,85 @@ impl SysState {
             s.pause_capture
         });
         self.save_settings();
-        if let Some(tray) = &self.tray {
-            tray.set_paused(paused);
-        }
+        self.sync_tray_pause_state();
         logging::log(&format!("暂停记录：{}", if paused { "开" } else { "关" }));
         self.toast(if paused {
             "已暂停记录剪贴板"
         } else {
             "已恢复记录剪贴板"
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // 临时暂停（A3：运行期生效，不写入 settings.json）
+    // -----------------------------------------------------------------------
+
+    /// 当前是否处于临时暂停（顺带处理到期恢复）。
+    pub(crate) fn temp_pause_active(&mut self) -> bool {
+        self.refresh_temp_pause();
+        self.temp_pause.is_active()
+    }
+
+    /// 设置临时暂停；`Off` 表示恢复记录。
+    pub(crate) fn set_temp_pause(&mut self, pause: TempPause) {
+        self.temp_pause = pause;
+        logging::log(&format!("临时暂停：{}", pause.label()));
+        self.emit(Event::TempPauseChanged(pause));
+        self.sync_tray_pause_state();
+        if matches!(pause, TempPause::Off) {
+            self.toast("已恢复记录剪贴板");
+        } else {
+            self.toast(format!("已暂停记录：{}", pause.label()));
+        }
+    }
+
+    /// 到期自动恢复（托盘/设置页会同步刷新）。
+    fn refresh_temp_pause(&mut self) {
+        let TempPause::Timed { until_ms } = self.temp_pause else {
+            return;
+        };
+        if now_ms() < until_ms {
+            return;
+        }
+        self.temp_pause = TempPause::Off;
+        logging::log("临时暂停已到期，恢复记录");
+        self.emit(Event::TempPauseChanged(TempPause::Off));
+        self.sync_tray_pause_state();
+        self.toast("临时暂停已结束，已恢复记录剪贴板");
+    }
+
+    /// 恢复所有暂停（永久暂停 + 临时暂停）。
+    fn resume_capture(&mut self) {
+        let was_permanent = self.with_settings(|s| {
+            let was = s.pause_capture;
+            s.pause_capture = false;
+            was
+        });
+        if was_permanent {
+            self.save_settings();
+        }
+        let had_temp = !matches!(self.temp_pause, TempPause::Off);
+        self.temp_pause = TempPause::Off;
+        if was_permanent {
+            if let Some(tray) = &self.tray {
+                tray.set_paused(false);
+            }
+        }
+        self.sync_tray_pause_state();
+        if was_permanent || had_temp {
+            self.emit(Event::TempPauseChanged(TempPause::Off));
+            self.toast("已恢复记录剪贴板");
+        }
+    }
+
+    /// 把暂停状态同步到托盘（勾选/菜单文字/tooltip）。
+    pub(crate) fn sync_tray_pause_state(&self) {
+        let permanent = self.settings_snapshot().pause_capture;
+        if let Some(tray) = &self.tray {
+            tray.set_paused(permanent);
+            tray.set_temp_pause(self.temp_pause, permanent);
+            tray.set_pause_tooltip(self.temp_pause, permanent);
+        }
     }
 
     fn toggle_autostart(&mut self) {
@@ -316,9 +403,7 @@ impl SysState {
                     return;
                 }
                 self.save_settings();
-                if let Some(tray) = &self.tray {
-                    tray.set_paused(paused);
-                }
+                self.sync_tray_pause_state();
                 logging::log(&format!("SysCmd::SetPause -> {paused}"));
                 self.toast(if paused {
                     "已暂停记录剪贴板"
@@ -326,6 +411,7 @@ impl SysState {
                     "已恢复记录剪贴板"
                 });
             }
+            SysCmd::SetTempPause(pause) => self.set_temp_pause(pause),
             SysCmd::SetHotkeys { picker } => self.apply_hotkeys(picker),
             SysCmd::SetAutostart(enabled) => match autostart::set(enabled) {
                 Ok(()) => {

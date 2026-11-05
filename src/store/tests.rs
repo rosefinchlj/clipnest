@@ -806,13 +806,13 @@ fn delete_and_clear_behaviour() {
     assert_eq!(db.delete(&[image_id]).unwrap(), 0);
 
     assert_eq!(total_rows(&db), 1);
-    db.clear(true).unwrap();
+    db.clear(true, false).unwrap();
     assert_eq!(total_rows(&db), 0);
     assert!(!blob::images_dir(&dir).exists());
     // 清空后仍可写入（目录会自动重建）
     let new_id = db.upsert(&image_input(tiny_png(42), 2_000)).unwrap().id();
     assert!(db.item(new_id).unwrap().unwrap().blob_id.is_some());
-    db.clear(false).unwrap();
+    db.clear(false, false).unwrap();
     assert_eq!(total_rows(&db), 0);
     assert!(
         blob::images_dir(&dir).exists(),
@@ -948,3 +948,92 @@ fn expired_trash_is_purged_after_two_days() {
         1
     );
 }
+
+// ---------------------------------------------------------------------------
+// A2：清空/退出清理
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clear_default_keeps_favorites_and_their_files() {
+    let (dir, db) = open_db("clear-keep-favorites");
+    let keep = db.upsert(&text_input("收藏保留")).unwrap().id();
+    let plain = db.upsert(&text_input("未收藏删除")).unwrap().id();
+    assert!(db.set_favorited(keep, true).unwrap());
+
+    // 默认清空：只删未收藏，收藏保留。
+    let outcome = db.clear(true, false).unwrap();
+    assert_eq!(outcome.cleared, 1);
+    assert_eq!(outcome.kept, 1);
+    assert!(db.item(plain).unwrap().is_none());
+    let kept = db.item(keep).unwrap().expect("收藏条目应保留");
+    assert!(kept.favorited);
+
+    // 含收藏：全部清空 + 删除实体目录。
+    let img = db.upsert(&image_input(tiny_png(9), 1_000)).unwrap().id();
+    assert!(db.set_favorited(img, true).unwrap());
+    let outcome = db.clear(true, true).unwrap();
+    assert_eq!(outcome.kept, 0);
+    assert_eq!(db.counts().unwrap().total, 0);
+    assert!(
+        !blob::images_dir(&dir).exists(),
+        "含收藏清空且删除实体后，图片目录应被整个清掉"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A4：收藏文件副本状态 + 重试
+// ---------------------------------------------------------------------------
+
+#[test]
+fn favorite_file_copy_reports_state_and_can_be_retried() {
+    let (dir, db) = open_db("favorite-copy-state");
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let ok_path = src.join("ok.txt");
+    std::fs::write(&ok_path, b"hello").unwrap();
+    let missing_path = src.join("missing.txt");
+
+    let input = files_input(&[&ok_path, &missing_path], now_ms());
+    let id = db.upsert(&input).unwrap().id();
+    assert!(db.set_favorited(id, true).unwrap());
+    let settings = Settings {
+        max_file_bytes: 1 << 20,
+        max_favorite_file_bytes: 1 << 20,
+        ..Default::default()
+    };
+    let copy = db
+        .save_favorite_files(id, &settings)
+        .unwrap()
+        .expect("文件类型应返回复制结果");
+    assert_eq!(copy.copied, 1);
+    assert_eq!(copy.skipped_missing, 1);
+    assert_eq!(copy.overall_state(), CopyState::Missing);
+
+    let item = db.item(id).unwrap().expect("条目存在");
+    let ok = item
+        .files
+        .iter()
+        .find(|f| f.name == "ok.txt")
+        .expect("ok.txt 存在");
+    assert!(ok.stored);
+    assert_eq!(ok.copy_state, Some(CopyState::Stored));
+    let missing = item
+        .files
+        .iter()
+        .find(|f| f.name == "missing.txt")
+        .expect("missing.txt 存在");
+    assert!(!missing.stored);
+    assert_eq!(missing.copy_state, Some(CopyState::Missing));
+
+    // 补齐源文件后重试：缺失文件应被保存，整体状态变回已保存。
+    std::fs::write(&missing_path, b"world").unwrap();
+    let retry = db
+        .save_favorite_files(id, &settings)
+        .unwrap()
+        .expect("重试应返回复制结果");
+    assert_eq!(retry.skipped_missing, 0);
+    assert_eq!(retry.overall_state(), CopyState::Stored);
+    let item = db.item(id).unwrap().unwrap();
+    assert!(item.files.iter().all(|f| f.stored));
+}
+
