@@ -744,13 +744,13 @@ fn paint_selection_preview(
     }
 
     let card_w = if item.kind == ClipKind::Image {
-        380.0_f32.min(list_rect.width() - 32.0)
+        500.0_f32.min(list_rect.width() - 32.0)
     } else {
         420.0_f32.min(list_rect.width() - 32.0)
     };
     let anchor = Pos2::new(
         list_rect.center().x - card_w * 0.5,
-        (list_rect.center().y - 120.0 + (1.0 - ease) * 8.0).max(list_rect.top() + 8.0),
+        (list_rect.center().y - 170.0 + (1.0 - ease) * 8.0).max(list_rect.top() + 8.0),
     );
     let keyword = state.search_text.clone();
     let item_for_image = item.clone();
@@ -784,12 +784,16 @@ fn paint_selection_preview(
                             });
                             ui.add_space(8.0);
                             if let Some(blob_id) = item_for_image.blob_id.as_deref() {
-                                if let Some(tex) = thumbs.get(blob_id) {
+                                // 首选高分辨率原图；后台解码尚未完成时先用 96px 缩略图占位，
+                                // 避免预览卡第一帧空白。
+                                let hi_res = state.preview_thumbs.get(blob_id);
+                                let tex = hi_res.or_else(|| thumbs.get(blob_id));
+                                if let Some(tex) = tex {
                                     let (w, h) = fit_preview_size(
                                         item_for_image.width,
                                         item_for_image.height,
-                                        352.0,
-                                        236.0,
+                                        card_w - 28.0,
+                                        280.0,
                                     );
                                     ui.add(
                                         egui::Image::new(egui::load::SizedTexture::new(

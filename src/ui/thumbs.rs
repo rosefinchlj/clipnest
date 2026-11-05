@@ -20,6 +20,8 @@ pub const MAX_TEXTURES: usize = 64;
 pub const MAX_BYTES: usize = 16 * 1024 * 1024;
 /// 缩略图最长边。
 pub const THUMB_MAX_SIDE: u32 = 96;
+/// 预览图最长边：选中预览需要看清图片内容，96px 缩略图放大后会糊。
+pub const PREVIEW_MAX_SIDE: u32 = 960;
 
 // ---------------------------------------------------------------------------
 // LRU 索引（纯逻辑，可单测）
@@ -136,6 +138,29 @@ pub fn thumb_candidates(blob_id: &str, data_dir: &std::path::Path) -> Vec<PathBu
     out
 }
 
+/// 预览图候选路径：只读原图，避免预览拿到 96px 缩略图放大后发糊。
+pub fn image_candidates(blob_id: &str, data_dir: &std::path::Path) -> Vec<PathBuf> {
+    let blobs = data_dir.join("blobs");
+    let clean: String = blob_id
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if clean.len() < 4 {
+        return Vec::new();
+    }
+    let xx = &clean[0..2];
+    let yy = &clean[2..4];
+    let mut out = Vec::new();
+    for ext in ["png", "jpg", "jpeg"] {
+        out.push(blobs.join("images").join(xx).join(yy).join(format!("{clean}.{ext}")));
+    }
+    for ext in ["png", "jpg", "jpeg"] {
+        out.push(blobs.join("images").join(format!("{clean}.{ext}")));
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // 后台线程消息
 // ---------------------------------------------------------------------------
@@ -150,10 +175,14 @@ struct ThumbResult {
     image: Option<egui::ColorImage>,
 }
 
-/// 后台线程：解码并按最长边 96 缩放（不 panic，失败发 None）。
-fn worker_loop(rx: Receiver<ThumbRequest>, tx: Sender<ThumbResult>) {
+/// 后台线程：解码并按给定最长边缩放（不 panic，失败发 None）。
+fn worker_loop(
+    rx: Receiver<ThumbRequest>,
+    tx: Sender<ThumbResult>,
+    max_side: u32,
+) {
     while let Ok(req) = rx.recv() {
-        let image = decode_thumb(&req.candidates);
+        let image = decode_thumb(&req.candidates, max_side);
         // 接收端已关闭（缓存释放）→ 退出线程
         if tx.send(ThumbResult { id: req.id, image }).is_err() {
             break;
@@ -162,7 +191,7 @@ fn worker_loop(rx: Receiver<ThumbRequest>, tx: Sender<ThumbResult>) {
 }
 
 /// 依次尝试候选路径，返回缩放后的 RGBA 图像；全部失败返回 None。
-fn decode_thumb(candidates: &[PathBuf]) -> Option<egui::ColorImage> {
+fn decode_thumb(candidates: &[PathBuf], max_side: u32) -> Option<egui::ColorImage> {
     for path in candidates {
         if !path.is_file() {
             continue;
@@ -170,7 +199,7 @@ fn decode_thumb(candidates: &[PathBuf]) -> Option<egui::ColorImage> {
         let Ok(img) = image::open(path) else {
             continue;
         };
-        let thumb = img.thumbnail(THUMB_MAX_SIDE, THUMB_MAX_SIDE);
+        let thumb = img.thumbnail(max_side, max_side);
         let rgba = thumb.to_rgba8();
         let size = [rgba.width() as usize, rgba.height() as usize];
         return Some(egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()));
@@ -198,16 +227,31 @@ pub struct ThumbCache {
     requested: HashSet<String>,
     /// 确认解码失败的 id（避免每帧重复请求）。
     failed: HashSet<String>,
+    /// 候选路径解析：缩略图缓存用 `thumb_candidates`，预览缓存用 `image_candidates`。
+    candidates: fn(&str, &std::path::Path) -> Vec<PathBuf>,
 }
 
 impl ThumbCache {
-    /// 创建缓存并启动 1 条后台解码线程；线程创建失败时退化为「无缩略图」模式。
+    /// 创建 96px 缩略图缓存并启动 1 条后台解码线程；线程创建失败时退化为「无缩略图」模式。
     pub fn new(ctx: &egui::Context) -> Self {
+        Self::with_candidates(ctx, THUMB_MAX_SIDE, thumb_candidates)
+    }
+
+    /// 创建高分辨率预览图缓存（最长边 960px，只读原图）。
+    pub fn new_preview(ctx: &egui::Context) -> Self {
+        Self::with_candidates(ctx, PREVIEW_MAX_SIDE, image_candidates)
+    }
+
+    fn with_candidates(
+        ctx: &egui::Context,
+        max_side: u32,
+        candidates: fn(&str, &std::path::Path) -> Vec<PathBuf>,
+    ) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let (res_tx, res_rx) = std::sync::mpsc::channel();
         let spawn_ok = std::thread::Builder::new()
             .name("clipnest-thumb".to_string())
-            .spawn(move || worker_loop(rx, res_tx))
+            .spawn(move || worker_loop(rx, res_tx, max_side))
             .is_ok();
         if !spawn_ok {
             crate::logging::warn("缩略图线程创建失败，列表将显示占位图标");
@@ -220,6 +264,7 @@ impl ThumbCache {
             lru: LruIndex::new(),
             requested: HashSet::new(),
             failed: HashSet::new(),
+            candidates,
         }
     }
 
@@ -237,7 +282,7 @@ impl ThumbCache {
             if let Some(tx) = &self.tx {
                 let req = ThumbRequest {
                     id: id.to_string(),
-                    candidates: thumb_candidates(id, &config::data_dir()),
+                    candidates: (self.candidates)(id, &config::data_dir()),
                 };
                 if tx.send(req).is_ok() {
                     self.requested.insert(id.to_string());
@@ -300,7 +345,9 @@ impl ThumbCache {
                 }
             }
         }
+        let mut had_result = false;
         for result in results {
+            had_result = true;
             self.requested.remove(&result.id);
             match result.image {
                 Some(image) => self.store(&result.id, image),
@@ -308,6 +355,11 @@ impl ThumbCache {
                     self.failed.insert(result.id);
                 }
             }
+        }
+        // 后台解码完成后主动刷新一帧：否则预览卡可能一直停留在低清缩略图，
+        // 直到下一次鼠标/键盘事件才换图。
+        if had_result {
+            self.ctx.request_repaint();
         }
     }
 
@@ -399,7 +451,39 @@ mod tests {
 
     #[test]
     fn failed_decode_returns_none() {
-        assert!(decode_thumb(&[PathBuf::from(r"C:\no\such\file.jpg")]).is_none());
-        assert!(decode_thumb(&[]).is_none());
+        assert!(decode_thumb(&[PathBuf::from(r"C:\no\such\file.jpg")], THUMB_MAX_SIDE).is_none());
+        assert!(decode_thumb(&[], THUMB_MAX_SIDE).is_none());
+    }
+
+    #[test]
+    fn preview_candidates_skip_thumbnails() {
+        let root = std::path::Path::new(r"C:\data");
+        let cands = image_candidates("abcdef0123456789", root);
+        assert!(!cands.is_empty());
+        assert!(cands.iter().all(|p| {
+            !p.to_string_lossy().replace('\\', "/").contains("/thumbs/")
+        }));
+        assert_eq!(
+            cands[0].to_string_lossy().replace('\\', "/"),
+            "C:/data/blobs/images/ab/cd/abcdef0123456789.png"
+        );
+    }
+
+    #[test]
+    fn preview_decode_keeps_original_detail() {
+        let path = std::env::temp_dir().join(format!(
+            "clipnest-preview-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        image::RgbaImage::from_pixel(1920, 1080, image::Rgba([30, 60, 90, 255]))
+            .save(&path)
+            .expect("write preview png");
+        let decoded = decode_thumb(&[path.clone()], PREVIEW_MAX_SIDE).expect("decode preview");
+        assert_eq!((decoded.width(), decoded.height()), (960, 540));
+        let _ = std::fs::remove_file(path);
     }
 }

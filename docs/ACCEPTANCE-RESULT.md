@@ -1006,3 +1006,23 @@
 - `cargo test --release`：**239 passed / 0 failed / 1 ignored**（新增选中预览条件、等比缩放测试）。
 - 预览实测：选中图片显示「图片预览 / 1920x1080 · 2.20 MB」+ 大图；选中长文本显示「文本预览 / 88 字 · 使用 3 次」+ 完整正文；日期弹窗或确认框打开时预览自动隐藏。
 - `cargo build --release` + 9 尺寸图标 + `--selftest` 15 项 PASS。
+## 46. v1.13.1（2026-11-05，选中图片预览发糊）
+
+### 用户反馈
+- v1.13.0 的图片预览完全模糊，看不清图片内容，预览失去意义。
+
+### 根因
+- 预览卡直接取用了列表缩略图缓存 `ThumbCache`，而该缓存解码时最长边固定为 96px（`THUMB_MAX_SIDE`）。96px 纹理放大到 352×236 的卡片上必然糊。
+
+### 实现
+- `src/ui/thumbs.rs`：将 `ThumbCache` 泛化为可配置候选路径与最长边的通用缓存；新增 `PREVIEW_MAX_SIDE = 960`、`image_candidates`（只读 `blobs/images` 原图，不读 `blobs/thumbs`）、`ThumbCache::new_preview`。
+- `src/ui.rs`：`UiState` 持有独立的高分辨率预览缓存 `preview_thumbs`；新增 `insert_preview_image` 供预览假数据注入。
+- `src/ui/picker.rs`：图片预览优先取 `preview_thumbs` 的 960px 原图，后台解码完成前回退 96px 缩略图占位；预览卡宽度增至 500px，图片显示上限 472×280。
+- `src/ui/thumbs.rs`：后台解码完成后主动 `request_repaint()`，避免预览卡停留在低清缩略图直到下一次输入事件。
+- `src/ui/preview.rs`：预览模式为演示图片额外注入 480×270 的高清假图，保证截图验证真实。
+
+### 校验
+- 新增 `preview_candidates_skip_thumbnails`：预览候选路径全部位于 `blobs/images`，不含 `/thumbs/`。
+- 新增 `preview_decode_keeps_original_detail`：1920×1080 原图经预览解码后为 960×540，不再缩到 96px。
+- `cargo test --release`：**241 passed / 0 failed / 1 ignored**。
+- 预览截图确认卡片为 500px 宽、图片为 960px 原图缩放，文字与图形边缘清晰。

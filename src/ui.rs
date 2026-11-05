@@ -247,6 +247,8 @@ pub struct UiState {
     picker_preview_id: Option<ClipId>,
     /// 预览打开时间（用于弹出动画）。
     picker_preview_at: Option<Instant>,
+    /// 选中预览用高分辨率图片缓存（只读原图，避免 96px 缩略图放大后发糊）。
+    preview_thumbs: ThumbCache,
     stats: Stats,
 
     // ---- 搜索 ----
@@ -321,7 +323,7 @@ pub struct UiState {
 
 impl UiState {
     /// 创建 UI 状态（Lead 在 App 启动时调用一次）。
-    pub fn new(_ctx: &egui::Context, settings: &Settings) -> Self {
+    pub fn new(ctx: &egui::Context, settings: &Settings) -> Self {
         let mut s = Self {
             mode: WindowMode::Picker,
             manager_page: ManagerPage::History,
@@ -342,6 +344,7 @@ impl UiState {
             picker_appear_at: None,
             picker_preview_id: None,
             picker_preview_at: None,
+            preview_thumbs: ThumbCache::new_preview(ctx),
             stats: Stats::default(),
             search_text: String::new(),
             search_focus: true,
@@ -480,6 +483,11 @@ impl UiState {
         self.paused = paused;
         self.settings.pause_capture = paused;
         self.settings_draft.pause_capture = paused;
+    }
+
+    /// 直接注入一张高分辨率预览图（仅预览假数据/测试用）。
+    pub fn insert_preview_image(&mut self, id: &str, image: egui::ColorImage) {
+        self.preview_thumbs.insert_image(id, image);
     }
 
     /// 回填文件副本状态（A4：来自 `Event::FileCopyState`）。

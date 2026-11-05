@@ -233,6 +233,7 @@ impl PreviewState {
             if item.kind == ClipKind::Image {
                 if let Some(blob_id) = item.blob_id.as_deref() {
                     thumbs.insert_image(blob_id, demo_image(index));
+                    state.insert_preview_image(blob_id, demo_preview_image(index));
                 }
             }
         }
@@ -909,6 +910,47 @@ fn demo_image(seed: usize) -> egui::ColorImage {
     egui::ColorImage::new([size, size], pixels)
 }
 
+/// 预览卡用的大图假数据（16:9，避免 96px 缩略图在预览里被放大后发糊）。
+fn demo_preview_image(seed: usize) -> egui::ColorImage {
+    let w = 480usize;
+    let h = 270usize;
+    let mut pixels = Vec::with_capacity(w * h);
+    let (r0, g0, b0) = match seed % 4 {
+        0 => (34u8, 40u8, 76u8),
+        1 => (20, 62, 54),
+        2 => (76, 38, 52),
+        _ => (30, 46, 66),
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let t = (x + y) as f32 / (w + h) as f32;
+            let mut r = r0.saturating_add((t * 90.0) as u8);
+            let mut g = g0.saturating_add((t * 80.0) as u8);
+            let mut b = b0.saturating_add((t * 100.0) as u8);
+            // 顶部标题栏
+            if y < 42 {
+                r = 224;
+                g = 232;
+                b = 240;
+            } else if (60..200).contains(&y) && (60..420).contains(&x) {
+                r = r.saturating_add(28);
+                g = g.saturating_add(26);
+                b = b.saturating_add(30);
+            }
+            // 内容强调圆点
+            let dx = x as i32 - (w / 2) as i32;
+            let dy = y as i32 - (h / 2) as i32;
+            if dx * dx + dy * dy < 1_800 {
+                r = 110;
+                g = 139;
+                b = 255;
+            }
+            pixels.push(Color32::from_rgb(r, g, b));
+        }
+    }
+    egui::ColorImage::new([w, h], pixels)
+}
+
 // ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
@@ -998,6 +1040,9 @@ mod tests {
         assert_eq!(image.width(), 96);
         assert_eq!(image.height(), 96);
         assert_eq!(image.pixels.len(), 96 * 96);
+        let preview = demo_preview_image(0);
+        assert_eq!(preview.width(), 480);
+        assert_eq!(preview.height(), 270);
     }
 
     #[test]
