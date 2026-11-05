@@ -762,6 +762,17 @@ impl ClipNestApp {
             UiAction::HideWindow => self.hide_window(ctx),
             UiAction::Quit => self.request_quit(ctx),
             UiAction::SetSettings(next) => self.apply_settings(ctx, *next),
+            UiAction::SetPreviewOnSelect(enabled) => {
+                // 候选窗底部「预览」一键开关：只改这一项并落盘，避免整份设置重放。
+                self.settings.preview_on_select = enabled;
+                self.ui.set_preview_on_select(enabled);
+                self.persist_settings();
+                self.ui.toast(if enabled {
+                    "已开启选中预览"
+                } else {
+                    "已关闭选中预览（可随时在底部重新开启）"
+                });
+            }
             UiAction::SetAutostart(enabled) => {
                 self.settings.autostart = enabled;
                 if let Some(tx) = &self.sys_tx {

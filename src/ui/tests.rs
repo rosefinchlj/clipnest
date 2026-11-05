@@ -597,3 +597,24 @@ fn trash_page_request_more_uses_trash_mode_and_pages() {
     s.request_more(&mut actions);
     assert!(matches!(&actions[0], UiAction::Search { offset: 3, .. }));
 }
+
+#[test]
+fn preview_toggle_resets_dismissed_and_setting() {
+    let mut s = state();
+    s.picker_preview_dismissed = Some(7);
+    s.picker_preview_id = Some(7);
+    s.picker_preview_at = Some(Instant::now());
+    s.set_preview_on_select(false);
+    assert!(!s.settings.preview_on_select);
+    assert_eq!(s.picker_preview_dismissed, None, "一键关闭后清掉临时关闭状态");
+    assert_eq!(s.picker_preview_id, None, "预览卡立即消失");
+    assert_eq!(s.picker_preview_at, None);
+}
+
+#[test]
+fn enter_picker_restores_preview_after_escape_dismissal() {
+    let mut s = state();
+    s.picker_preview_dismissed = Some(3);
+    s.enter_picker();
+    assert_eq!(s.picker_preview_dismissed, None, "重新打开候选窗应恢复预览");
+}

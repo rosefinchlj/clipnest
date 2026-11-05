@@ -508,6 +508,14 @@ impl PreviewState {
                     self.state.set_encryption_enabled(enabled);
                     self.state.toast("（预览）数据库加密开关（未执行）");
                 }
+                UiAction::SetPreviewOnSelect(enabled) => {
+                    self.state.set_preview_on_select(enabled);
+                    self.state.toast(if enabled {
+                        "（预览）已开启选中预览"
+                    } else {
+                        "（预览）已关闭选中预览"
+                    });
+                }
             }
         }
     }

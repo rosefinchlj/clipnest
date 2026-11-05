@@ -1044,3 +1044,20 @@
 - 新增 `light_window_bg_keeps_readable_opacity_floor`：浅色 + 35% 透明度时 `window_bg().a() >= 220`。
 - `cargo test --release`：**242 passed / 0 failed / 1 ignored**。
 - `--ui-preview picker` 在深色预览外层背景下确认面板保持浅色、文字清晰。
+
+## 48. v1.13.3（2026-11-05，优化选中预览关闭方式）
+
+### 用户反馈
+- 预览图弹出后不方便关闭；如果觉得太烦，也没有一键关闭预览功能的入口。
+
+### 实现
+- `src/ui/picker.rs`：预览打开时 `Esc` 先只关闭当前条目的预览并 toast「预览已关闭，Esc 再按隐藏面板」，再按一次才隐藏候选窗；关闭只作用于当前条目（`picker_preview_dismissed`），换行或重新打开候选窗自动恢复。
+- `src/ui/widgets.rs`：底部提示条右侧新增「预览开 / 预览关」按钮（`HintBarOutput.preview_clicked`），点击立即切换。
+- `src/ui.rs`：`UiState` 新增 `picker_preview_dismissed`、`set_preview_on_select()`；新增 `UiAction::SetPreviewOnSelect(bool)`。
+- `src/app.rs` / `src/manager_window.rs`：处理一键开关，写入设置并持久化；管理台同步通知主进程。
+- `src/ui/preview.rs`：预览模式本地消化该动作，便于截图验证。
+
+### 校验
+- `src/ui/tests.rs` 新增 `preview_toggle_resets_dismissed_and_setting`、`enter_picker_restores_preview_after_escape_dismissal`。
+- `cargo test --release`：**244 passed / 0 failed / 1 ignored**。
+- `--ui-preview picker` 截图确认底部「预览开」按钮与「共 1,234 条」、齿轮不重叠，预览卡显示正常。

@@ -463,6 +463,17 @@ impl ManagerApp {
                 self.request_close(ctx);
             }
             UiAction::SetSettings(next) => self.apply_settings(ctx, *next),
+            UiAction::SetPreviewOnSelect(enabled) => {
+                self.settings.preview_on_select = enabled;
+                self.ui.set_preview_on_select(enabled);
+                self.persist_settings();
+                self.notify_main_settings();
+                self.ui.toast(if enabled {
+                    "已开启选中预览"
+                } else {
+                    "已关闭选中预览"
+                });
+            }
             UiAction::SetAutostart(enabled) => {
                 self.settings.autostart = enabled;
                 match crate::sys::autostart::set(enabled) {

@@ -787,10 +787,16 @@ fn chips<T: Copy + PartialEq>(
 /// 底部提示条输出。
 pub struct HintBarOutput {
     pub gear_clicked: bool,
+    pub preview_clicked: bool,
 }
 
-/// 底部提示条（高 36）：左侧快捷键提示，右侧「共 N 条」+ 齿轮。
-pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput {
+/// 底部提示条（高 36）：左侧快捷键提示，右侧「预览」开关、「共 N 条」+ 齿轮。
+pub fn hint_bar(
+    ui: &mut egui::Ui,
+    total: usize,
+    paused: bool,
+    preview_on: bool,
+) -> HintBarOutput {
     let height = theme::HINT_BAR_HEIGHT;
     let (rect, _resp) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
@@ -828,10 +834,41 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
         );
     }
 
-    // 右：齿轮按钮 + 统计
+    // 右：预览开关 + 齿轮按钮 + 统计
     let gear_rect = Rect::from_center_size(
         Pos2::new(rect.right() - 14.0, rect.center().y),
         Vec2::splat(18.0),
+    );
+    // 「预览开/关」：一键切换选中预览，避免弹卡后找不到关闭入口。
+    let preview_rect = Rect::from_center_size(
+        Pos2::new(rect.right() - 66.0, rect.center().y),
+        Vec2::new(56.0, 20.0),
+    );
+    let preview_resp = ui
+        .interact(
+            preview_rect,
+            ui.id().with("hint_preview_toggle"),
+            Sense::click(),
+        )
+        .on_hover_text(if preview_on {
+            "关闭选中行的图片 / 长文本预览（Esc 也可先关当次）"
+        } else {
+            "开启选中行的图片 / 长文本预览"
+        });
+    if preview_resp.hovered() {
+        painter.rect_filled(preview_rect, theme::RADIUS_CHIP, theme::hover_fill());
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    painter.text(
+        preview_rect.center(),
+        Align2::CENTER_CENTER,
+        if preview_on { "预览开" } else { "预览关" },
+        theme::font_aux(),
+        if preview_on {
+            theme::accent()
+        } else {
+            theme::text_weak()
+        },
     );
     let gear_resp = ui.interact(gear_rect, ui.id().with("hint_gear"), Sense::click());
     paint::paint_gear(
@@ -844,7 +881,7 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
         },
     );
     painter.text(
-        Pos2::new(gear_rect.left() - 10.0, rect.center().y),
+        Pos2::new(preview_rect.left() - 10.0, rect.center().y),
         Align2::RIGHT_CENTER,
         format!("共 {} 条", keys::fmt_count(total)),
         theme::font_aux(),
@@ -855,6 +892,7 @@ pub fn hint_bar(ui: &mut egui::Ui, total: usize, paused: bool) -> HintBarOutput 
     }
     HintBarOutput {
         gear_clicked: gear_resp.clicked(),
+        preview_clicked: preview_resp.clicked(),
     }
 }
 

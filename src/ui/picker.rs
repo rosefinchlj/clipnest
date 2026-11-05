@@ -334,10 +334,22 @@ pub(crate) fn show(
         Vec2::new(full.width(), theme::HINT_BAR_HEIGHT),
     );
     let mut gear_clicked = false;
+    let mut preview_clicked = false;
     ui.scope_builder(UiBuilder::new().max_rect(hint_rect), |ui| {
-        let out = widgets::hint_bar(ui, state.total.max(state.items.len()), state.paused);
+        let out = widgets::hint_bar(
+            ui,
+            state.total.max(state.items.len()),
+            state.paused,
+            state.settings.preview_on_select,
+        );
         gear_clicked = out.gear_clicked;
+        preview_clicked = out.preview_clicked;
     });
+    if preview_clicked {
+        let enabled = !state.settings.preview_on_select;
+        state.set_preview_on_select(enabled);
+        actions.push(UiAction::SetPreviewOnSelect(enabled));
+    }
     if gear_clicked {
         state.request_manager(ManagerPage::Settings, actions);
     }
@@ -470,7 +482,25 @@ fn handle_command(
             if state.preview {
                 state.toast("（预览）Esc：隐藏面板");
             } else {
-                actions.push(UiAction::HideWindow);
+                // 预览打开时，Esc 先只关预览，再按一次才隐藏面板；
+                // 这样用户被大图挡住时不用先找底部开关。
+                let can_dismiss_preview = state
+                    .selected
+                    .and_then(|idx| state.items.get(idx))
+                    .filter(|item| {
+                        state.settings.preview_on_select
+                            && preview_eligible(item)
+                            && state.picker_preview_dismissed != Some(item.id)
+                    })
+                    .map(|item| item.id);
+                if let Some(id) = can_dismiss_preview {
+                    state.picker_preview_dismissed = Some(id);
+                    state.picker_preview_id = None;
+                    state.picker_preview_at = None;
+                    state.toast("预览已关闭，Esc 再按隐藏面板");
+                } else {
+                    actions.push(UiAction::HideWindow);
+                }
             }
         }
     }
@@ -729,7 +759,14 @@ fn paint_selection_preview(
         state.picker_preview_at = None;
         return;
     }
+    // 用户按 Esc / 点「预览关」后，只隐藏当前条目；换一行会重新出现。
+    if state.picker_preview_dismissed == Some(item.id) {
+        state.picker_preview_id = None;
+        state.picker_preview_at = None;
+        return;
+    }
     if state.picker_preview_id != Some(item.id) {
+        state.picker_preview_dismissed = None;
         state.picker_preview_id = Some(item.id);
         state.picker_preview_at = Some(Instant::now());
     }

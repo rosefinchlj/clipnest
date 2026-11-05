@@ -148,6 +148,8 @@ pub enum UiAction {
     Quit,
     /// 保存设置（Lead 落盘并应用快捷键/自启等）。
     SetSettings(Box<Settings>),
+    /// 一键开启/关闭候选窗选中预览（写入设置，立即生效）。
+    SetPreviewOnSelect(bool),
     /// 设置开机自启。
     SetAutostart(bool),
     /// 暂停/恢复记录。
@@ -247,6 +249,8 @@ pub struct UiState {
     picker_preview_id: Option<ClipId>,
     /// 预览打开时间（用于弹出动画）。
     picker_preview_at: Option<Instant>,
+    /// 用户按 Esc / 点「预览」关闭后，当前条目暂不显示预览；切到别的条目后自动恢复。
+    picker_preview_dismissed: Option<ClipId>,
     /// 选中预览用高分辨率图片缓存（只读原图，避免 96px 缩略图放大后发糊）。
     preview_thumbs: ThumbCache,
     stats: Stats,
@@ -344,6 +348,7 @@ impl UiState {
             picker_appear_at: None,
             picker_preview_id: None,
             picker_preview_at: None,
+            picker_preview_dismissed: None,
             preview_thumbs: ThumbCache::new_preview(ctx),
             stats: Stats::default(),
             search_text: String::new(),
@@ -476,6 +481,14 @@ impl UiState {
     /// 同步运行期临时暂停（A3：来自 Sys 线程的 `Event::TempPauseChanged`）。
     pub fn set_temp_pause(&mut self, pause: TempPause) {
         self.temp_pause = pause;
+    }
+
+    /// 一键开关候选窗选中预览（底部按钮 / 快捷键使用）。
+    pub fn set_preview_on_select(&mut self, enabled: bool) {
+        self.settings.preview_on_select = enabled;
+        self.picker_preview_dismissed = None;
+        self.picker_preview_id = None;
+        self.picker_preview_at = None;
     }
 
     /// 同步永久暂停（托盘/主进程改动后，管理台设置页用，不重置其他草稿）。
@@ -624,6 +637,10 @@ impl UiState {
         self.pending_scroll_row = Some(0);
         self.picker_scroll_offset = 0.0;
         self.picker_appear_at = Some(Instant::now());
+        // 重新打开候选窗时恢复预览（上次按 Esc 只关闭当次，不写设置）。
+        self.picker_preview_dismissed = None;
+        self.picker_preview_id = None;
+        self.picker_preview_at = None;
         self.search_focus = true;
         self.pending = None;
         self.append_gen = None;
