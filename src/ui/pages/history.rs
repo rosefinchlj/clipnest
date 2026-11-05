@@ -468,20 +468,20 @@ pub(crate) fn page(
             .date_picker_month
             .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
         let allow_close = !state.date_picker_just_opened;
-        if let Some(action) =
-            widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month, allow_close)
-        {
-            state.date_picker_start = start;
-            state.date_picker_end = end;
-            state.date_picker_month = Some(month);
+        let action =
+            widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month, allow_close);
+        // 第一下点开始日期时弹窗不会返回动作，但仍需保存这次选择，
+        // 否则下一帧会从旧状态恢复，表现为「点日期没反应」。
+        state.date_picker_start = start;
+        state.date_picker_end = end;
+        state.date_picker_month = Some(month);
+        if let Some(action) = action {
             state.date_picker_open = false;
             if let widgets::DatePickerAction::Selected { start, end } = action {
                 state.manager_custom_day = Some(start);
                 state.manager_custom_end = Some(end);
                 state.schedule_search(true);
             }
-        } else {
-            state.date_picker_month = Some(month);
         }
         state.date_picker_just_opened = false;
     }

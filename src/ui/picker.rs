@@ -327,31 +327,6 @@ pub(crate) fn show(
         }
     }
 
-    if state.date_picker_open {
-        let mut start = state.date_picker_start;
-        let mut end = state.date_picker_end;
-        let mut month = state
-            .date_picker_month
-            .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
-        let allow_close = !state.date_picker_just_opened;
-        if let Some(action) =
-            widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month, allow_close)
-        {
-            state.date_picker_start = start;
-            state.date_picker_end = end;
-            state.date_picker_month = Some(month);
-            state.date_picker_open = false;
-            if let widgets::DatePickerAction::Selected { start, end } = action {
-                state.picker_custom_day = Some(start);
-                state.picker_custom_end = Some(end);
-                state.schedule_search(true);
-            }
-        } else {
-            state.date_picker_month = Some(month);
-        }
-        state.date_picker_just_opened = false;
-    }
-
     // ---- 4) 列表 / 空状态 ----
     if state.items.is_empty() {
         empty_state(state, ui, list_rect, actions);
@@ -408,6 +383,32 @@ pub(crate) fn show(
             .send_viewport_cmd(egui::ViewportCommand::BeginResize(
                 egui::ResizeDirection::South,
             ));
+    }
+
+    // ---- 8) 日期范围弹窗（最后绘制，保证在列表之上并优先接收点击）----
+    if state.date_picker_open {
+        let mut start = state.date_picker_start;
+        let mut end = state.date_picker_end;
+        let mut month = state
+            .date_picker_month
+            .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
+        let allow_close = !state.date_picker_just_opened;
+        let action =
+            widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month, allow_close);
+        // 第一下点开始日期时弹窗不会返回动作，但仍需保存这次选择，
+        // 否则下一帧会从旧状态恢复，表现为「点日期没反应」。
+        state.date_picker_start = start;
+        state.date_picker_end = end;
+        state.date_picker_month = Some(month);
+        if let Some(action) = action {
+            state.date_picker_open = false;
+            if let widgets::DatePickerAction::Selected { start, end } = action {
+                state.picker_custom_day = Some(start);
+                state.picker_custom_end = Some(end);
+                state.schedule_search(true);
+            }
+        }
+        state.date_picker_just_opened = false;
     }
 }
 
