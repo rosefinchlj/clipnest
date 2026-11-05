@@ -668,6 +668,18 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
             "日志目录",
             &crate::config::logs_dir().display().to_string(),
         );
+        ui.add_space(4.0);
+        path_row(
+            ui,
+            "收藏副本目录",
+            &crate::store::blob::files_dir(&crate::config::data_dir())
+                .display()
+                .to_string(),
+        );
+        ui.add_space(4.0);
+        ui.label(theme::weak(
+            "收藏文件时复制到该目录；取消收藏不会删除副本，重新收藏会复用已有副本。目录暂不支持自定义。",
+        ));
         ui.add_space(12.0);
 
         ui.horizontal(|ui| {
@@ -679,6 +691,11 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
             }
             if widgets::button(ui, "刷新统计", widgets::ButtonKind::Ghost).clicked() {
                 actions.push(UiAction::RefreshStats);
+            }
+            if widgets::button(ui, "打开收藏副本目录", widgets::ButtonKind::Ghost).clicked() {
+                actions.push(UiAction::OpenPath(crate::store::blob::files_dir(
+                    &crate::config::data_dir(),
+                )));
             }
         });
         ui.add_space(10.0);

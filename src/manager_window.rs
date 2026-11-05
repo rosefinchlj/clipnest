@@ -8,12 +8,16 @@
 //! - 粘贴直接写剪贴板并 `restore_and_paste` 到主进程传入的 target；
 //! - 设置保存后通过 WM_COPYDATA 通知主进程立即应用（同时落盘 settings.json）。
 
-use crate::model::{fmt_size, BackupEvent, Event, SearchQuery, Settings, StoreCmd, ThemeMode};
+use crate::model::{
+    fmt_size, BackupEvent, Event, RuntimeState, SearchQuery, Settings, StoreCmd, TempPause,
+    ThemeMode,
+};
 use crate::store::StoreHandle;
 use crate::ui::{ManagerPage, ThumbCache, UiAction, UiState};
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub fn run(page: ManagerPage, target_hwnd: isize) -> eframe::Result<()> {
     let settings = crate::config::load_settings();
@@ -74,6 +78,9 @@ struct ManagerApp {
     paste_pending: Option<(i64, bool)>,
     quitting: bool,
     init_error: Option<String>,
+    /// 主进程写入的暂停状态（管理台轮询同步）。
+    runtime_state: RuntimeState,
+    last_runtime_poll: Instant,
 }
 
 impl ManagerApp {
@@ -108,6 +115,10 @@ impl ManagerApp {
         let mut ui = UiState::new(&cc.egui_ctx, &settings);
         ui.preview_mode(false);
         ui.enter_manager(page);
+        let runtime_state = crate::config::read_runtime_state()
+            .unwrap_or_else(|| RuntimeState::new(settings.pause_capture, TempPause::Off));
+        ui.set_pause_state(runtime_state.pause_capture);
+        ui.set_temp_pause(runtime_state.temp_pause);
         if let Some(tx) = &store_tx {
             // 管理台独立进程没有主窗口的启动统计事件，主动拉一次，
             // 否则侧栏「共 N 条 / 收藏 N 条」会一直是 0。
@@ -129,6 +140,8 @@ impl ManagerApp {
             paste_pending: None,
             quitting: false,
             init_error,
+            runtime_state,
+            last_runtime_poll: Instant::now(),
         }
     }
 
@@ -173,6 +186,7 @@ impl ManagerApp {
         crate::ui::install_theme(ctx);
         ctx.set_zoom_factor(crate::model::clamp_ui_scale(next.ui_scale));
         self.ui.set_settings(&next);
+        self.runtime_state.pause_capture = next.pause_capture;
         self.persist_settings();
         self.notify_main_settings();
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(next.manager_size.into()));
@@ -193,6 +207,24 @@ impl ManagerApp {
         if !crate::sys::thread::send_settings_update(&self.settings) {
             crate::logging::warn("通知主进程设置更新失败（主进程可能已退出）");
         }
+    }
+
+    /// 轮询主进程写入的运行期暂停状态（管理台是独立进程，不共享 Sys 内存）。
+    fn sync_runtime_state(&mut self) {
+        if self.last_runtime_poll.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        self.last_runtime_poll = Instant::now();
+        let Some(runtime) = crate::config::read_runtime_state() else {
+            return;
+        };
+        if runtime == self.runtime_state {
+            return;
+        }
+        self.runtime_state = runtime;
+        self.settings.pause_capture = runtime.pause_capture;
+        self.ui.set_pause_state(runtime.pause_capture);
+        self.ui.set_temp_pause(runtime.temp_pause);
     }
 
     fn perform_paste(&mut self, payload: crate::model::PastePayload, plain: bool) {
@@ -386,10 +418,20 @@ impl ManagerApp {
                     let _ = tx.send(StoreCmd::SaveFavoriteFiles(id));
                 }
             }
-            UiAction::SetTempPause(_) => {
-                // 临时暂停属于主进程 Sys 线程的运行期状态，管理台是独立进程，
-                // 这里只提示用户到托盘菜单/主面板设置里操作（不写设置文件）。
-                self.ui.toast("临时暂停请在托盘菜单或主面板「设置」里操作");
+            UiAction::SetTempPause(pause) => {
+                // 临时暂停属于主进程 Sys 线程的运行期状态；管理台是独立进程，
+                // 通过 WM_COPYDATA 请求主进程执行，再轮询 runtime.json 同步界面。
+                if crate::sys::thread::send_temp_pause_update(pause) {
+                    self.runtime_state.temp_pause = pause;
+                    self.ui.set_temp_pause(pause);
+                    self.ui.toast(if matches!(pause, TempPause::Off) {
+                        "已恢复记录剪贴板".to_string()
+                    } else {
+                        format!("已设置临时暂停：{}", pause.label())
+                    });
+                } else {
+                    self.ui.toast("主程序未运行，无法设置临时暂停");
+                }
             }
             UiAction::IgnoreSourceApp(app) => {
                 // A3：管理台也可一键忽略来源应用，写设置文件并通知主进程热加载。
@@ -436,6 +478,8 @@ impl ManagerApp {
             }
             UiAction::SetPause(paused) => {
                 self.settings.pause_capture = paused;
+                self.runtime_state.pause_capture = paused;
+                self.ui.set_pause_state(paused);
                 self.persist_settings();
                 self.notify_main_settings();
                 self.ui.toast(if paused {
@@ -571,6 +615,10 @@ impl eframe::App for ManagerApp {
         if self.quitting {
             return;
         }
+        // 管理台没有主进程的 Sys 事件通道：定时轮询运行期暂停状态，保证托盘
+        // 改动/临时暂停到期后设置页按钮与开关能及时同步。
+        ctx.request_repaint_after(Duration::from_millis(500));
+        self.sync_runtime_state();
         self.pump_events(ctx);
         let actions = self.ui.show(ctx, &mut self.thumbs);
         for action in actions {

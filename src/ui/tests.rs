@@ -382,6 +382,24 @@ fn temp_pause_is_runtime_only_and_restorable() {
     assert!(!s.temp_pause.is_active());
 }
 
+#[test]
+fn set_pause_state_keeps_settings_and_draft_in_sync() {
+    let mut s = state();
+    s.settings_draft.log_level = "debug".to_string();
+    s.set_pause_state(true);
+    assert!(s.paused);
+    assert!(s.settings.pause_capture);
+    assert!(s.settings_draft.pause_capture);
+    assert_eq!(
+        s.settings_draft.log_level, "debug",
+        "只同步暂停位，不应重置设置页其他未保存草稿"
+    );
+    s.set_pause_state(false);
+    assert!(!s.paused);
+    assert!(!s.settings.pause_capture);
+    assert!(!s.settings_draft.pause_capture);
+}
+
 // ---------------------------------------------------------------------------
 // A3：忽略来源应用
 // ---------------------------------------------------------------------------

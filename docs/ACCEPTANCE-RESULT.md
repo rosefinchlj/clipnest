@@ -854,3 +854,30 @@
 - 为保持启动自动解锁与单 exe，采用 **Windows DPAPI 当前用户密钥**而非每次输入密码；同一 Windows 账户可自动打开，换机/换用户或丢失 `db.key` 无法解密。
 - 加密后的 `.cnbak` 备份同样绑定当前 Windows 用户；跨机迁移应先关闭加密或导出未加密备份。
 - B6 未实现“输入密码解锁 / 跨机密码迁移”；如需该能力，应在后续版本增加密码派生密钥与解锁对话框。
+
+## 40. v1.12.1（2026-11-05，暂停同步与反馈修复）
+
+### 用户反馈
+- 管理台设置页的临时暂停（15 分钟 / 1 小时 / 到重启）点击无反应。
+- 托盘「暂停记录」与设置页按钮状态不同步；再次点击托盘暂停后仍不能复制，需要点「恢复记录」。
+- 询问「任一关键词 / 全部关键词」的含义。
+- 询问 DPAPI 自动解锁如何验证。
+- 询问收藏文件副本的路径、取消收藏是否删除、反复收藏/取消的行为。
+
+### 修复
+- `src/model.rs`：`TempPause` 增加序列化；新增 `RuntimeState { pause_capture, temp_pause, updated_ms }` 与 `is_paused()`；`MatchMode::hint()` 提供搜索模式说明。
+- `src/config.rs`：新增 `runtime.json` 原子读写；主进程把运行期暂停状态写入，管理台轮询读取。
+- `src/sys/thread.rs`：新增 `WM_COPYDATA` 临时暂停消息（`TEMP_PAUSE_MAGIC = 0x434C_4E50`）与 `send_temp_pause_update()`；300ms 定时器检查临时暂停到期。
+- `src/sys/state.rs`：`toggle_pause` 在永久或临时任一暂停时调用 `resume_capture()` 同时清除两者；`SysCmd::SetPause(false)` 清除临时暂停；托盘勾选改为根据 `RuntimeState::is_paused()` 显示；暂停状态变化 emit `SettingsUpdated`。
+- `src/manager_window.rs`：初始化读取 `runtime.json`，每 500ms 同步设置页；临时暂停按钮改为向主进程发送 IPC，不再只 toast。
+- `src/ui.rs`：`set_pause_state()` 同步 `paused` 与设置草稿。
+- `src/ui/picker.rs`、`src/ui/pages/history.rs`：搜索模式下拉框增加悬停说明。
+- `src/ui/pages/settings.rs`：数据区显示收藏副本目录，并提供「打开收藏副本目录」按钮。
+
+### 校验
+- `cargo test --release`：**235 passed / 0 failed / 1 ignored**（新增 `runtime_state_roundtrip_and_pause_summary`、`set_pause_state_keeps_settings_and_draft_in_sync`、`database_encryption_auto_unlocks_from_env_key`、`match_mode_hints_explain_any_and_all`）。
+- `cargo check --all-targets`：零错误。
+- 手动验证：启动新构建后检查 `%APPDATA%\ClipNest\runtime.json` 随暂停/恢复变化；管理台设置页与托盘勾选同步；临时暂停到期自动恢复。
+
+### 说明
+- 收藏文件副本目前固定在 `数据目录\blobs\files\<hash>\`，不做用户自定义目录；取消收藏不删除副本，重复收藏复用已有副本。若后续需要自定义目录或清理未收藏副本，需要新增设置并处理备份/迁移兼容。

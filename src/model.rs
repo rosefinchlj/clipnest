@@ -365,6 +365,20 @@ impl MatchMode {
     pub fn all() -> [MatchMode; 2] {
         [MatchMode::Any, MatchMode::All]
     }
+
+    /// 下拉框悬停说明：空格分词，双引号保留短语。
+    pub fn hint(self) -> &'static str {
+        match self {
+            MatchMode::Any => {
+                "任一关键词：多个词用空格分隔，命中其中任意一个就显示\n\
+                 双引号内的内容作为一个完整短语，不拆分"
+            }
+            MatchMode::All => {
+                "全部关键词：多个词用空格分隔，必须同时命中每一个才显示\n\
+                 双引号内的内容作为一个完整短语，不拆分"
+            }
+        }
+    }
 }
 
 /// 列表排序方式。`Trash` 页固定按删除时间倒序，与此无关。
@@ -828,7 +842,7 @@ impl ExitClearPolicy {
 }
 
 /// 运行期临时暂停（不写入 settings.json，重启即失效）。
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum TempPause {
     /// 无临时暂停。
     #[default]
@@ -867,6 +881,35 @@ impl TempPause {
             }
             TempPause::UntilRestart => "已暂停（直到重启 ClipNest）".to_string(),
         }
+    }
+}
+
+/// 主进程写入、管理台读取的运行期状态（不写 settings.json）。
+///
+/// 管理台是独立进程，无法直接读取 Sys 线程里的 `temp_pause`。主进程在暂停状态
+/// 变化时把它原子写到数据目录，管理台轮询后同步设置页按钮/开关。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeState {
+    /// 永久暂停（settings.pause_capture）。
+    pub pause_capture: bool,
+    /// 运行期临时暂停。
+    pub temp_pause: TempPause,
+    /// 最近更新时间（unix 毫秒，便于排查）。
+    pub updated_ms: i64,
+}
+
+impl RuntimeState {
+    pub fn new(pause_capture: bool, temp_pause: TempPause) -> Self {
+        Self {
+            pause_capture,
+            temp_pause,
+            updated_ms: now_ms(),
+        }
+    }
+
+    /// 当前是否实际暂停采集（永久暂停或临时暂停任一命中）。
+    pub fn is_paused(&self) -> bool {
+        self.pause_capture || self.temp_pause.is_active()
     }
 }
 
@@ -1371,6 +1414,25 @@ mod tests {
         assert!(!ExitClearPolicy::Unfavorited.include_favorites());
         assert!(ExitClearPolicy::All.include_favorites());
         assert_eq!(ExitClearPolicy::ALL.len(), 3);
+    }
+
+    #[test]
+    fn match_mode_hints_explain_any_and_all() {
+        assert!(MatchMode::Any.hint().contains("任意"));
+        assert!(MatchMode::All.hint().contains("每一个"));
+    }
+
+    #[test]
+    fn runtime_state_roundtrip_and_pause_summary() {
+        let temp = TempPause::Timed {
+            until_ms: now_ms() + 60_000,
+        };
+        let state = RuntimeState::new(true, temp);
+        assert!(state.is_paused());
+        let json = serde_json::to_string(&state).unwrap();
+        let back: RuntimeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, state);
+        assert!(!RuntimeState::new(false, TempPause::Off).is_paused());
     }
 
     #[test]

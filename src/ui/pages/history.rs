@@ -226,6 +226,12 @@ pub(crate) fn page(
     ) {
         state.set_match_mode(mode);
     }
+    ui.interact(
+        mode_rect,
+        egui::Id::new("history-match-mode-hint"),
+        Sense::hover(),
+    )
+    .on_hover_text(state.match_mode.hint());
     let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
         .iter()
         .map(|sort| (*sort, sort.label()))

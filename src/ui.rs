@@ -466,6 +466,13 @@ impl UiState {
         self.temp_pause = pause;
     }
 
+    /// 同步永久暂停（托盘/主进程改动后，管理台设置页用，不重置其他草稿）。
+    pub fn set_pause_state(&mut self, paused: bool) {
+        self.paused = paused;
+        self.settings.pause_capture = paused;
+        self.settings_draft.pause_capture = paused;
+    }
+
     /// 回填文件副本状态（A4：来自 `Event::FileCopyState`）。
     pub fn apply_file_copy_state(&mut self, clip_id: ClipId, state: CopyState) {
         self.copy_states.insert(clip_id, state);
