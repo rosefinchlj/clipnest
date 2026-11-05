@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::model::{now_ms, FileEntry};
+use crate::model::{now_ms, CopyState, FileEntry};
 use crate::store::StoreResult;
 
 /// blobs.kind：1 = 图片，2 = 收藏文件实体。
@@ -293,16 +293,38 @@ pub fn remove_all_blob_dirs(data_dir: &Path) -> std::io::Result<()> {
 pub struct FavoriteCopy {
     /// 收藏文件实体目录 id（即使没有复制成功也可能已存在）。
     pub blob_id: Option<String>,
-    /// 更新后的文件清单（stored 标记已刷新）。
+    /// 更新后的文件清单（stored 标记与 copy_state 已刷新）。
     pub files: Vec<FileEntry>,
     pub copied: usize,
     pub copied_bytes: u64,
     pub skipped_missing: usize,
     pub skipped_too_large: usize,
+    /// 复制过程中出错的文件数（权限/磁盘等，可重试）。
+    pub failed: usize,
     /// 因总量超限而未复制（spec §10.4：只停止新增，绝不删已有）。
     pub limit_hit: bool,
     /// 当前收藏文件实体总占用。
     pub total_bytes: u64,
+}
+
+impl FavoriteCopy {
+    /// 汇总为单个状态，供 UI 徽标/提示使用。
+    pub fn overall_state(&self) -> CopyState {
+        if self.failed > 0 {
+            CopyState::Failed
+        } else if self.limit_hit || self.skipped_too_large > 0 {
+            CopyState::TooLarge
+        } else if self.skipped_missing > 0 {
+            // 部分文件缺失也要显式提示，避免用户以为副本已完整保存。
+            CopyState::Missing
+        } else if self.copied > 0 || self.files.iter().any(|f| f.stored) {
+            CopyState::Stored
+        } else if self.files.is_empty() {
+            CopyState::NotNeeded
+        } else {
+            CopyState::Failed
+        }
+    }
 }
 
 /// 把文件清单中的文件复制进 `blobs/files/<blob_id>/`（收藏时调用）。
@@ -325,6 +347,13 @@ pub fn copy_favorite_files(
     };
     if max_total_bytes == 0 {
         report.limit_hit = true;
+        for file in report.files.iter_mut() {
+            if !file.stored {
+                file.copy_state = Some(CopyState::TooLarge);
+            } else {
+                file.copy_state = Some(CopyState::Stored);
+            }
+        }
         return Ok(report);
     }
     // 已收藏过则沿用原目录 id，保证幂等
@@ -336,6 +365,7 @@ pub fn copy_favorite_files(
 
     for file in report.files.iter_mut() {
         if file.stored && find_stored_copy(&dir, &file.name).is_some() {
+            file.copy_state = Some(CopyState::Stored);
             continue; // 已保存过
         }
         // 上次复制成功但 files_json 里的 stored 标记丢失：按同名副本复用
@@ -346,25 +376,30 @@ pub fn copy_favorite_files(
             if same_size || file.size == 0 {
                 file.stored = true;
                 file.exists = true;
+                file.copy_state = Some(CopyState::Stored);
                 continue;
             }
         }
         let src = Path::new(&file.path);
         let Ok(meta) = fs::metadata(src) else {
             report.skipped_missing += 1;
+            file.copy_state = Some(CopyState::Missing);
             continue;
         };
         if !meta.is_file() {
             report.skipped_missing += 1;
+            file.copy_state = Some(CopyState::Missing);
             continue;
         }
         let size = meta.len();
         if max_file_bytes > 0 && size > max_file_bytes {
             report.skipped_too_large += 1;
+            file.copy_state = Some(CopyState::TooLarge);
             continue;
         }
         if report.total_bytes.saturating_add(size) > max_total_bytes {
             report.limit_hit = true;
+            file.copy_state = Some(CopyState::TooLarge);
             continue;
         }
         fs::create_dir_all(&dir)?;
@@ -374,12 +409,18 @@ pub fn copy_favorite_files(
                 file.stored = true;
                 file.exists = true;
                 file.size = size;
+                file.copy_state = Some(CopyState::Stored);
                 report.copied += 1;
                 report.copied_bytes += copied_bytes;
                 report.total_bytes += copied_bytes;
             }
             Err(err) => {
-                crate::logging::warn(&format!("复制收藏文件失败（{}）：{err}", short_name(&file.name)));
+                report.failed += 1;
+                file.copy_state = Some(CopyState::Failed);
+                crate::logging::warn(&format!(
+                    "复制收藏文件失败（{}）：{err}",
+                    short_name(&file.name)
+                ));
             }
         }
     }

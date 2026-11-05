@@ -27,7 +27,7 @@ mod tests_blob;
 #[cfg(test)]
 mod tests_thread;
 
-use crate::model::{BackupEvent, Event, Settings, StoreCmd};
+use crate::model::{BackupEvent, CopyState, Event, Settings, StoreCmd};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -318,11 +318,40 @@ impl Store {
                 }
                 Ok(false)
             }
-            StoreCmd::Clear { delete_blobs } => {
-                self.db.clear(delete_blobs)?;
+            StoreCmd::Clear {
+                delete_blobs,
+                include_favorites,
+            } => {
+                let outcome = self.db.clear(delete_blobs, include_favorites)?;
                 *dirty = true;
                 *stats_due = true;
+                if include_favorites {
+                    self.toast(format!("已清空全部 {} 条历史", outcome.cleared));
+                } else if outcome.kept > 0 {
+                    self.toast(format!(
+                        "已清空 {} 条未收藏记录，保留收藏 {} 条",
+                        outcome.cleared, outcome.kept
+                    ));
+                } else {
+                    self.toast(format!("已清空 {} 条历史", outcome.cleared));
+                }
                 Ok(false)
+            }
+            StoreCmd::ClearForExit(policy) => {
+                if policy.clears() {
+                    // 退出清理属于隐私动作：被删除记录引用的图片/文件实体一并物理删除；
+                    // 收藏项（及收藏文件实体）在该分支不会被删除，引用计数保护其 blob。
+                    let outcome = self.db.clear(true, policy.include_favorites())?;
+                    crate::logging::log(&format!(
+                        "退出清理（{}）：删除 {} 条、保留收藏 {} 条",
+                        policy.label(),
+                        outcome.cleared,
+                        outcome.kept
+                    ));
+                    self.emit(Event::ClipsChanged);
+                }
+                // 让 Store 线程在清理完成后自行退出；UI 侧 `store=None` 的 Drop join 会等它结束。
+                Ok(true)
             }
             StoreCmd::GetPastePayload(id) => {
                 match self.db.paste_payload(id)? {
@@ -420,13 +449,34 @@ impl Store {
         }
     }
 
-    /// 收藏文件实体复制 + Toast 提示（超限/部分失败/成功）。
+    /// 收藏文件实体复制 + 状态事件 + Toast 提示（A4）。
+    ///
+    /// 复制前先发 `Pending`（UI 立刻显示「正在保存副本…」，不冻结界面），
+    /// 复制完成后再发最终状态（Stored/Failed/TooLarge/Missing）并刷新列表。
     fn report_favorite_copy(&self, id: i64, settings: &Settings) -> StoreResult<()> {
+        self.emit(Event::FileCopyState {
+            clip_id: id,
+            state: CopyState::Pending,
+        });
         let Some(copy) = self.db.save_favorite_files(id, settings)? else {
+            self.emit(Event::FileCopyState {
+                clip_id: id,
+                state: CopyState::NotNeeded,
+            });
             return Ok(());
         };
+        let state = copy.overall_state();
+        self.emit(Event::FileCopyState {
+            clip_id: id,
+            state,
+        });
         if copy.limit_hit {
             self.toast("收藏文件副本已达上限，仅保留路径".to_string());
+        } else if copy.failed > 0 {
+            self.toast(format!(
+                "{} 个文件副本保存失败，可在详情里重试",
+                copy.failed
+            ));
         } else if copy.copied > 0 {
             self.toast(format!("已保存 {} 个文件副本", copy.copied));
         } else if copy.skipped_too_large > 0 {

@@ -334,16 +334,28 @@ impl ManagerApp {
                 }
                 self.ui.refresh();
             }
-            UiAction::Clear { delete_blobs } => {
+            UiAction::Clear {
+                delete_blobs,
+                include_favorites,
+            } => {
                 if let Some(tx) = &self.store_tx {
-                    let _ = tx.send(StoreCmd::Clear { delete_blobs });
+                    let _ = tx.send(StoreCmd::Clear {
+                        delete_blobs,
+                        include_favorites,
+                    });
                 }
                 self.ui.refresh();
             }
-            UiAction::SaveFavoriteFiles(id) => {
+            UiAction::SaveFavoriteFiles(id) | UiAction::RetryFileCopy(id) => {
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::SaveFavoriteFiles(id));
                 }
+            }
+            UiAction::SetTempPause(_) => {
+                // 临时暂停属于主进程 Sys 线程的运行期状态，管理台是独立进程，
+                // 这里只提示用户到托盘菜单/主面板设置里操作（不写设置文件）。
+                self.ui
+                    .toast("临时暂停请在托盘菜单或主面板「设置」里操作");
             }
             UiAction::OpenManager => {}
             UiAction::OpenPicker => {

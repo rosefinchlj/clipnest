@@ -61,6 +61,49 @@ impl ClipKind {
     }
 }
 
+/// 收藏文件实体副本的保存状态（仅收藏的文件条目需要）。
+///
+/// 旧版 `files_json` 没有该字段，反序列化时回退为 `None`（未知），
+/// 由 UI 再根据 `stored`/`exists` 兜底展示。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyState {
+    /// 正在后台复制。
+    Pending,
+    /// 已保存到数据目录。
+    Stored,
+    /// 复制失败（权限/磁盘等），可重试。
+    Failed,
+    /// 超出单文件/总量上限，不再尝试。
+    TooLarge,
+    /// 源文件已不存在。
+    Missing,
+    /// 不需要副本（例如非收藏项或尚未请求）。
+    NotNeeded,
+}
+
+impl CopyState {
+    /// 中文状态文案（列表/详情徽标）。
+    pub fn label(self) -> &'static str {
+        match self {
+            CopyState::Pending => "正在保存副本…",
+            CopyState::Stored => "已保存副本",
+            CopyState::Failed => "副本保存失败",
+            CopyState::TooLarge => "超出上限，未保存副本",
+            CopyState::Missing => "源文件不存在",
+            CopyState::NotNeeded => "仅路径",
+        }
+    }
+
+    /// 是否值得提供「重试保存副本」。
+    pub fn retryable(self) -> bool {
+        matches!(
+            self,
+            CopyState::Failed | CopyState::TooLarge | CopyState::Missing
+        )
+    }
+}
+
 /// 文件列表中的一项。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -70,6 +113,9 @@ pub struct FileEntry {
     pub exists: bool,
     /// 是否已在数据目录中保存实体副本（仅收藏项会置 true）。
     pub stored: bool,
+    /// 实体副本保存状态；旧版 JSON 无此字段时为 `None`。
+    #[serde(default)]
+    pub copy_state: Option<CopyState>,
 }
 
 impl FileEntry {
@@ -85,6 +131,7 @@ impl FileEntry {
             size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
             exists: meta.is_some(),
             stored: false,
+            copy_state: None,
         }
     }
 
@@ -617,6 +664,135 @@ impl PasteKey {
     }
 }
 
+/// 明确退出 ClipNest 时的自动清理策略。
+///
+/// 只在「托盘退出」/「管理台退出」这类明确退出动作触发；
+/// 关闭候选窗、隐藏到托盘不触发，避免误删用户历史。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitClearPolicy {
+    /// 不清理（默认，最安全）。
+    #[default]
+    Off,
+    /// 清空未收藏记录，保留收藏与收藏文件副本。
+    Unfavorited,
+    /// 清空全部记录（含收藏）。
+    All,
+}
+
+impl ExitClearPolicy {
+    pub const ALL: [ExitClearPolicy; 3] = [
+        ExitClearPolicy::Off,
+        ExitClearPolicy::Unfavorited,
+        ExitClearPolicy::All,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ExitClearPolicy::Off => "不清理",
+            ExitClearPolicy::Unfavorited => "清空未收藏",
+            ExitClearPolicy::All => "全部清空",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            ExitClearPolicy::Off => "退出后保留全部历史（默认，最安全）",
+            ExitClearPolicy::Unfavorited => "退出后清除未收藏记录，收藏与收藏文件副本保留（推荐）",
+            ExitClearPolicy::All => "退出后清空全部记录（含收藏，不可恢复）",
+        }
+    }
+
+    /// 退出清理时是否包含收藏项。
+    pub fn include_favorites(self) -> bool {
+        matches!(self, ExitClearPolicy::All)
+    }
+
+    /// 是否需要执行清理。
+    pub fn clears(self) -> bool {
+        !matches!(self, ExitClearPolicy::Off)
+    }
+}
+
+/// 运行期临时暂停（不写入 settings.json，重启即失效）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TempPause {
+    /// 无临时暂停。
+    #[default]
+    Off,
+    /// 暂停到指定 unix 毫秒时间戳。
+    Timed { until_ms: i64 },
+    /// 暂停直到本次运行结束（重启后恢复记录）。
+    UntilRestart,
+}
+
+impl TempPause {
+    /// 指定时刻是否仍处于暂停。
+    pub fn is_active_at(self, now_ms: i64) -> bool {
+        match self {
+            TempPause::Off => false,
+            TempPause::Timed { until_ms } => now_ms < until_ms,
+            TempPause::UntilRestart => true,
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        self.is_active_at(now_ms())
+    }
+
+    /// 中文状态文案（设置页/托盘 tooltip）。
+    pub fn label(self) -> String {
+        match self {
+            TempPause::Off => "未暂停".to_string(),
+            TempPause::Timed { until_ms } => {
+                let remaining = (until_ms - now_ms()).max(0);
+                let minutes = (remaining + 59_999) / 60_000;
+                let dt = chrono::DateTime::from_timestamp_millis(until_ms)
+                    .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                    .unwrap_or_else(|| "稍后".to_string());
+                format!("已暂停（{} 后自动恢复，约至 {dt}）", fmt_minutes(minutes))
+            }
+            TempPause::UntilRestart => "已暂停（直到重启 ClipNest）".to_string(),
+        }
+    }
+}
+
+/// 分钟数 → 人话（45 分钟 / 1 小时 20 分钟）。
+fn fmt_minutes(minutes: i64) -> String {
+    let minutes = minutes.max(0);
+    if minutes < 60 {
+        format!("{minutes} 分钟")
+    } else {
+        let h = minutes / 60;
+        let m = minutes % 60;
+        if m == 0 {
+            format!("{h} 小时")
+        } else {
+            format!("{h} 小时 {m} 分钟")
+        }
+    }
+}
+
+/// 常见密码管理器进程：新装默认忽略，避免把密码写进剪贴板历史。
+/// 只在 settings.json 完全没有 `ignore_apps` 字段时应用；
+/// 用户已有的名单（包括空列表）不会被覆盖。
+pub fn default_ignore_apps() -> Vec<String> {
+    [
+        "1password.exe",
+        "bitwarden.exe",
+        "keepass.exe",
+        "keepassxc.exe",
+        "lastpass.exe",
+        "dashlane.exe",
+        "enpass.exe",
+        "keeper.exe",
+        "roboform.exe",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// 用户设置（持久化到 settings.json；未知字段忽略、缺失字段取默认值）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -631,7 +807,15 @@ pub struct Settings {
     pub hotkey_picker: HotkeyChord,
     pub pause_capture: bool,
     /// 忽略的应用进程名（小写、含 .exe）。
+    ///
+    /// 只有 settings.json 完全没有该字段时才注入常见密码管理器；
+    /// 用户手动清空名单（`[]`）后不会被覆盖。
+    #[serde(default = "default_ignore_apps")]
     pub ignore_apps: Vec<String>,
+    /// 明确退出时的自动清理策略（默认不清理）。
+    pub exit_clear_policy: ExitClearPolicy,
+    /// 首次引导是否已完成（欢迎提示 + 自启选项只出现一次）。
+    pub first_run_done: bool,
 
     pub max_items: usize,
     pub max_image_bytes: u64,
@@ -661,7 +845,9 @@ impl Default for Settings {
             glass_opacity: 75,
             hotkey_picker: HotkeyChord::default(),
             pause_capture: false,
-            ignore_apps: Vec::new(),
+            ignore_apps: default_ignore_apps(),
+            exit_clear_policy: ExitClearPolicy::Off,
+            first_run_done: false,
 
             max_items: 5000,
             max_image_bytes: 200 * 1024 * 1024,
@@ -780,6 +966,13 @@ pub enum Event {
     SettingsUpdated(Box<Settings>),
     /// 备用全局快捷键注册状态。
     HotkeyStatus { ok: bool, reason: Option<String> },
+    /// 运行期临时暂停状态变化（托盘菜单 / 设置页共用）。
+    TempPauseChanged(TempPause),
+    /// 收藏文件副本状态变化（A4）：Pending 先发、完成后再发最终状态。
+    FileCopyState {
+        clip_id: ClipId,
+        state: CopyState,
+    },
     /// 剪贴板监听线程捕获到新内容（正常情况下 Sys 发 `Event::Captured`，由 UI 线程转发 `StoreCmd::Upsert`）。
     Captured(ClipInput),
     /// 完整备份/恢复任务进度与结果（Store 线程串行执行）。
@@ -808,9 +1001,17 @@ pub enum StoreCmd {
     Purge(Vec<ClipId>),
     /// 永久清空回收站。
     EmptyTrash,
+    /// 清空历史。
+    ///
+    /// `include_favorites=false`（默认）只删未收藏记录并保留收藏文件副本；
+    /// `include_favorites=true` 连同收藏一起删除（调用方必须先做输入确认）。
     Clear {
         delete_blobs: bool,
+        include_favorites: bool,
     },
+    /// 退出前按策略清理历史；Store 处理完会回发 `Event::ClipsChanged`，
+    /// UI 收到后即可安全退出（保证清理真正落盘）。
+    ClearForExit(ExitClearPolicy),
     GetPastePayload(ClipId),
     /// 把某条文件的实体复制进数据目录（收藏时调用）。
     SaveFavoriteFiles(ClipId),
@@ -850,6 +1051,8 @@ pub enum SysCmd {
     SetHotkeys { picker: HotkeyChord },
     /// 暂停/恢复剪贴板监听。
     SetPause(bool),
+    /// 运行期临时暂停（不写入 settings.json）。
+    SetTempPause(TempPause),
     /// 设置开机自启。
     SetAutostart(bool),
     /// 请求立即退出（UI 侧已在退出流程中）。
@@ -936,6 +1139,66 @@ mod tests {
         assert_eq!(s.hotkey_picker.label(), "Ctrl+`");
         assert!(s.hotkey_picker.is_set());
         assert!(!s.autostart);
+        assert_eq!(s.exit_clear_policy, ExitClearPolicy::Off);
+        assert!(!s.first_run_done);
+        assert!(!s.ignore_apps.is_empty());
+        assert!(s.ignore_apps.iter().any(|a| a == "1password.exe"));
+    }
+
+    #[test]
+    fn default_ignore_apps_are_lowercase_exe_names() {
+        let apps = default_ignore_apps();
+        assert!(apps.len() >= 6);
+        for app in &apps {
+            assert_eq!(*app, app.to_ascii_lowercase(), "{app} 必须是小写");
+            assert!(app.ends_with(".exe"), "{app} 必须带 .exe");
+        }
+    }
+
+    #[test]
+    fn settings_json_adds_ignore_defaults_only_when_absent() {
+        // 完全缺失该字段：注入常见密码管理器。
+        let partial: Settings = serde_json::from_str(r#"{"max_items": 7}"#).unwrap();
+        assert_eq!(partial.max_items, 7);
+        assert!(!partial.ignore_apps.is_empty());
+        // 用户显式清空成 []：必须尊重，不被默认名单覆盖。
+        let emptied: Settings = serde_json::from_str(r#"{"ignore_apps": []}"#).unwrap();
+        assert!(emptied.ignore_apps.is_empty());
+        // 用户自定义名单：原样保留。
+        let custom: Settings = serde_json::from_str(r#"{"ignore_apps": ["foo.exe"]}"#).unwrap();
+        assert_eq!(custom.ignore_apps, vec!["foo.exe".to_string()]);
+    }
+
+    #[test]
+    fn file_entry_legacy_json_without_copy_state() {
+        // 旧版 files_json 没有 copy_state，必须能反序列化（serde default）。
+        let legacy = r#"{"name":"a.txt","path":"C:\\a.txt","size":12,"exists":true,"stored":true}"#;
+        let entry: FileEntry = serde_json::from_str(legacy).unwrap();
+        assert_eq!(entry.copy_state, None);
+        assert!(entry.stored);
+        // 新字段可往返。
+        let mut entry = entry;
+        entry.copy_state = Some(CopyState::Failed);
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: FileEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.copy_state, Some(CopyState::Failed));
+        assert!(CopyState::Failed.retryable());
+        assert!(!CopyState::Stored.retryable());
+    }
+
+    #[test]
+    fn temp_pause_and_exit_policy() {
+        assert!(!TempPause::Off.is_active());
+        assert!(TempPause::UntilRestart.is_active());
+        let until = now_ms() + 15 * 60_000;
+        assert!(TempPause::Timed { until_ms: until }.is_active());
+        assert!(!TempPause::Timed { until_ms: now_ms() - 1 }.is_active());
+        assert!(TempPause::Timed { until_ms: until }.label().contains("暂停"));
+        assert_eq!(ExitClearPolicy::Off.clears(), false);
+        assert_eq!(ExitClearPolicy::Unfavorited.clears(), true);
+        assert!(!ExitClearPolicy::Unfavorited.include_favorites());
+        assert!(ExitClearPolicy::All.include_favorites());
+        assert_eq!(ExitClearPolicy::ALL.len(), 3);
     }
 
     #[test]

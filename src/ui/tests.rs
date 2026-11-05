@@ -4,7 +4,7 @@
 //! Win+V/热键状态展示、Toast 生命周期等。
 
 use super::*;
-use crate::model::{ClipItem, ClipKind, SearchPage, TimeRange};
+use crate::model::{ClipItem, ClipKind, CopyState, FileEntry, SearchPage, TempPause, TimeRange};
 
 fn state() -> UiState {
     UiState::new(&egui::Context::default(), &Settings::default())
@@ -303,4 +303,74 @@ fn clear_request_opens_confirm_and_defaults_to_deleting_blobs() {
     s.request_clear();
     assert!(s.confirm.is_some());
     assert!(s.clear_delete_blobs);
+}
+
+// ---------------------------------------------------------------------------
+// A4：文件副本状态
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_copy_state_overlays_pending_and_marks_failures_retryable() {
+    let mut s = state();
+    let mut item = ClipItem {
+        id: 7,
+        kind: ClipKind::Files,
+        ..Default::default()
+    };
+    item.files = vec![FileEntry {
+        name: "a.txt".to_string(),
+        path: "C:\\tmp\\a.txt".to_string(),
+        size: 5,
+        exists: true,
+        stored: false,
+        copy_state: None,
+    }];
+    s.items = vec![item];
+
+    s.apply_file_copy_state(7, CopyState::Pending);
+    assert_eq!(s.items[0].files[0].copy_state, Some(CopyState::Pending));
+    assert_eq!(s.copy_state_for(&s.items[0]), Some(CopyState::Pending));
+
+    s.apply_file_copy_state(7, CopyState::Failed);
+    assert_eq!(s.items[0].files[0].copy_state, Some(CopyState::Failed));
+    assert!(
+        s.copy_state_for(&s.items[0])
+            .expect("应有副本状态")
+            .retryable(),
+        "保存失败应允许重试"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A3：临时暂停
+// ---------------------------------------------------------------------------
+
+#[test]
+fn temp_pause_is_runtime_only_and_restorable() {
+    let mut s = state();
+    assert!(!s.temp_pause.is_active());
+    s.set_temp_pause(TempPause::Timed {
+        until_ms: crate::model::now_ms() + 60_000,
+    });
+    assert!(s.temp_pause.is_active());
+    s.set_temp_pause(TempPause::Off);
+    assert!(!s.temp_pause.is_active());
+}
+
+// ---------------------------------------------------------------------------
+// A2：清空确认的默认范围
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clear_confirm_resets_to_unfavorited_scope() {
+    let mut s = state();
+    s.clear_include_favorites = true;
+    s.clear_confirm_text = "清空收藏".to_string();
+    s.request_clear();
+    assert!(!s.clear_include_favorites, "默认只清空未收藏");
+    assert!(s.clear_confirm_text.is_empty(), "确认词应重置");
+    assert!(matches!(
+        s.confirm.as_ref().map(|c| &c.kind),
+        Some(ConfirmKind::Clear)
+    ));
 }

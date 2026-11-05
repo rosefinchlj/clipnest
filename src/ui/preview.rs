@@ -424,6 +424,11 @@ impl PreviewState {
                 } else {
                     "（预览）已恢复记录"
                 }),
+                UiAction::SetTempPause(pause) => {
+                    self.state.set_temp_pause(pause);
+                    self.state.toast(format!("（预览）临时暂停：{}", pause.label()));
+                }
+                UiAction::RetryFileCopy(_) => self.state.toast("（预览）重试保存文件副本（未执行）"),
                 UiAction::ExportJson => self.state.toast("（预览）导出 JSON（未执行）"),
                 UiAction::OpenDataDir => self.state.toast("（预览）打开数据目录（未执行）"),
                 UiAction::RefreshStats => self.state.toast("（预览）刷新统计"),
@@ -555,6 +560,7 @@ fn files_item(id: i64, files: &[(&str, &str, u64, bool)], app: &str, minutes_ago
             size: *size,
             exists: *exists,
             stored: false,
+            copy_state: None,
         })
         .collect();
     let byte_len = entries.iter().map(|f| f.size).sum();
