@@ -13,7 +13,7 @@ pub const APP_NAME: &str = "ClipNest";
 /// 窗口标题。
 pub const APP_TITLE: &str = "ClipNest · 剪贴匣";
 /// 当前数据库 schema 版本。
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// 回收站保留时长：手动删除后 2 天自动彻底删除。
 pub const TRASH_RETENTION_MS: i64 = 2 * 24 * 60 * 60 * 1000;
@@ -154,6 +154,10 @@ pub struct ClipItem {
     pub kind: ClipKind,
     pub preview: String,
     pub text: Option<String>,
+    /// 富文本 HTML fragment（已 sanitize；旧数据/旧 JSON 为 None）。
+    pub html: Option<String>,
+    /// RTF 原文（已做基本控制字过滤；旧数据/旧 JSON 为 None）。
+    pub rtf: Option<String>,
     pub files: Vec<FileEntry>,
     pub blob_id: Option<String>,
     pub byte_len: u64,
@@ -253,6 +257,10 @@ pub struct ClipInput {
     pub hash: String,
     pub preview: String,
     pub text: Option<String>,
+    /// 富文本 HTML fragment（来自 CF_HTML，已 sanitize）。
+    pub html: Option<String>,
+    /// RTF 原文（来自 "Rich Text Format"，已做基本过滤）。
+    pub rtf: Option<String>,
     /// 图片的 PNG 字节（Store 负责落盘）。
     pub image_png: Option<Vec<u8>>,
     pub files: Vec<FileEntry>,
@@ -270,6 +278,10 @@ pub struct PastePayload {
     pub clip_id: ClipId,
     pub kind: ClipKind,
     pub text: Option<String>,
+    /// 富文本 HTML fragment（回写前会再次 sanitize）。
+    pub html: Option<String>,
+    /// RTF 原文（回写前会再次做基本过滤）。
+    pub rtf: Option<String>,
     /// 图片文件路径（PNG）。
     pub png_path: Option<PathBuf>,
     pub files: Vec<FileEntry>,

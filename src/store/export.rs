@@ -45,6 +45,12 @@ pub struct ExportClip {
     pub preview: String,
     #[serde(default)]
     pub text: Option<String>,
+    /// 富文本 HTML fragment（可选字段，旧导出文件缺失时为 None）。
+    #[serde(default)]
+    pub html: Option<String>,
+    /// RTF 原文（可选字段，旧导出文件缺失时为 None）。
+    #[serde(default)]
+    pub rtf: Option<String>,
     #[serde(default)]
     pub files: Vec<FileEntry>,
     #[serde(default)]
@@ -158,6 +164,8 @@ pub fn import_json(db: &Db, path: &Path) -> StoreResult<ImportReport> {
             hash,
             preview: clip.preview,
             text: clip.text,
+            html: clip.html,
+            rtf: clip.rtf,
             image_png: None,
             files: clip.files,
             byte_len: clip.byte_len,
@@ -204,7 +212,8 @@ pub fn import_json(db: &Db, path: &Path) -> StoreResult<ImportReport> {
 fn collect_clips(db: &Db) -> StoreResult<Vec<ExportClip>> {
     let mut stmt = db.conn.prepare(
         "SELECT id, kind, hash, preview, text, files_json, blob_id, byte_len, width, height,
-                created_at, last_used_at, use_count, favorited, pinned, source_app, source_title
+                created_at, last_used_at, use_count, favorited, pinned, source_app, source_title,
+                html, rtf
          FROM clips ORDER BY created_at ASC, id ASC",
     )?;
     let iter = stmt.query_map([], |row| {
@@ -235,6 +244,8 @@ fn collect_clips(db: &Db) -> StoreResult<Vec<ExportClip>> {
             pinned: pinned != 0,
             source_app: row.get(15)?,
             source_title: row.get(16)?,
+            html: row.get(17)?,
+            rtf: row.get(18)?,
         })
     })?;
     let clips = iter.collect::<rusqlite::Result<Vec<_>>>()?;
