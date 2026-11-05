@@ -343,6 +343,63 @@ impl ClipFilter {
     }
 }
 
+/// 多关键词匹配模式。
+///
+/// 搜索文本按空白拆成多个关键词（双引号内的短语不拆）；`Any` 任一命中即可，
+/// `All` 要求每个关键词都命中（AND）。默认 `Any` 保持旧行为。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MatchMode {
+    #[default]
+    Any,
+    All,
+}
+
+impl MatchMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            MatchMode::Any => "任一关键词",
+            MatchMode::All => "全部关键词",
+        }
+    }
+
+    pub fn all() -> [MatchMode; 2] {
+        [MatchMode::Any, MatchMode::All]
+    }
+}
+
+/// 列表排序方式。`Trash` 页固定按删除时间倒序，与此无关。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SortOrder {
+    #[default]
+    Recent,
+    Oldest,
+    Largest,
+    Type,
+    MostUsed,
+}
+
+impl SortOrder {
+    pub fn label(self) -> &'static str {
+        match self {
+            SortOrder::Recent => "最近使用",
+            SortOrder::Oldest => "最早使用",
+            SortOrder::Largest => "最大文件",
+            SortOrder::Type => "类型",
+            SortOrder::MostUsed => "使用最多",
+        }
+    }
+
+    pub fn all() -> [SortOrder; 5] {
+        [
+            SortOrder::Recent,
+            SortOrder::Oldest,
+            SortOrder::Largest,
+            SortOrder::Type,
+            SortOrder::MostUsed,
+        ]
+    }
+}
+
 /// 列表时间范围筛选。按 `last_used_at` 计算。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum TimeRange {
@@ -453,6 +510,12 @@ pub struct SearchQuery {
     pub custom_day: Option<i64>,
     /// `TimeRange::Custom` 结束日的本地 00:00 时间戳；与起始日相同表示单日。
     pub custom_end_day: Option<i64>,
+    /// 多关键词匹配模式（任一 / 全部）。
+    pub match_mode: MatchMode,
+    /// 来源应用筛选（文件/进程名，如 `chrome.exe`）；`None` 表示全部来源。
+    pub source_app: Option<String>,
+    /// 排序方式。
+    pub sort: SortOrder,
     pub offset: usize,
     pub limit: usize,
     /// true 时查询回收站（deleted_at 非空）。
@@ -469,6 +532,9 @@ impl Default for SearchQuery {
             time_range: TimeRange::All,
             custom_day: None,
             custom_end_day: None,
+            match_mode: MatchMode::Any,
+            source_app: None,
+            sort: SortOrder::Recent,
             offset: 0,
             limit: 200,
             trash: false,
@@ -818,6 +884,8 @@ pub struct Settings {
     /// 备用全局快捷键（Win+V 被接管时仍保留）。
     pub hotkey_picker: HotkeyChord,
     pub pause_capture: bool,
+    /// 打开候选窗时保留上次的搜索关键词（默认关闭）。
+    pub keep_search_on_open: bool,
     /// 忽略的应用进程名（小写、含 .exe）。
     ///
     /// 只有 settings.json 完全没有该字段时才注入常见密码管理器；
@@ -860,6 +928,7 @@ impl Default for Settings {
             ignore_apps: default_ignore_apps(),
             exit_clear_policy: ExitClearPolicy::Off,
             first_run_done: false,
+            keep_search_on_open: false,
 
             max_items: 5000,
             max_image_bytes: 200 * 1024 * 1024,
@@ -970,6 +1039,8 @@ pub enum Event {
     PastePayload(PastePayload),
     /// 统计信息刷新。
     Stats(Stats),
+    /// 历史记录中出现的来源应用名（去重、非空、按名称排序）。
+    SourceApps(Vec<String>),
     /// 自动粘贴结果。
     PasteResult { ok: bool, reason: Option<String> },
     /// 轻提示（UI toast）。
@@ -1028,6 +1099,8 @@ pub enum StoreCmd {
     /// 把某条文件的实体复制进数据目录（收藏时调用）。
     SaveFavoriteFiles(ClipId),
     RefreshStats,
+    /// 查询历史记录中出现过的来源应用（供「来源」下拉使用）。
+    ListSourceApps,
     ExportJson {
         path: PathBuf,
     },

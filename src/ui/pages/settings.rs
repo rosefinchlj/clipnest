@@ -422,6 +422,18 @@ fn behavior_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<Ui
                 }
             },
         );
+        // 打开面板时保留上次搜索
+        setting_row(
+            ui,
+            "打开面板时保留上次搜索",
+            "关闭时每次打开候选窗都会清空搜索词、筛选与来源",
+            |ui| {
+                let mut v = state.settings_draft.keep_search_on_open;
+                if widgets::switch(ui, &mut v).changed() {
+                    state.settings_draft.keep_search_on_open = v;
+                }
+            },
+        );
         // 粘贴后保留剪贴板
         setting_row(
             ui,

@@ -28,8 +28,8 @@ pub use theme::install_theme;
 pub use thumbs::ThumbCache;
 
 use crate::model::{
-    fmt_size, BackupPreview, ClipFilter, ClipId, ClipItem, CopyState, SearchPage, Settings, Stats,
-    TempPause, TimeRange,
+    fmt_size, BackupPreview, ClipFilter, ClipId, ClipItem, CopyState, MatchMode, SearchPage,
+    Settings, SortOrder, Stats, TempPause, TimeRange,
 };
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
@@ -98,10 +98,15 @@ pub enum UiAction {
         time_range: TimeRange,
         custom_day: Option<i64>,
         custom_end_day: Option<i64>,
+        match_mode: MatchMode,
+        source_app: Option<String>,
+        sort: SortOrder,
         offset: usize,
         trash: bool,
         gen: u64,
     },
+    /// 请求历史记录中出现过的来源应用（供「来源」下拉）。
+    ListSourceApps,
     /// 粘贴选中项（`plain=true` 只复制到剪贴板）。
     Paste { id: ClipId, plain: bool },
     /// 粘贴前先取载荷（Lead 发 `StoreCmd::GetPastePayload`）。
@@ -233,6 +238,16 @@ pub struct UiState {
     pending: Option<PendingSearch>,
     picker_filter: ClipFilter,
     manager_filter: ClipFilter,
+    /// 多关键词匹配模式（任一 / 全部），Picker 与 Manager 共用。
+    match_mode: MatchMode,
+    /// 排序方式（Picker 与 Manager 共用；回收站固定按删除时间倒序）。
+    sort: SortOrder,
+    /// 来源应用筛选；`None` 表示全部来源。
+    source_app: Option<String>,
+    /// 历史记录中出现过的来源应用（「来源」下拉选项，由 Store 推送）。
+    source_apps: Vec<String>,
+    /// 下次开始帧是否需要请求来源列表。
+    source_apps_due: bool,
     picker_time_range: TimeRange,
     manager_time_range: TimeRange,
     /// 时间范围筛选行是否展开（默认隐藏，由「筛选」按钮控制）。
@@ -309,6 +324,11 @@ impl UiState {
             pending: None,
             picker_filter: ClipFilter::All,
             manager_filter: ClipFilter::All,
+            match_mode: MatchMode::Any,
+            sort: SortOrder::Recent,
+            source_app: None,
+            source_apps: Vec::new(),
+            source_apps_due: false,
             picker_time_range: TimeRange::All,
             manager_time_range: TimeRange::All,
             picker_time_open: false,
@@ -503,11 +523,16 @@ impl UiState {
         self.manager_page = page;
         self.manager_search_focus = false;
         self.search_focus = false;
-        self.manager_time_range = TimeRange::All;
-        self.manager_time_open = false;
-        self.manager_custom_day = None;
-        self.manager_custom_end = None;
-        self.date_picker_open = false;
+        // 「保留上次搜索」开启时，管理台也沿用上次的筛选条件与时间范围。
+        if !self.settings.keep_search_on_open {
+            self.manager_time_range = TimeRange::All;
+            self.manager_time_open = false;
+            self.manager_custom_day = None;
+            self.manager_custom_end = None;
+            self.date_picker_open = false;
+        }
+        // 来源列表随进入列表页刷新（新应用捕获到的记录才能出现在下拉里）。
+        self.source_apps_due = true;
         if matches!(
             page,
             ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
@@ -521,15 +546,21 @@ impl UiState {
     }
 
     /// 回到候选窗：清空搜索与过滤、聚焦搜索框、立即查询（Lead 在呼出面板时调用）。
+    ///
+    /// 「保留上次搜索关键词」开启时沿用上次的搜索词、筛选、来源与时间范围（设置项，默认关闭）。
     pub fn enter_picker(&mut self) {
         self.mode = WindowMode::Picker;
-        self.search_text.clear();
-        self.picker_filter = ClipFilter::All;
-        self.picker_time_range = TimeRange::All;
-        self.picker_time_open = false;
-        self.picker_custom_day = None;
-        self.picker_custom_end = None;
-        self.date_picker_open = false;
+        if !self.settings.keep_search_on_open {
+            self.search_text.clear();
+            self.picker_filter = ClipFilter::All;
+            self.source_app = None;
+            self.picker_time_range = TimeRange::All;
+            self.picker_time_open = false;
+            self.picker_custom_day = None;
+            self.picker_custom_end = None;
+            self.date_picker_open = false;
+        }
+        self.source_apps_due = true;
         self.selected = Some(0);
         self.pending_scroll_row = Some(0);
         self.picker_scroll_offset = 0.0;
@@ -544,6 +575,7 @@ impl UiState {
     pub fn refresh(&mut self) {
         self.append_gen = None;
         self.append_requested_len = 0;
+        self.source_apps_due = true;
         self.schedule_search(true);
     }
 
@@ -653,11 +685,18 @@ impl UiState {
                     time_range: self.effective_time_range(),
                     custom_day: self.effective_custom_day(),
                     custom_end_day: self.effective_custom_end(),
+                    match_mode: self.match_mode,
+                    source_app: self.effective_source_app(),
+                    sort: self.sort,
                     offset: pending.offset,
                     trash: self.search_trash(),
                     gen: pending.gen,
                 });
             }
+        }
+        if self.source_apps_due {
+            self.source_apps_due = false;
+            actions.push(UiAction::ListSourceApps);
         }
         if let Some(pending) = &self.pending {
             ctx.request_repaint_after(pending.due.saturating_duration_since(Instant::now()));
@@ -723,6 +762,57 @@ impl UiState {
         }
     }
 
+    /// 当前生效的来源筛选：回收站页不按来源过滤（页面上没有清除入口，避免隐藏筛选）。
+    pub(crate) fn effective_source_app(&self) -> Option<String> {
+        if self.search_trash() {
+            None
+        } else {
+            self.source_app.clone()
+        }
+    }
+
+    /// 设置排序方式并立即重新查询；返回是否发生变化。
+    pub(crate) fn set_sort(&mut self, sort: SortOrder) -> bool {
+        if self.sort == sort {
+            return false;
+        }
+        self.sort = sort;
+        self.schedule_search(true);
+        true
+    }
+
+    /// 设置来源筛选并立即重新查询；返回是否发生变化。
+    pub(crate) fn set_source_app(&mut self, app: Option<String>) -> bool {
+        if self.source_app == app {
+            return false;
+        }
+        self.source_app = app;
+        self.schedule_search(true);
+        true
+    }
+
+    /// 设置多关键词匹配模式并立即重新查询；返回是否发生变化。
+    pub(crate) fn set_match_mode(&mut self, mode: MatchMode) -> bool {
+        if self.match_mode == mode {
+            return false;
+        }
+        self.match_mode = mode;
+        self.schedule_search(true);
+        true
+    }
+
+    /// 应用 Store 推送的来源列表；当前筛选值即使已不存在也保留，避免筛选被悄悄重置。
+    pub fn apply_source_apps(&mut self, apps: Vec<String>) {
+        let mut apps = apps;
+        if let Some(current) = self.source_app.clone() {
+            if !apps.iter().any(|app| app.eq_ignore_ascii_case(&current)) {
+                apps.push(current);
+                apps.sort_by_key(|app| app.to_lowercase());
+            }
+        }
+        self.source_apps = apps;
+    }
+
     pub(crate) fn set_effective_custom_day(&mut self, day: Option<i64>) {
         match self.mode {
             WindowMode::Picker => self.picker_custom_day = day,
@@ -785,6 +875,9 @@ impl UiState {
             time_range: self.effective_time_range(),
             custom_day: self.effective_custom_day(),
             custom_end_day: self.effective_custom_end(),
+            match_mode: self.match_mode,
+            source_app: self.effective_source_app(),
+            sort: self.sort,
             offset: self.items.len(),
             trash: self.search_trash(),
             gen,
@@ -1005,6 +1098,7 @@ impl UiState {
         self.manager_custom_day = None;
         self.manager_custom_end = None;
         self.date_picker_open = false;
+        self.source_apps_due = true;
         if matches!(
             page,
             ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash

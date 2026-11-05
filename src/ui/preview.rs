@@ -13,8 +13,10 @@
 //! 只是动作在本地消化（弹 toast 提示），不写数据库、不写设置、不动真实窗口。
 
 use crate::model::{
-    ClipFilter, ClipItem, ClipKind, FileEntry, SearchPage, Settings, Stats, ThemeMode,
+    ClipFilter, ClipItem, ClipKind, FileEntry, MatchMode, SearchPage, Settings, SortOrder, Stats,
+    ThemeMode,
 };
+use crate::store::query::search_terms;
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{theme, ManagerPage, UiAction, UiState, WindowMode};
 use eframe::egui::{self, Color32, Rect, Vec2};
@@ -178,7 +180,13 @@ impl PreviewState {
         let filter = state.effective_filter();
         let preview_search = std::env::var("CLIPNEST_PREVIEW_SEARCH").unwrap_or_default();
         state.search_text = preview_search.clone();
-        let items = filter_items(&all_items, &preview_search, filter);
+        let items = filter_items(
+            &all_items,
+            &preview_search,
+            filter,
+            MatchMode::Any,
+            None,
+        );
         state.apply_search_page(SearchPage {
             gen: state.active_gen,
             total: fake_stats().total,
@@ -309,12 +317,25 @@ impl PreviewState {
                 UiAction::CreateBackup | UiAction::RestoreBackup | UiAction::ConfirmRestore { .. } => {
                     self.state.toast("（预览）备份/恢复仅在实际运行中可用");
                 }
+                UiAction::ListSourceApps => {
+                    let mut apps: Vec<String> = self
+                        .all_items
+                        .iter()
+                        .filter_map(|item| item.source_app.clone())
+                        .collect();
+                    apps.sort_by_key(|app| app.to_lowercase());
+                    apps.dedup();
+                    self.state.apply_source_apps(apps);
+                }
                 UiAction::Search {
                     text,
                     filter,
                     time_range,
                     custom_day,
                     custom_end_day,
+                    match_mode,
+                    source_app,
+                    sort,
                     offset,
                     trash,
                     gen,
@@ -322,15 +343,22 @@ impl PreviewState {
                     let _ = trash;
                     let bounds =
                         time_range.bounds(crate::model::now_ms(), custom_day, custom_end_day);
-                    let items: Vec<_> = filter_items(&self.all_items, &text, filter)
-                        .into_iter()
-                        .filter(|item| {
-                            bounds.map_or(true, |(start, end)| {
-                                item.last_used_at >= start
-                                    && end.map_or(true, |end| item.last_used_at < end)
-                            })
+                    let mut items: Vec<_> = filter_items(
+                        &self.all_items,
+                        &text,
+                        filter,
+                        match_mode,
+                        source_app.as_deref(),
+                    )
+                    .into_iter()
+                    .filter(|item| {
+                        bounds.map_or(true, |(start, end)| {
+                            item.last_used_at >= start
+                                && end.map_or(true, |end| item.last_used_at < end)
                         })
-                        .collect();
+                    })
+                    .collect();
+                    sort_items(&mut items, sort);
                     let total = items.len();
                     let page_items = items.into_iter().skip(offset).take(500).collect();
                     self.state.apply_search_page(SearchPage {
@@ -454,9 +482,18 @@ impl PreviewState {
 // 假数据
 // ---------------------------------------------------------------------------
 
-/// 过滤假数据（预览本地模拟 Store 搜索）。
-fn filter_items(items: &[ClipItem], text: &str, filter: ClipFilter) -> Vec<ClipItem> {
-    let query = text.trim().to_lowercase();
+/// 过滤假数据（预览本地模拟 Store 搜索：多关键词 AND/OR + 来源筛选）。
+fn filter_items(
+    items: &[ClipItem],
+    text: &str,
+    filter: ClipFilter,
+    match_mode: MatchMode,
+    source_app: Option<&str>,
+) -> Vec<ClipItem> {
+    let terms: Vec<String> = search_terms(text)
+        .iter()
+        .map(|term| term.to_lowercase())
+        .collect();
     items
         .iter()
         .filter(|item| match filter {
@@ -466,21 +503,64 @@ fn filter_items(items: &[ClipItem], text: &str, filter: ClipFilter) -> Vec<ClipI
             ClipFilter::Files => item.kind == ClipKind::Files,
             ClipFilter::Favorites => item.favorited,
         })
+        .filter(|item| match source_app {
+            Some(app) => item
+                .source_app
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(app)),
+            None => true,
+        })
         .filter(|item| {
-            if query.is_empty() {
+            if terms.is_empty() {
                 return true;
             }
             let haystack = format!(
-                "{} {} {}",
+                "{} {} {} {}",
                 item.title(),
                 item.subtitle(),
+                item.source_title.clone().unwrap_or_default(),
                 item.text.clone().unwrap_or_default()
             )
             .to_lowercase();
-            haystack.contains(&query)
+            match match_mode {
+                MatchMode::Any => terms.iter().any(|term| haystack.contains(term)),
+                MatchMode::All => terms.iter().all(|term| haystack.contains(term)),
+            }
         })
         .cloned()
         .collect()
+}
+
+/// 预览本地模拟 Store 排序（与 `store::query` 的 ORDER BY 保持一致）。
+fn sort_items(items: &mut [ClipItem], sort: SortOrder) {
+    match sort {
+        SortOrder::Recent => items.sort_by(|a, b| {
+            b.last_used_at
+                .cmp(&a.last_used_at)
+                .then_with(|| b.id.cmp(&a.id))
+        }),
+        SortOrder::Oldest => items.sort_by(|a, b| {
+            a.last_used_at
+                .cmp(&b.last_used_at)
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+        SortOrder::Largest => items.sort_by(|a, b| {
+            b.byte_len.cmp(&a.byte_len).then_with(|| b.id.cmp(&a.id))
+        }),
+        SortOrder::Type => items.sort_by(|a, b| {
+            a.kind
+                .as_i32()
+                .cmp(&b.kind.as_i32())
+                .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                .then_with(|| b.id.cmp(&a.id))
+        }),
+        SortOrder::MostUsed => items.sort_by(|a, b| {
+            b.use_count
+                .cmp(&a.use_count)
+                .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                .then_with(|| b.id.cmp(&a.id))
+        }),
+    }
 }
 
 fn preview_settings() -> Settings {
@@ -822,17 +902,55 @@ mod tests {
     #[test]
     fn filter_items_supports_text_and_kind() {
         let items = fake_items();
-        assert_eq!(filter_items(&items, "", ClipFilter::All).len(), items.len());
-        let images = filter_items(&items, "", ClipFilter::Image);
+        assert_eq!(
+            filter_items(&items, "", ClipFilter::All, MatchMode::Any, None).len(),
+            items.len()
+        );
+        let images = filter_items(&items, "", ClipFilter::Image, MatchMode::Any, None);
         assert!(!images.is_empty());
         assert!(images.iter().all(|i| i.kind == ClipKind::Image));
-        let favorites = filter_items(&items, "", ClipFilter::Favorites);
+        let favorites = filter_items(&items, "", ClipFilter::Favorites, MatchMode::Any, None);
         assert!(favorites.iter().all(|i| i.favorited));
         // 中文子串搜索
-        let hits = filter_items(&items, "周会", ClipFilter::All);
+        let hits = filter_items(&items, "周会", ClipFilter::All, MatchMode::Any, None);
         assert!(!hits.is_empty());
+        // 多关键词：任一 / 全部
+        let multi_any = filter_items(&items, "周会 报告", ClipFilter::All, MatchMode::Any, None);
+        assert!(!multi_any.is_empty());
+        let multi_all = filter_items(&items, "周会 报告", ClipFilter::All, MatchMode::All, None);
+        assert!(multi_all.len() <= multi_any.len());
         // 无结果
-        assert!(filter_items(&items, "不存在的关键词xyz", ClipFilter::All).is_empty());
+        assert!(filter_items(&items, "不存在的关键词xyz", ClipFilter::All, MatchMode::Any, None)
+            .is_empty());
+    }
+
+    #[test]
+    fn sort_items_follows_sort_order() {
+        let item = |id: i64, kind: ClipKind, byte_len: u64, use_count: u32, last_used_at: i64| {
+            ClipItem {
+                id,
+                kind,
+                byte_len,
+                use_count,
+                last_used_at,
+                ..Default::default()
+            }
+        };
+        let items = vec![
+            item(1, ClipKind::Text, 10, 5, 3_000),
+            item(2, ClipKind::Text, 500, 2, 2_000),
+            item(3, ClipKind::Image, 50, 9, 1_000),
+        ];
+        let ids = |mut items: Vec<ClipItem>, sort: SortOrder| -> Vec<i64> {
+            sort_items(&mut items, sort);
+            items.iter().map(|item| item.id).collect()
+        };
+        assert_eq!(ids(items.clone(), SortOrder::Recent), vec![1, 2, 3]);
+        assert_eq!(ids(items.clone(), SortOrder::Oldest), vec![3, 2, 1]);
+        assert_eq!(ids(items.clone(), SortOrder::Largest), vec![2, 3, 1]);
+        assert_eq!(ids(items.clone(), SortOrder::MostUsed), vec![3, 1, 2]);
+        // 类型排序：文本在前、图片在后；同类型内仍按最近使用
+        assert_eq!(ids(items, SortOrder::Type), vec![1, 2, 3]);
     }
 
     #[test]

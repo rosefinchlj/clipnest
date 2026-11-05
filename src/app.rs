@@ -407,6 +407,7 @@ impl ClipNestApp {
                 }
             }
             Event::SearchPage(page) => self.ui.apply_search_page(page),
+            Event::SourceApps(apps) => self.ui.apply_source_apps(apps),
             Event::Stats(stats) => self.ui.apply_stats(stats),
             Event::PastePayload(payload) => {
                 // 先校验再 take：过期载荷（快速换条目/连按 Enter）不能吞掉新请求。
@@ -571,6 +572,9 @@ impl ClipNestApp {
                 time_range,
                 custom_day,
                 custom_end_day,
+                match_mode,
+                source_app,
+                sort,
                 offset,
                 trash,
                 gen,
@@ -587,11 +591,19 @@ impl ClipNestApp {
                         time_range,
                         custom_day,
                         custom_end_day,
+                        match_mode,
+                        source_app,
+                        sort,
                         offset,
                         limit,
                         trash,
                         gen,
                     }));
+                }
+            }
+            UiAction::ListSourceApps => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::ListSourceApps);
                 }
             }
             UiAction::Paste { id, plain } => {

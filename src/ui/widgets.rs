@@ -241,6 +241,51 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool) -> Response {
 }
 
 // ---------------------------------------------------------------------------
+// 下拉选择
+// ---------------------------------------------------------------------------
+
+/// 下拉选择按钮：在固定矩形内绘制，返回被选中的新值（未变化返回 `None`）。
+///
+/// 用于「排序 / 来源」等筛选下拉；弹层用 egui 原生 ComboBox，外观跟随主题。
+/// `id_salt` 必须在同一窗口内唯一（Picker 与管理台各用各的）。
+pub fn dropdown_at<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id_salt: &str,
+    selected: T,
+    options: &[(T, &str)],
+) -> Option<T> {
+    let label = options
+        .iter()
+        .find(|(value, _)| *value == selected)
+        .map(|(_, label)| *label)
+        .unwrap_or_default();
+    let mut value = selected;
+    let mut changed = false;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        egui::ComboBox::from_id_salt(id_salt)
+            .selected_text(label)
+            .width(rect.width())
+            .show_ui(ui, |ui| {
+                for (candidate, option_label) in options {
+                    if ui
+                        .selectable_label(*candidate == selected, *option_label)
+                        .clicked()
+                    {
+                        value = *candidate;
+                        changed = true;
+                    }
+                }
+            });
+    });
+    if changed {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 搜索框
 // ---------------------------------------------------------------------------
 

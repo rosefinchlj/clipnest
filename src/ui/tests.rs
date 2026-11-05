@@ -4,7 +4,9 @@
 //! Win+V/热键状态展示、Toast 生命周期等。
 
 use super::*;
-use crate::model::{ClipItem, ClipKind, CopyState, FileEntry, SearchPage, TempPause, TimeRange};
+use crate::model::{
+    ClipItem, ClipKind, CopyState, FileEntry, MatchMode, SearchPage, SortOrder, TempPause, TimeRange,
+};
 
 fn state() -> UiState {
     UiState::new(&egui::Context::default(), &Settings::default())
@@ -393,4 +395,139 @@ fn clear_confirm_resets_to_unfavorited_scope() {
         s.confirm.as_ref().map(|c| &c.kind),
         Some(ConfirmKind::Clear)
     ));
+}
+
+// ---------------------------------------------------------------------------
+// B2/B3：保留搜索 / 来源 / 排序 / 回收站分页
+// ---------------------------------------------------------------------------
+
+#[test]
+fn keep_search_on_open_preserves_picker_state() {
+    let mut s = state();
+    s.settings.keep_search_on_open = true;
+    s.search_text = "保留".into();
+    s.picker_filter = ClipFilter::Image;
+    s.picker_time_range = TimeRange::Last7Days;
+    s.source_app = Some("chrome.exe".into());
+    s.source_apps = vec!["chrome.exe".into()];
+    s.enter_picker();
+    assert_eq!(s.search_text, "保留");
+    assert_eq!(s.picker_filter, ClipFilter::Image);
+    assert_eq!(s.picker_time_range, TimeRange::Last7Days);
+    assert_eq!(s.source_app.as_deref(), Some("chrome.exe"));
+
+    // 关闭后恢复“打开即重置”的旧行为
+    s.settings.keep_search_on_open = false;
+    s.enter_picker();
+    assert!(s.search_text.is_empty());
+    assert_eq!(s.picker_filter, ClipFilter::All);
+    assert_eq!(s.picker_time_range, TimeRange::All);
+    assert_eq!(s.source_app, None);
+}
+
+#[test]
+fn keep_search_on_open_preserves_manager_time_range() {
+    let mut s = state();
+    s.settings.keep_search_on_open = true;
+    s.manager_time_range = TimeRange::Last30Days;
+    s.manager_custom_day = Some(10);
+    s.enter_manager(ManagerPage::Trash);
+    assert_eq!(s.manager_time_range, TimeRange::Last30Days);
+    assert_eq!(s.manager_custom_day, Some(10));
+
+    s.settings.keep_search_on_open = false;
+    s.enter_manager(ManagerPage::History);
+    assert_eq!(s.manager_time_range, TimeRange::All);
+    assert_eq!(s.manager_custom_day, None);
+}
+
+#[test]
+fn apply_source_apps_keeps_current_selection() {
+    let mut s = state();
+    s.source_app = Some("zoom.exe".into());
+    s.apply_source_apps(vec!["Code.exe".into(), "chrome.exe".into()]);
+    assert_eq!(
+        s.source_apps,
+        vec![
+            "chrome.exe".to_string(),
+            "Code.exe".to_string(),
+            "zoom.exe".to_string()
+        ],
+        "当前筛选值不在列表时也要保留，并按应用名排序"
+    );
+    s.apply_source_apps(vec!["chrome.exe".into(), "zoom.exe".into()]);
+    assert_eq!(
+        s.source_apps,
+        vec!["chrome.exe".to_string(), "zoom.exe".to_string()]
+    );
+}
+
+#[test]
+fn search_action_carries_match_mode_source_and_sort() {
+    let mut s = state();
+    let ctx = egui::Context::default();
+    s.pending = None;
+    s.active_gen = s.next_gen;
+    s.search_text = "报告 会议".into();
+    s.match_mode = MatchMode::All;
+    s.source_app = Some("chrome.exe".into());
+    s.sort = SortOrder::Largest;
+    s.schedule_search(true);
+    let mut actions = Vec::new();
+    s.begin_frame(&ctx, &mut actions);
+    let search = actions
+        .iter()
+        .find_map(|action| match action {
+            UiAction::Search {
+                match_mode,
+                source_app,
+                sort,
+                ..
+            } => Some((*match_mode, source_app.clone(), *sort)),
+            _ => None,
+        })
+        .expect("应当发出 Search 动作");
+    assert_eq!(search.0, MatchMode::All);
+    assert_eq!(search.1.as_deref(), Some("chrome.exe"));
+    assert_eq!(search.2, SortOrder::Largest);
+
+    // 切换筛选控件会立即重发查询
+    assert!(s.set_sort(SortOrder::MostUsed));
+    assert_eq!(s.sort, SortOrder::MostUsed);
+    assert!(!s.set_sort(SortOrder::MostUsed), "相同值不重复查询");
+}
+
+#[test]
+fn trash_page_request_more_uses_trash_mode_and_pages() {
+    let mut s = state();
+    s.mode = WindowMode::Manager;
+    s.manager_page = ManagerPage::Trash;
+    s.pending = None;
+    s.active_gen = 1;
+    s.apply_search_page(page(1, 2));
+    s.total = 10;
+    let mut actions = Vec::new();
+    s.request_more(&mut actions);
+    match &actions[0] {
+        UiAction::Search {
+            offset,
+            trash,
+            sort,
+            ..
+        } => {
+            assert_eq!(*offset, 2, "回收站也要从已加载条数继续翻页");
+            assert!(*trash, "回收站搜索必须带 trash=true");
+            assert_eq!(*sort, SortOrder::Recent);
+        }
+        other => panic!("应发出 Search 动作，实际 {other:?}"),
+    }
+    // 下一轮请求的 offset 跟随追加后的条数（重复 id 已去重，实际 3 条）
+    s.append_gen = Some(2);
+    s.append_requested_len = 2;
+    s.apply_search_page(page(2, 3));
+    s.total = 10;
+    assert_eq!(s.items.len(), 3);
+    actions.clear();
+    s.request_more(&mut actions);
+    assert!(matches!(&actions[0], UiAction::Search { offset: 3, .. }));
 }

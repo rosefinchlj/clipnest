@@ -196,13 +196,10 @@ pub(crate) fn search_query(
     SearchQuery {
         text: text.to_string(),
         filter,
-        time_range: crate::model::TimeRange::All,
-        custom_day: None,
-        custom_end_day: None,
         offset,
         limit,
-        trash: false,
         gen,
+        ..SearchQuery::default()
     }
 }
 
@@ -906,6 +903,7 @@ fn trash_soft_delete_search_restore_and_purge() {
             limit: 10,
             trash: true,
             gen: 1,
+            ..SearchQuery::default()
         })
         .unwrap();
     assert_eq!(page.total, 1);
@@ -1141,4 +1139,211 @@ fn schema_v3_migrates_rich_text_columns() {
         )
         .unwrap();
     assert_eq!(pinned, 1, "重复打开后置顶状态应保持");
+}
+
+// ---------------------------------------------------------------------------
+// B2/B3：多关键词 / 来源筛选 / 排序 / 回收站分页
+// ---------------------------------------------------------------------------
+
+fn bulk_query(text: &str) -> SearchQuery {
+    SearchQuery {
+        text: text.to_string(),
+        limit: 100,
+        ..SearchQuery::default()
+    }
+}
+
+#[test]
+fn multi_keyword_any_and_all_on_fts_path() {
+    let (_dir, db) = open_db("multi-keyword");
+    let both = db.upsert(&text_input("alpha beta 同时出现")).unwrap().id();
+    let alpha = db.upsert(&text_input("alpha 单独出现")).unwrap().id();
+    let beta = db.upsert(&text_input("beta 单独出现")).unwrap().id();
+
+    let any = db.search(&bulk_query("alpha beta")).unwrap();
+    assert_eq!(any.total, 3, "默认 OR：任一关键词命中即可");
+    let ids: Vec<ClipId> = any.items.iter().map(|item| item.id).collect();
+    assert!(ids.contains(&both) && ids.contains(&alpha) && ids.contains(&beta));
+
+    let mut all_query = bulk_query("alpha beta");
+    all_query.match_mode = MatchMode::All;
+    let all = db.search(&all_query).unwrap();
+    assert_eq!(all.total, 1, "AND：要求两个关键词都命中");
+    assert_eq!(all.items[0].id, both);
+}
+
+#[test]
+fn multi_keyword_like_path_and_quoted_phrase() {
+    let (_dir, db) = open_db_like("multi-keyword-like");
+    db.upsert(&text_input("alpha beta 连在一起")).unwrap();
+    db.upsert(&text_input("alpha 中间夹了别的 beta")).unwrap();
+    db.upsert(&text_input("alpha 单独出现")).unwrap();
+
+    // 逐词 AND：每个词都要在 text/preview/source_title 里命中
+    let mut all_query = bulk_query("alpha beta");
+    all_query.match_mode = MatchMode::All;
+    let all = db.search(&all_query).unwrap();
+    assert_eq!(all.total, 2, "非相邻的两个关键词也应 AND 命中");
+
+    // 引号短语不拆：只有相邻出现的整段命中
+    let quoted = db.search(&bulk_query("\"alpha beta\"")).unwrap();
+    assert_eq!(quoted.total, 1);
+    assert!(quoted.items[0].text.as_deref().unwrap().contains("连在一起"));
+}
+
+#[test]
+fn source_app_filter_and_distinct_list() {
+    let (_dir, db) = open_db("source-filter");
+    let mut chrome = text_input_at("网页内容", 1_000);
+    chrome.source_app = Some("chrome.exe".to_string());
+    let mut code = text_input_at("代码内容", 2_000);
+    code.source_app = Some("Code.exe".to_string());
+    let mut notepad = text_input_at("纯文本", 3_000);
+    notepad.source_app = Some("notepad.exe".to_string());
+    let chrome_id = db.upsert(&chrome).unwrap().id();
+    db.upsert(&code).unwrap();
+    db.upsert(&notepad).unwrap();
+
+    let mut query = bulk_query("");
+    query.source_app = Some("chrome.exe".to_string());
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, chrome_id);
+
+    let mut query = bulk_query("");
+    query.source_app = Some("Code.exe".to_string());
+    assert_eq!(db.search(&query).unwrap().total, 1);
+    // 不带来源 = 不过滤
+    assert_eq!(db.search(&bulk_query("")).unwrap().total, 3);
+
+    // distinct 来源列表：不含已删除记录，按应用名（小写）排序
+    let mut old = text_input_at("旧来源", 4_000);
+    old.source_app = Some("old.exe".to_string());
+    let old_id = db.upsert(&old).unwrap().id();
+    db.soft_delete(&[old_id]).unwrap();
+    assert_eq!(
+        db.source_apps().unwrap(),
+        vec![
+            "chrome.exe".to_string(),
+            "Code.exe".to_string(),
+            "notepad.exe".to_string()
+        ]
+    );
+}
+
+#[test]
+fn sort_orders_match_sql() {
+    let (_dir, db) = open_db("sort-orders");
+    let a = db.upsert(&text_input_at("a", 1_000)).unwrap().id();
+    let b = db.upsert(&text_input_at("b", 2_000)).unwrap().id();
+    let c = db.upsert(&text_input_at("c", 3_000)).unwrap().id();
+    let d = db.upsert(&image_input(tiny_png(21), 9_000)).unwrap().id();
+    // 直接改字段，构造可区分的 last_used_at / byte_len / use_count
+    for (id, byte_len, use_count, last_used_at) in [
+        (a, 10_i64, 5_i64, 3_000_i64),
+        (b, 200, 2, 2_000),
+        (c, 1_000, 9, 1_000),
+        (d, 1, 1, 9_000),
+    ] {
+        db.conn
+            .execute(
+                "UPDATE clips SET byte_len=?1, use_count=?2, last_used_at=?3 WHERE id=?4",
+                params![byte_len, use_count, last_used_at, id],
+            )
+            .unwrap();
+    }
+
+    let expect = |sort: SortOrder| -> Vec<ClipId> {
+        let mut query = bulk_query("");
+        query.sort = sort;
+        db.search(&query)
+            .unwrap()
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect()
+    };
+    assert_eq!(expect(SortOrder::Recent), vec![d, a, b, c]);
+    assert_eq!(expect(SortOrder::Oldest), vec![c, b, a, d]);
+    assert_eq!(expect(SortOrder::Largest), vec![c, b, a, d]);
+    assert_eq!(expect(SortOrder::MostUsed), vec![c, a, b, d]);
+    // 类型排序：文本在前、图片在后；同类型内仍按最近使用
+    assert_eq!(expect(SortOrder::Type), vec![a, b, c, d]);
+
+    // 收藏页：置顶项永远优先，再按所选排序
+    assert!(db.set_favorited(a, true).unwrap());
+    assert!(db.set_pinned(a, true).unwrap());
+    assert!(db.set_favorited(b, true).unwrap());
+    let mut favorites = bulk_query("");
+    favorites.filter = ClipFilter::Favorites;
+    favorites.sort = SortOrder::Largest;
+    let ids: Vec<ClipId> = db
+        .search(&favorites)
+        .unwrap()
+        .items
+        .iter()
+        .map(|item| item.id)
+        .collect();
+    assert_eq!(ids, vec![a, b], "置顶优先，其次才是最大文件");
+}
+
+#[test]
+fn trash_pagination_covers_all_rows_without_duplicates() {
+    let (_dir, db) = open_db("trash-paging");
+    let ids: Vec<ClipId> = (0..6)
+        .map(|index| {
+            db.upsert(&text_input_at(&format!("回收站条目{index}"), 1_000 + index * 100))
+                .unwrap()
+                .id()
+        })
+        .collect();
+    assert_eq!(db.soft_delete(&ids[..5]).unwrap(), 5);
+
+    let mut seen = Vec::new();
+    let mut offset = 0;
+    loop {
+        let query = SearchQuery {
+            text: String::new(),
+            limit: 2,
+            offset,
+            trash: true,
+            ..SearchQuery::default()
+        };
+        let page = db.search(&query).unwrap();
+        assert_eq!(page.total, 5, "翻页过程中 total 保持稳定");
+        if page.items.is_empty() {
+            break;
+        }
+        seen.extend(page.items.iter().map(|item| item.id));
+        offset += page.items.len();
+    }
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), 5, "分页覆盖全部回收站记录且无重复");
+}
+
+#[test]
+fn like_search_matches_source_title_and_file_paths() {
+    let (_dir, db) = open_db_like("source-title-like");
+    let mut note = text_input_at("会议纪要正文", 1_000);
+    note.source_title = Some("季度规划.docx".to_string());
+    let note_id = db.upsert(&note).unwrap().id();
+    let mut other = text_input_at("别的内容", 2_000);
+    other.source_title = Some("无关文档.txt".to_string());
+    db.upsert(&other).unwrap();
+
+    let page = db.search(&bulk_query("季度规划")).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, note_id);
+
+    // 带路径分隔符的文件名走 LIKE 路径，仍可搜到
+    let mut file = text_input_at("附件", 3_000);
+    file.preview = "预算表.xlsx".to_string();
+    file.files = vec![FileEntry::from_path(Path::new(
+        "C:\\Users\\demo\\Documents\\预算表.xlsx",
+    ))];
+    let file_id = db.upsert(&file).unwrap().id();
+    let page = db.search(&bulk_query("预算表")).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, file_id);
 }
