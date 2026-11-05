@@ -283,6 +283,10 @@ pub fn window_bg() -> Color32 {
     }
     let pct = glass_opacity() as u16;
     let alpha = ((pct * 255) / 100).clamp(40, 255) as u8;
+    // 浅色皮肤不能跟着透明度滑到太低：Acrylic 失效/系统深色背景时，
+    // 35% 的浅色底叠在黑色桌面上会变成深灰，深色文字几乎看不清。
+    // 给浅色窗口底一个不透明度下限，保证任何背景下文字都有足够对比度。
+    let alpha = if is_light() { alpha.max(220) } else { alpha };
     scale_alpha(palette().window_base, alpha)
 }
 
@@ -762,6 +766,19 @@ mod tests {
         assert!(palette.text.r() < 64, "浅色皮肤主文本必须是深色");
         assert!(palette.card.r() > 220, "浅色皮肤卡片必须是浅色");
         assert!(palette.window_bg.a() < 255, "浅色皮肤也要保留半透明玻璃层");
+        set_light(false);
+    }
+
+    #[test]
+    fn light_window_bg_keeps_readable_opacity_floor() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_light(true);
+        set_glass_opacity(35);
+        assert!(
+            window_bg().a() >= 220,
+            "浅色窗口在最低透明度下也要保证文字对比度"
+        );
+        set_glass_opacity(75);
         set_light(false);
     }
 
