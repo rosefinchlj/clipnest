@@ -812,3 +812,22 @@
 - `cargo check --all-targets`：零错误。
 - 合并冲突处理：`src/store.rs` 导入、`src/ui.rs` 恢复预览/清空确认/忽略应用、`src/ui/pages/settings.rs` 数据区重复块均已人工核对。
 - 说明：完整备份/恢复与退出清理以单元测试和 Store 线程测试覆盖；原生文件对话框与首次启动提示需实际运行验证。
+## 38. v1.11.0（2026-11-05，第二批体验效率：富文本/搜索/排序/文件操作）
+
+### 用户需求
+- 第二批 B1–B5：富文本保真、搜索升级、排序与批量清理、文件/图片操作、时间语义与可访问性。
+- 约束：B6 可选数据库加密涉及密码学与迁移风险，单独评估，不阻塞本版。
+
+### 实现
+- **B1 富文本**：SQLite schema v4，`clips` 增加 `html` / `rtf` 两列，读取/写入/粘贴/导出全链路带上；新增 `src/clipboard/html.rs` 解析 CF_HTML、生成 CF_HTML、清洗危险标签与外部资源、HTML→纯文本、RTF 基本过滤。写入时优先同时写 `CF_UNICODETEXT` + `CF_HTML` + `RTF`，目标程序不支持时降级纯文本。详情面板显示 HTML/RTF 徽标。
+- **B2 搜索**：搜索词按空白拆成多个关键词（双引号短语不拆），支持「任一 / 全部」；新增来源应用筛选与 `ListSourceApps`；设置项 `keep_search_on_open` 可保留上次搜索。FTS5 多词 MATCH，短词/路径走逐词 LIKE。
+- **B3 排序与回收站**：新增「最近 / 最早 / 最大 / 类型 / 使用最多」排序并贯通 picker 与管理台；收藏页置顶优先于排序；回收站改为 `ScrollArea::show_rows` 虚拟化并触底分页，修复只能看到前 500 条；支持全选当前已加载结果。
+- **B4 文件/图片操作**：新增 `src/sys/shell.rs`（ShellExecuteW / explorer /select / 复制路径）；文件条目支持打开、所在文件夹、复制路径；图片另存为 PNG、文本另存为 TXT，走系统另存为对话框；候选窗右键、管理台表格右键与详情面板均接入。
+- **B5 时间语义 / 缩放 / 可访问性**：`TimeBasis{LastUsed, Captured}` 贯通设置、查询与 UI；日历头部支持 `‹‹ / ››` 按年跳转；候选窗可拖拽缩放并写回 `picker_size`；新增 `ui_scale` 0.8–1.5 与紧凑/标准/宽大预设；组词中按 Esc 不再关闭候选窗。
+- 集成：从 `release/v1.10` 建 `release/v1.11`，依次合并 B1、B2+B3、B4+B5；冲突涉及 model/store/ui/picker/history/settings/tests，逐块人工合并（保留各批功能与测试，补齐 SearchQuery 新字段、PastePayload html/rtf、忽略来源与文件动作并存）。
+
+### 校验
+- `cargo test --release`：**227 passed / 0 failed / 1 ignored**（B1 后 203、B2+B3 后 215、B4+B5 后 227）。
+- `cargo check --all-targets`：零错误。
+- 已知限制：多文件条目仅对第一个文件提供打开/定位/复制路径；另存为依赖图片/文本 blob，blob 被清理时提示内容不存在；`ui_scale` 只缩放 egui 内容、不改变原生窗口尺寸；复杂 CSS/脚本不保留。
+- B6（可选数据库加密）本版未实现，留待单独评估密码解锁、备份/导入与搜索兼容性。
