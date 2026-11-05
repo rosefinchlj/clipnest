@@ -63,9 +63,16 @@ impl Db {
             ClipFilter::Favorites => conditions.push("clips.favorited = 1".to_string()),
         }
 
-        if let Some(cutoff) = query.time_range.cutoff_ms(now_ms()) {
+        if let Some((start, end)) = query
+            .time_range
+            .bounds(now_ms(), query.custom_day)
+        {
             conditions.push("clips.last_used_at >= ?".to_string());
-            args.push(Value::Integer(cutoff));
+            args.push(Value::Integer(start));
+            if let Some(end) = end {
+                conditions.push("clips.last_used_at < ?".to_string());
+                args.push(Value::Integer(end));
+            }
         }
 
         let text = query.text.trim();

@@ -5,6 +5,7 @@
 
 use crate::model::{ClipFilter, HotkeyChord, TimeRange};
 use crate::ui::{keys, paint, theme};
+use chrono::{Datelike, Days, Local, NaiveDate, TimeZone};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind,
     Vec2,
@@ -411,6 +412,201 @@ pub fn filter_chips(ui: &mut egui::Ui, current: &mut ClipFilter) -> bool {
 /// 时间范围胶囊：搜索框下方一行。
 pub fn time_range_chips(ui: &mut egui::Ui, current: &mut TimeRange) -> bool {
     chips(ui, current, &TimeRange::all(), |range| range.label())
+}
+
+/// 指定日期弹窗的结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DatePickerAction {
+    Selected(i64),
+    Closed,
+}
+
+/// 本地当天 00:00 的时间戳。
+pub fn today_start_ms() -> i64 {
+    let date = Local::now().date_naive();
+    date_start_ms(date).unwrap_or_else(|| Local::now().timestamp_millis())
+}
+
+/// 把本地日期格式化为 `YYYY-MM-DD`。
+pub fn format_day_ms(ms: i64) -> String {
+    let date = Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|dt| dt.date_naive())
+        .unwrap_or_else(|| Local::now().date_naive());
+    date.format("%Y-%m-%d").to_string()
+}
+
+/// 时间戳所在月份的第一天 00:00。
+pub fn month_start_ms(ms: i64) -> i64 {
+    let date = Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|dt| dt.date_naive())
+        .unwrap_or_else(|| Local::now().date_naive());
+    let first = date.with_day(1).unwrap_or(date);
+    date_start_ms(first).unwrap_or(ms)
+}
+
+fn date_start_ms(date: NaiveDate) -> Option<i64> {
+    let midnight = date.and_hms_opt(0, 0, 0)?;
+    Local
+        .from_local_datetime(&midnight)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+}
+
+fn shift_month(date: NaiveDate, delta: i32) -> NaiveDate {
+    let mut year = date.year();
+    let mut month = date.month() as i32 + delta;
+    while month < 1 {
+        month += 12;
+        year -= 1;
+    }
+    while month > 12 {
+        month -= 12;
+        year += 1;
+    }
+    NaiveDate::from_ymd_opt(year, month as u32, 1)
+        .or_else(|| date.with_day(1))
+        .unwrap_or(date)
+}
+
+/// 居中日历弹窗；`month` 是当前显示月份的第一天时间戳，返回选择结果或关闭。
+pub fn date_picker_modal(
+    ctx: &egui::Context,
+    selected_day: &mut Option<i64>,
+    month: &mut i64,
+) -> Option<DatePickerAction> {
+    let mut result = None;
+    let selected_date = selected_day.and_then(|ms| {
+        Local
+            .timestamp_millis_opt(ms)
+            .single()
+            .map(|dt| dt.date_naive())
+    });
+    let mut shown = Local
+        .timestamp_millis_opt(*month)
+        .single()
+        .map(|dt| dt.date_naive())
+        .unwrap_or_else(|| Local::now().date_naive())
+        .with_day(1)
+        .unwrap_or_else(|| Local::now().date_naive());
+    let modal = egui::Modal::new(egui::Id::new("clipnest-date-picker"))
+        .frame(
+            theme::popup_frame()
+                .inner_margin(egui::Margin::same(18))
+                .shadow(theme::window_shadow()),
+        )
+        .backdrop_color(Color32::from_black_alpha(120));
+    let resp = modal.show(ctx, |ui| {
+        ui.set_width(286.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_sized([30.0, 26.0], egui::Button::new("‹"))
+                .clicked()
+            {
+                shown = shift_month(shown, -1);
+            }
+            ui.add_space(6.0);
+            ui.label(theme::title(&format!("{} 年 {} 月", shown.year(), shown.month())));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_sized([30.0, 26.0], egui::Button::new("›"))
+                    .clicked()
+                {
+                    shown = shift_month(shown, 1);
+                }
+            });
+        });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for weekday in ["一", "二", "三", "四", "五", "六", "日"] {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(34.0, 20.0), Sense::hover());
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    weekday,
+                    theme::font_aux(),
+                    theme::text_secondary(),
+                );
+            }
+        });
+        let first = shown.with_day(1).unwrap_or(shown);
+        let offset = first.weekday().num_days_from_monday() as u64;
+        let grid_start = first
+            .checked_sub_days(Days::new(offset))
+            .unwrap_or(first);
+        for week in 0..6 {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for slot in 0..7 {
+                    let date = grid_start
+                        .checked_add_days(Days::new(week * 7 + slot))
+                        .unwrap_or(grid_start);
+                    let (rect, resp) =
+                        ui.allocate_exact_size(Vec2::new(34.0, 28.0), Sense::click());
+                    let selected = selected_date == Some(date);
+                    let in_month = date.month() == shown.month();
+                    let fill = if selected {
+                        theme::selection()
+                    } else if resp.hovered() {
+                        theme::hover_fill()
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    if fill.a() > 0 {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(theme::RADIUS_CHIP),
+                            fill,
+                        );
+                    }
+                    let color = if selected {
+                        theme::selection_text()
+                    } else if in_month {
+                        theme::text()
+                    } else {
+                        theme::text_weak()
+                    };
+                    ui.painter().text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        date.day().to_string(),
+                        theme::font_aux(),
+                        color,
+                    );
+                    if resp.clicked() {
+                        if let Some(ms) = date_start_ms(date) {
+                            *selected_day = Some(ms);
+                            result = Some(DatePickerAction::Selected(ms));
+                        }
+                    }
+                }
+            });
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if button(ui, "今天", ButtonKind::Secondary).clicked() {
+                let today = Local::now().date_naive();
+                if let Some(ms) = date_start_ms(today) {
+                    *selected_day = Some(ms);
+                    result = Some(DatePickerAction::Selected(ms));
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if button(ui, "取消", ButtonKind::Secondary).clicked() {
+                    result = Some(DatePickerAction::Closed);
+                }
+            });
+        });
+    });
+    if result.is_none() && resp.should_close() {
+        result = Some(DatePickerAction::Closed);
+    }
+    *month = date_start_ms(shown).unwrap_or(*month);
+    result
 }
 
 fn chips<T: Copy + PartialEq>(

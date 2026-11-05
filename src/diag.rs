@@ -342,6 +342,7 @@ fn search(
             text: text.to_string(),
             filter,
             time_range: crate::model::TimeRange::All,
+            custom_day: None,
             offset,
             limit,
             trash: false,

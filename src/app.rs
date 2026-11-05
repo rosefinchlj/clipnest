@@ -89,7 +89,8 @@ impl ClipNestApp {
         // 预览候选窗保留磨砂；预览管理台时关闭，和真实管理台窗口一致（不透明背景）。
         let glass = preview
             .as_deref()
-            .map_or(true, |mode| mode == "picker");
+            .map_or(true, |mode| mode == "picker")
+            && std::env::var_os("CLIPNEST_PREVIEW_NO_GLASS").is_none();
         crate::ui::theme::set_glass_enabled(glass);
         // 调试/截图用：临时覆盖磨砂透明度，不写回 settings.json。
         let dev_glass = std::env::var("CLIPNEST_DEV_GLASS")
@@ -513,6 +514,7 @@ impl ClipNestApp {
                 text,
                 filter,
                 time_range,
+                custom_day,
                 offset,
                 trash,
                 gen,
@@ -527,6 +529,7 @@ impl ClipNestApp {
                         text,
                         filter,
                         time_range,
+                        custom_day,
                         offset,
                         limit,
                         trash,

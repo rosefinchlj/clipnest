@@ -2,7 +2,7 @@
 //!
 //! 表格列：多选框 / 类型 / 内容摘要 / 来源 / 时间 / 大小 / 收藏（spec §6.4）。
 
-use crate::model::{fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind};
+use crate::model::{fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, TimeRange};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, UiAction, UiState};
 use eframe::egui::{
@@ -158,12 +158,46 @@ pub(crate) fn page(
     );
     ui.scope_builder(UiBuilder::new().max_rect(time_rect), |ui| {
         if widgets::time_range_chips(ui, &mut state.manager_time_range) {
+            if state.manager_time_range == TimeRange::Custom {
+                let day = state
+                    .manager_custom_day
+                    .unwrap_or_else(widgets::today_start_ms);
+                state.manager_custom_day = Some(day);
+                state.date_picker_month = Some(widgets::month_start_ms(day));
+                state.date_picker_open = true;
+            } else {
+                state.date_picker_open = false;
+            }
             state.schedule_search(true);
         }
     });
 
-    // ---- 批量操作条（多选时出现）----
     let mut body_top = time_rect.bottom() + 12.0;
+    if state.manager_time_range == TimeRange::Custom {
+        let day = state
+            .manager_custom_day
+            .unwrap_or_else(widgets::today_start_ms);
+        state.manager_custom_day = Some(day);
+        let date_rect = Rect::from_min_size(
+            Pos2::new(inner.left(), time_rect.bottom() + 6.0),
+            Vec2::new(112.0, theme::CHIP_HEIGHT),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
+            if widgets::button(
+                ui,
+                &widgets::format_day_ms(day),
+                widgets::ButtonKind::Secondary,
+            )
+            .clicked()
+            {
+                state.date_picker_open = true;
+                state.date_picker_month = Some(widgets::month_start_ms(day));
+            }
+        });
+        body_top = date_rect.bottom() + 12.0;
+    }
+
+    // ---- 批量操作条（多选时出现）----
     if !state.multi_selected.is_empty() && !favorites {
         let batch_rect = Rect::from_min_size(
             Pos2::new(inner.left(), body_top),
@@ -241,6 +275,23 @@ pub(crate) fn page(
     table(state, ui, table_rect, pin_mode, actions);
     if show_detail && detail_rect.width() > 10.0 {
         detail_panel(state, ui, detail_rect, thumbs, actions);
+    }
+
+    if state.date_picker_open {
+        let mut day = state.manager_custom_day;
+        let mut month = state
+            .date_picker_month
+            .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
+        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut day, &mut month) {
+            state.manager_custom_day = day;
+            state.date_picker_month = Some(month);
+            state.date_picker_open = false;
+            if matches!(action, widgets::DatePickerAction::Selected(_)) {
+                state.schedule_search(true);
+            }
+        } else {
+            state.date_picker_month = Some(month);
+        }
     }
 }
 

@@ -661,3 +661,26 @@
   - `time_range_cutoffs_are_ordered`
   - `entering_picker_or_manager_resets_time_range`
 - 截图：`docs/screenshots/picker.png`、`docs/screenshots/manager-history.png` 均包含时间范围胶囊行。
+
+
+---
+
+## 30. v1.9.12（2026-11-05，指定日期筛选与大列表滚动优化）
+
+### 用户反馈
+- 希望时间范围再提供一个可以选择任意一天的组件。
+- 列表数据量很大时，是否还能继续优化。
+
+### 实现
+- `TimeRange` 新增 `Custom`（「指定日期」）；候选窗和管理台的时间胶囊行最后增加该选项。
+- 选择「指定日期」后打开月历弹窗：可切换上/下月、点选任意一天、点「今天」回到当天，或取消；选中后时间行下方显示 `YYYY-MM-DD` 按钮，可再次点开修改。
+- 新增强类型 `SearchQuery.custom_day`，SQL 按本地自然日左闭右开区间过滤：`last_used_at >= 当天 00:00` 且 `last_used_at < 次日 00:00`，与关键词、分类、收藏、回收站条件叠加。
+- 日历使用 egui `Modal`；弹窗打开时禁用候选窗键盘路由，避免回车误粘贴；关闭后立即重新搜索。
+- 大列表滚动加载：`UiState::apply_search_page` 追加页时，原来每个条目都用 `items.iter().any(...)` 全量查重，连续滚动会退化为 O(n²)；改为维护持久 `loaded_ids: HashSet<ClipId>`，追加页 O(1) 判重。
+- 列表本身的虚拟化与分页保持不变：候选窗每页 200、管理台每页 500，`ScrollArea::show_rows` 只绘制可见行；数据量大时不会一次性渲染全部条目。
+
+### 校验
+- `cargo test --release`：**163 passed / 0 failed / 1 ignored**
+  - `time_range_filters_by_last_used` 增加「今天命中、昨天不命中」的自定义日期断言。
+  - `entering_picker_or_manager_resets_time_range` 增加自定义日期清理断言。
+- 截图：`docs/screenshots/picker.png`（指定日期按钮）、`docs/screenshots/picker-date.png`（日历弹窗）、`docs/screenshots/manager-history.png`、`docs/screenshots/manager-date.png`。

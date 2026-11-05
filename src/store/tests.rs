@@ -191,6 +191,7 @@ pub(crate) fn search_query(
         text: text.to_string(),
         filter,
         time_range: crate::model::TimeRange::All,
+        custom_day: None,
         offset,
         limit,
         trash: false,
@@ -474,6 +475,16 @@ fn time_range_filters_by_last_used() {
 
     query.time_range = TimeRange::Last90Days;
     assert_eq!(db.search(&query).unwrap().total, 2);
+
+    // 任意一天：只命中该本地自然日内的记录。
+    let today = TimeRange::Today.cutoff_ms(now).unwrap();
+    query.time_range = TimeRange::Custom;
+    query.custom_day = Some(today);
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, recent_id);
+    query.custom_day = Some(today - 86_400_000);
+    assert_eq!(db.search(&query).unwrap().total, 0);
 }
 
 #[test]
@@ -869,6 +880,7 @@ fn trash_soft_delete_search_restore_and_purge() {
             text: String::new(),
             filter: ClipFilter::All,
             time_range: crate::model::TimeRange::All,
+            custom_day: None,
             offset: 0,
             limit: 10,
             trash: true,

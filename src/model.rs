@@ -293,6 +293,7 @@ pub enum TimeRange {
     Last7Days,
     Last30Days,
     Last90Days,
+    Custom,
 }
 
 impl TimeRange {
@@ -303,20 +304,23 @@ impl TimeRange {
             TimeRange::Last7Days => "近7天",
             TimeRange::Last30Days => "近30天",
             TimeRange::Last90Days => "近90天",
+            TimeRange::Custom => "指定日期",
         }
     }
 
-    pub fn all() -> [TimeRange; 5] {
+    pub fn all() -> [TimeRange; 6] {
         [
             TimeRange::All,
             TimeRange::Today,
             TimeRange::Last7Days,
             TimeRange::Last30Days,
             TimeRange::Last90Days,
+            TimeRange::Custom,
         ]
     }
 
     /// 起始时间戳（含）。`All` 返回 `None`。
+    #[cfg(test)]
     pub fn cutoff_ms(self, now: i64) -> Option<i64> {
         let day = 24 * 60 * 60 * 1000;
         match self {
@@ -325,8 +329,38 @@ impl TimeRange {
             TimeRange::Last7Days => Some(now - 7 * day),
             TimeRange::Last30Days => Some(now - 30 * day),
             TimeRange::Last90Days => Some(now - 90 * day),
+            TimeRange::Custom => None,
         }
     }
+
+    /// 时间窗口 `[start, end)`；`Custom` 使用 `custom_day`（本地 00:00 时间戳）当天。
+    pub fn bounds(self, now: i64, custom_day: Option<i64>) -> Option<(i64, Option<i64>)> {
+        let day = 24 * 60 * 60 * 1000;
+        match self {
+            TimeRange::All => None,
+            TimeRange::Today => Some((local_midnight_ms(now).unwrap_or(now - day), None)),
+            TimeRange::Last7Days => Some((now - 7 * day, None)),
+            TimeRange::Last30Days => Some((now - 30 * day, None)),
+            TimeRange::Last90Days => Some((now - 90 * day, None)),
+            TimeRange::Custom => {
+                let start = custom_day?;
+                let end = local_next_midnight(start).unwrap_or(start + day);
+                Some((start, Some(end)))
+            }
+        }
+    }
+}
+
+/// 本地时间戳所在日期次日 00:00。
+fn local_next_midnight(day_start: i64) -> Option<i64> {
+    use chrono::{Days, Local, TimeZone};
+    let local = Local.timestamp_millis_opt(day_start).single()?;
+    let next = local.date_naive().checked_add_days(Days::new(1))?;
+    let midnight = next.and_hms_opt(0, 0, 0)?;
+    Local
+        .from_local_datetime(&midnight)
+        .single()
+        .map(|dt| dt.timestamp_millis())
 }
 
 /// 本地时区当天 00:00 的时间戳；时区异常时返回 `None`。
@@ -345,6 +379,8 @@ pub struct SearchQuery {
     pub text: String,
     pub filter: ClipFilter,
     pub time_range: TimeRange,
+    /// `TimeRange::Custom` 时的本地 00:00 时间戳。
+    pub custom_day: Option<i64>,
     pub offset: usize,
     pub limit: usize,
     /// true 时查询回收站（deleted_at 非空）。
@@ -359,6 +395,7 @@ impl Default for SearchQuery {
             text: String::new(),
             filter: ClipFilter::All,
             time_range: TimeRange::All,
+            custom_day: None,
             offset: 0,
             limit: 200,
             trash: false,

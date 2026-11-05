@@ -2,7 +2,7 @@
 //!
 //! 交互严格对应 spec §6.1 键盘表与 §6.2 列表项规格；所有副作用通过 [`UiAction`] 交给 Lead。
 
-use crate::model::ClipItem;
+use crate::model::{ClipItem, TimeRange};
 use crate::ui::keys::{self, PickerCommand};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, ManagerPage, UiAction, UiState};
@@ -58,7 +58,13 @@ pub(crate) fn show(
     let search_top = full.top() + DRAG_STRIP;
     let chips_top = search_top + theme::SEARCH_HEIGHT + theme::GAP_S;
     let time_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_XS;
-    let list_top = time_top + theme::CHIP_HEIGHT + theme::GAP_S;
+    let custom = state.picker_time_range == TimeRange::Custom;
+    let date_top = time_top + theme::CHIP_HEIGHT + theme::GAP_XS;
+    let list_top = if custom {
+        date_top + theme::CHIP_HEIGHT + theme::GAP_S
+    } else {
+        time_top + theme::CHIP_HEIGHT + theme::GAP_S
+    };
     let list_bottom = (hint_top - theme::GAP_XS).max(list_top + theme::ROW_HEIGHT);
     let list_rect = Rect::from_min_max(
         Pos2::new(full.left(), list_top),
@@ -88,7 +94,7 @@ pub(crate) fn show(
     let ime_active = previous_ime || ime_composing || ime_event_this_frame;
 
     // 先于控件绘制路由，保证搜索框聚焦时 ↑↓/Tab/Enter 仍生效。
-    if state.confirm.is_none() {
+    if state.confirm.is_none() && !state.date_picker_open {
         // 搜索框有文本时 Delete 留给文本框编辑（否则删一条记录会很反直觉）
         let allow_delete =
             !ime_active && !(state.search_focused && !state.search_text.is_empty());
@@ -148,9 +154,59 @@ pub(crate) fn show(
     );
     ui.scope_builder(UiBuilder::new().max_rect(time_rect), |ui| {
         if widgets::time_range_chips(ui, &mut state.picker_time_range) {
+            if state.picker_time_range == TimeRange::Custom {
+                let day = state
+                    .picker_custom_day
+                    .unwrap_or_else(widgets::today_start_ms);
+                state.picker_custom_day = Some(day);
+                state.date_picker_month = Some(widgets::month_start_ms(day));
+                state.date_picker_open = true;
+            } else {
+                state.date_picker_open = false;
+            }
             state.schedule_search(true);
         }
     });
+
+    if custom {
+        let day = state
+            .picker_custom_day
+            .unwrap_or_else(widgets::today_start_ms);
+        state.picker_custom_day = Some(day);
+        let date_rect = Rect::from_min_size(
+            Pos2::new(full.left(), date_top),
+            Vec2::new(112.0, theme::CHIP_HEIGHT),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
+            if widgets::button(
+                ui,
+                &widgets::format_day_ms(day),
+                widgets::ButtonKind::Secondary,
+            )
+            .clicked()
+            {
+                state.date_picker_open = true;
+                state.date_picker_month = Some(widgets::month_start_ms(day));
+            }
+        });
+    }
+
+    if state.date_picker_open {
+        let mut day = state.picker_custom_day;
+        let mut month = state
+            .date_picker_month
+            .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
+        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut day, &mut month) {
+            state.picker_custom_day = day;
+            state.date_picker_month = Some(month);
+            state.date_picker_open = false;
+            if matches!(action, widgets::DatePickerAction::Selected(_)) {
+                state.schedule_search(true);
+            }
+        } else {
+            state.date_picker_month = Some(month);
+        }
+    }
 
     // ---- 4) 列表 / 空状态 ----
     if state.items.is_empty() {

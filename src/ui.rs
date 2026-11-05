@@ -91,6 +91,7 @@ pub enum UiAction {
         text: String,
         filter: ClipFilter,
         time_range: TimeRange,
+        custom_day: Option<i64>,
         offset: usize,
         trash: bool,
         gen: u64,
@@ -185,6 +186,8 @@ pub struct UiState {
 
     // ---- 列表数据 ----
     items: Vec<ClipItem>,
+    /// 当前已加载条目的 id 集合，翻页追加时 O(1) 判重。
+    loaded_ids: HashSet<ClipId>,
     total: usize,
     loading: bool,
     active_gen: u64,
@@ -211,6 +214,10 @@ pub struct UiState {
     manager_filter: ClipFilter,
     picker_time_range: TimeRange,
     manager_time_range: TimeRange,
+    picker_custom_day: Option<i64>,
+    manager_custom_day: Option<i64>,
+    date_picker_open: bool,
+    date_picker_month: Option<i64>,
 
     // ---- 反馈 ----
     toast: Option<ToastState>,
@@ -243,6 +250,7 @@ impl UiState {
             settings: settings.clone(),
             settings_draft: settings.clone(),
             items: Vec::new(),
+            loaded_ids: HashSet::new(),
             total: 0,
             loading: false,
             active_gen: 0,
@@ -263,6 +271,10 @@ impl UiState {
             manager_filter: ClipFilter::All,
             picker_time_range: TimeRange::All,
             manager_time_range: TimeRange::All,
+            picker_custom_day: None,
+            manager_custom_day: None,
+            date_picker_open: false,
+            date_picker_month: None,
             toast: None,
             paused: settings.pause_capture,
             capturing: false,
@@ -284,6 +296,7 @@ impl UiState {
     pub fn apply_search_page(&mut self, page: SearchPage) {
         if page.gen == self.active_gen {
             self.items = page.items;
+            self.loaded_ids = self.items.iter().map(|i| i.id).collect();
             self.total = page.total;
             self.loading = false;
             self.append_gen = None;
@@ -299,8 +312,9 @@ impl UiState {
             self.multi_selected.retain(|id| ids.contains(id));
             self.last_click_index = None;
         } else if Some(page.gen) == self.append_gen {
+            // 大列表滚动加载：复用持久 id 集合，追加页保持 O(1) 判重。
             for item in page.items {
-                if !self.items.iter().any(|x| x.id == item.id) {
+                if self.loaded_ids.insert(item.id) {
                     self.items.push(item);
                 }
             }
@@ -357,6 +371,8 @@ impl UiState {
         self.manager_search_focus = false;
         self.search_focus = false;
         self.manager_time_range = TimeRange::All;
+        self.manager_custom_day = None;
+        self.date_picker_open = false;
         if matches!(
             page,
             ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash
@@ -375,6 +391,8 @@ impl UiState {
         self.search_text.clear();
         self.picker_filter = ClipFilter::All;
         self.picker_time_range = TimeRange::All;
+        self.picker_custom_day = None;
+        self.date_picker_open = false;
         self.selected = Some(0);
         self.pending_scroll_row = Some(0);
         self.picker_scroll_offset = 0.0;
@@ -494,6 +512,7 @@ impl UiState {
                     text: self.search_text.clone(),
                     filter: self.effective_filter(),
                     time_range: self.effective_time_range(),
+                    custom_day: self.effective_custom_day(),
                     offset: pending.offset,
                     trash: self.search_trash(),
                     gen: pending.gen,
@@ -550,6 +569,20 @@ impl UiState {
         }
     }
 
+    pub(crate) fn effective_custom_day(&self) -> Option<i64> {
+        match self.mode {
+            WindowMode::Picker => self.picker_custom_day,
+            WindowMode::Manager => self.manager_custom_day,
+        }
+    }
+
+    pub(crate) fn set_effective_custom_day(&mut self, day: Option<i64>) {
+        match self.mode {
+            WindowMode::Picker => self.picker_custom_day = day,
+            WindowMode::Manager => self.manager_custom_day = day,
+        }
+    }
+
     /// 单次查询条数：候选窗 200 / 管理台 500（spec §11）。
     fn list_limit(&self) -> usize {
         match self.mode {
@@ -596,6 +629,7 @@ impl UiState {
             text: self.search_text.clone(),
             filter: self.effective_filter(),
             time_range: self.effective_time_range(),
+            custom_day: self.effective_custom_day(),
             offset: self.items.len(),
             trash: self.search_trash(),
             gen,
@@ -668,6 +702,7 @@ impl UiState {
         let set: HashSet<ClipId> = ids.iter().copied().collect();
         let before = self.items.len();
         self.items.retain(|it| !set.contains(&it.id));
+        self.loaded_ids.retain(|id| !set.contains(id));
         self.total = self.total.saturating_sub(before - self.items.len());
         self.multi_selected.retain(|id| !set.contains(id));
         if self.items.is_empty() {
@@ -687,6 +722,7 @@ impl UiState {
         let set: HashSet<ClipId> = ids.iter().copied().collect();
         let before = self.items.len();
         self.items.retain(|it| !set.contains(&it.id));
+        self.loaded_ids.retain(|id| !set.contains(id));
         self.total = self.total.saturating_sub(before - self.items.len());
         if self.items.is_empty() {
             self.selected = None;
@@ -705,6 +741,7 @@ impl UiState {
         let set: HashSet<ClipId> = ids.iter().copied().collect();
         let before = self.items.len();
         self.items.retain(|it| !set.contains(&it.id));
+        self.loaded_ids.retain(|id| !set.contains(id));
         self.total = self.total.saturating_sub(before - self.items.len());
         if self.items.is_empty() {
             self.selected = None;
@@ -836,6 +873,7 @@ impl UiState {
                     ConfirmKind::EmptyTrash => {
                         let count = self.total;
                         self.items.clear();
+                        self.loaded_ids.clear();
                         self.total = 0;
                         self.selected = None;
                         self.multi_selected.clear();

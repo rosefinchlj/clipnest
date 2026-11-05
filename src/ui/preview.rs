@@ -187,6 +187,23 @@ impl PreviewState {
                     state.toast(text);
                 }
             }
+            if std::env::var_os("CLIPNEST_PREVIEW_DATE").is_some() {
+                let day = crate::ui::widgets::today_start_ms();
+                state.picker_time_range = crate::model::TimeRange::Custom;
+                state.picker_custom_day = Some(day);
+                state.date_picker_month = Some(crate::ui::widgets::month_start_ms(day));
+                state.date_picker_open = std::env::var_os("CLIPNEST_PREVIEW_DATE_ONLY").is_none();
+                state.pending = None;
+            }
+        } else if matches!(mode, "manager" | "favorites" | "trash")
+            && std::env::var_os("CLIPNEST_PREVIEW_DATE").is_some()
+        {
+            let day = crate::ui::widgets::today_start_ms();
+            state.manager_time_range = crate::model::TimeRange::Custom;
+            state.manager_custom_day = Some(day);
+            state.date_picker_month = Some(crate::ui::widgets::month_start_ms(day));
+            state.date_picker_open = std::env::var_os("CLIPNEST_PREVIEW_DATE_ONLY").is_none();
+            state.pending = None;
         }
 
         let mut thumbs = ThumbCache::new(ctx);
@@ -279,15 +296,21 @@ impl PreviewState {
                     text,
                     filter,
                     time_range,
+                    custom_day,
                     offset,
                     trash,
                     gen,
                 } => {
                     let _ = trash;
-                    let cutoff = time_range.cutoff_ms(crate::model::now_ms());
+                    let bounds = time_range.bounds(crate::model::now_ms(), custom_day);
                     let items: Vec<_> = filter_items(&self.all_items, &text, filter)
                         .into_iter()
-                        .filter(|item| cutoff.map_or(true, |since| item.last_used_at >= since))
+                        .filter(|item| {
+                            bounds.map_or(true, |(start, end)| {
+                                item.last_used_at >= start
+                                    && end.map_or(true, |end| item.last_used_at < end)
+                            })
+                        })
                         .collect();
                     let total = items.len();
                     let page_items = items.into_iter().skip(offset).take(500).collect();

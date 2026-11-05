@@ -56,11 +56,15 @@ fn enter_manager_selects_first_row_for_list_pages() {
 fn entering_picker_or_manager_resets_time_range() {
     let mut s = state();
     s.picker_time_range = TimeRange::Last7Days;
+    s.picker_custom_day = Some(123);
     s.enter_picker();
     assert_eq!(s.picker_time_range, TimeRange::All);
+    assert_eq!(s.picker_custom_day, None);
     s.manager_time_range = TimeRange::Last30Days;
+    s.manager_custom_day = Some(456);
     s.enter_manager(ManagerPage::History);
     assert_eq!(s.manager_time_range, TimeRange::All);
+    assert_eq!(s.manager_custom_day, None);
 }
 
 #[test]
@@ -105,6 +109,30 @@ fn append_result_appends_without_duplicates() {
     assert_eq!(s.items.len(), 3, "重复 id 不追加");
     assert_eq!(s.total, 4);
     assert!(s.append_gen.is_none());
+}
+
+#[test]
+fn appended_page_can_readd_id_after_optimistic_delete() {
+    let mut s = state();
+    s.active_gen = 1;
+    s.apply_search_page(page(1, 3));
+    let mut actions = Vec::new();
+    s.delete_ids(vec![2], &mut actions);
+    assert!(!s.loaded_ids.contains(&2));
+    assert_eq!(s.items.len(), 2);
+
+    s.append_gen = Some(2);
+    s.apply_search_page(SearchPage {
+        gen: 2,
+        total: 3,
+        items: vec![ClipItem {
+            id: 2,
+            ..Default::default()
+        }],
+        elapsed_ms: 0,
+    });
+    assert_eq!(s.items.len(), 3, "删除后同 id 可重新追加");
+    assert!(s.loaded_ids.contains(&2));
 }
 
 #[test]
