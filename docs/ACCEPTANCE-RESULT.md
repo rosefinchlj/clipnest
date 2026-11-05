@@ -720,3 +720,21 @@
 ### 校验
 - `cargo test --release`：**163 passed / 0 failed / 1 ignored**。
 - 截图：`docs/screenshots/manager-history.png` 更新为无底部提示的详情面板。
+
+
+## 33. v1.9.15（2026-11-05，导出另存为与数据路径确认）
+
+### 用户反馈
+- 数据目录显示为 `C:\Users\<用户名>\AppData\Roaming\ClipNest`，开源项目是否动态、是否会泄露本机用户名？
+- 点击「导出」没有明显效果。
+
+### 实现与结论
+- 数据目录由 `src/config.rs::data_dir()` 在运行时读取 `%APPDATA%` 环境变量后拼接 `ClipNest`；也可用 `CLIPNEST_DATA_DIR` 覆盖。仓库与文档只写 `%APPDATA%\ClipNest`，不包含任何真实用户名或固定盘符。
+- 原导出实际已把 JSON 写进数据目录（`export-时间戳.json`），但没有让用户选择位置，所以看起来像“没反应”。
+- 新增 `src/ui/export_dialog.rs`，调用 Windows 原生 `GetSaveFileNameW` 打开「另存为」对话框；默认文件名 `clipnest-export-YYYYMMDD-HHMMSS.json`，导出成功后仍由 Store 线程写文件并 Toast 显示实际路径。取消对话框不生成文件。
+- 候选窗设置页与管理台工具栏的导出动作统一走该对话框；`Cargo.toml` 增加 `Win32_UI_Controls_Dialogs` feature。
+
+### 校验
+- `cargo test --release`：**163 passed / 0 failed / 1 ignored**。
+- `--selftest`：14 项通过。
+- 已实际从管理台按 `Ctrl+E` 打开原生「导出 ClipNest 数据」对话框，并确认导出写入用户选择的位置（系统对话框，无需产品内截图）。

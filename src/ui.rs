@@ -10,6 +10,7 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod export_dialog;
 pub mod fonts;
 pub mod keys;
 pub mod manager;

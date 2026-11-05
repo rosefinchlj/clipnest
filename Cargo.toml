@@ -1,6 +1,6 @@
 [package]
 name = "clipnest"
-version = "1.9.14"
+version = "1.9.15"
 edition = "2021"
 rust-version = "1.85"
 description = "ClipNest · 剪贴匣 —— Windows 深色/浅色磨砂玻璃剪贴板管理器"
@@ -40,6 +40,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
     "Win32_Storage_FileSystem",
     "Win32_UI_Shell",
+    "Win32_UI_Controls_Dialogs",
     "Win32_System_Registry",
     "Win32_System_ProcessStatus",
     "Win32_System_Console",

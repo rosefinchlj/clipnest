@@ -637,10 +637,12 @@ impl ClipNestApp {
             }
             UiAction::ExportJson => {
                 let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-                let path = crate::config::data_dir().join(format!("export-{stamp}.json"));
-                if let Some(tx) = &self.store_tx {
-                    let _ = tx.send(StoreCmd::ExportJson { path: path.clone() });
-                    self.ui.toast(format!("正在导出到 {}", path.display()));
+                let default_name = format!("clipnest-export-{stamp}.json");
+                if let Some(path) = crate::ui::export_dialog::choose_export_path(&default_name) {
+                    if let Some(tx) = &self.store_tx {
+                        let _ = tx.send(StoreCmd::ExportJson { path: path.clone() });
+                        self.ui.toast(format!("正在导出到 {}", path.display()));
+                    }
                 }
             }
             UiAction::OpenDataDir => {
