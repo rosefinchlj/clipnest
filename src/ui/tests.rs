@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::model::{
-    ClipItem, ClipKind, CopyState, FileEntry, MatchMode, SearchPage, SortOrder, TempPause, TimeRange,
+    ClipItem, ClipKind, CopyState, FileEntry, MatchMode, SearchPage, SortOrder, TempPause,
+    TimeBasis, TimeRange,
 };
 
 fn state() -> UiState {
@@ -297,6 +298,28 @@ fn hotkey_status_failure_toasts() {
     s.apply_hotkey_status(false, Some("已占用".to_string()));
     assert!(s.toast.is_some());
     assert_eq!(s.hotkey_status, Some((false, Some("已占用".to_string()))));
+}
+
+#[test]
+fn set_time_basis_dispatches_search_with_basis() {
+    let mut s = state();
+    let ctx = egui::Context::default();
+    let mut actions = Vec::new();
+    s.begin_frame(&ctx, &mut actions);
+    s.pending = None; // 初始查询已发出
+    s.set_time_basis(TimeBasis::Captured);
+    assert_eq!(s.time_basis(), TimeBasis::Captured);
+    let mut actions = Vec::new();
+    s.begin_frame(&ctx, &mut actions);
+    match actions.as_slice() {
+        [UiAction::Search { time_basis, .. }] => {
+            assert_eq!(*time_basis, TimeBasis::Captured, "搜索应带上新的时间依据")
+        }
+        other => panic!("应只发出一条带 time_basis 的 Search 动作，实际 {other:?}"),
+    }
+    // 依据未变化时不重复触发查询。
+    s.set_time_basis(TimeBasis::Captured);
+    assert!(s.pending.is_none());
 }
 
 #[test]

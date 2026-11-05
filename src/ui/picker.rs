@@ -2,11 +2,13 @@
 //!
 //! 交互严格对应 spec §6.1 键盘表与 §6.2 列表项规格；所有副作用通过 [`UiAction`] 交给 Lead。
 
-use crate::model::{ClipItem, MatchMode, SortOrder, TimeRange};
+use crate::model::{ClipItem, ClipKind, MatchMode, SortOrder, TimeRange};
+use crate::ui::export_dialog;
 use crate::ui::keys::{self, PickerCommand};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, ManagerPage, UiAction, UiState};
 use eframe::egui::{self, Align2, Pos2, Rect, UiBuilder, Vec2};
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// 渲染候选窗（`ui` 为面板内容区，外层 frame 由 [`UiState::show`] 提供）。
@@ -61,14 +63,17 @@ pub(crate) fn show(
     let meta_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let time_open = state.picker_time_open;
     let time_top = meta_top + theme::CHIP_HEIGHT + theme::GAP_XS;
+    // 时间筛选展开时：第 1 行时间范围、第 2 行时间依据（最近使用 / 复制时间）、
+    // 指定日期时再追加第 3 行日期范围。
+    let basis_top = time_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let custom = time_open && state.picker_time_range == TimeRange::Custom;
-    let date_top = time_top + theme::CHIP_HEIGHT + theme::GAP_XS;
+    let date_top = basis_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let list_top = if !time_open {
         meta_top + theme::CHIP_HEIGHT + theme::GAP_S
     } else if custom {
         date_top + theme::CHIP_HEIGHT + theme::GAP_S
     } else {
-        time_top + theme::CHIP_HEIGHT + theme::GAP_S
+        basis_top + theme::CHIP_HEIGHT + theme::GAP_S
     };
     let list_bottom = (hint_top - theme::GAP_XS).max(list_top + theme::ROW_HEIGHT);
     let list_rect = Rect::from_min_max(
@@ -104,7 +109,8 @@ pub(crate) fn show(
         let allow_delete = !ime_active && !(state.search_focused && !state.search_text.is_empty());
         // 同上：搜索中按 ←/→ 是移动光标；搜索框为空或未聚焦时切换分类。
         let allow_arrows = !ime_active && !(state.search_focused && !state.search_text.is_empty());
-        let commands = keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows, !ime_active);
+        let commands =
+            keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows, !ime_active, !ime_active);
         for command in commands {
             handle_command(state, command, list_rect.height(), actions);
         }
@@ -306,6 +312,23 @@ pub(crate) fn show(
                 }
                 state.schedule_search(true);
             }
+        });
+
+        // 时间依据：最近使用 / 复制时间（写回设置并立即重查）。
+        let basis_rect = Rect::from_min_size(
+            Pos2::new(full.left(), basis_top),
+            Vec2::new(full.width(), theme::CHIP_HEIGHT),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(basis_rect), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::aux("时间依据"));
+                ui.add_space(2.0);
+                let mut basis = state.time_basis();
+                if widgets::time_basis_toggle(ui, &mut basis) {
+                    state.set_time_basis(basis);
+                    actions.push(UiAction::SetTimeFilterBasis(basis));
+                }
+            });
         });
 
         if custom {
@@ -614,6 +637,44 @@ fn row_context_menu(
         let label = format!("忽略来源应用：{app}");
         if widgets::menu_item(ui, &label).clicked() {
             actions.push(UiAction::IgnoreSourceApp(app.to_string()));
+            ui.close();
+        }
+    }
+    ui.separator();
+    // 文件类条目：打开文件 / 所在文件夹 / 复制路径（多文件时作用于第一个）。
+    if item.kind == ClipKind::Files {
+        if let Some(file) = item.files.first() {
+            let path = PathBuf::from(&file.path);
+            if widgets::menu_item(ui, "打开文件").clicked() {
+                actions.push(UiAction::OpenPath(path.clone()));
+                ui.close();
+            }
+            if widgets::menu_item(ui, "所在文件夹").clicked() {
+                actions.push(UiAction::RevealPath(path));
+                ui.close();
+            }
+            if widgets::menu_item(ui, "复制路径").clicked() {
+                actions.push(UiAction::CopyPath(file.path.clone()));
+                ui.close();
+            }
+        } else {
+            ui.label(theme::aux("（文件路径已失效）"));
+        }
+    } else {
+        // 图片/文本：另存为（系统保存框，取消不做任何事）。
+        let label = if item.kind == ClipKind::Image {
+            "图片另存为…"
+        } else {
+            "文本另存为…"
+        };
+        if widgets::menu_item(ui, label).clicked() {
+            if let Some(path) = export_dialog::choose_item_save_path(item) {
+                match item.kind {
+                    ClipKind::Image => actions.push(UiAction::SaveImageAs { id: item.id, path }),
+                    ClipKind::Text => actions.push(UiAction::SaveTextAs { id: item.id, path }),
+                    ClipKind::Files => {}
+                }
+            }
             ui.close();
         }
     }

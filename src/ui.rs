@@ -29,7 +29,7 @@ pub use thumbs::ThumbCache;
 
 use crate::model::{
     fmt_size, BackupPreview, ClipFilter, ClipId, ClipItem, CopyState, MatchMode, SearchPage,
-    Settings, SortOrder, Stats, TempPause, TimeRange,
+    Settings, SortOrder, Stats, TempPause, TimeBasis, TimeRange,
 };
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
@@ -96,6 +96,8 @@ pub enum UiAction {
         text: String,
         filter: ClipFilter,
         time_range: TimeRange,
+        /// 时间范围按哪一列计算（最近使用 / 复制时间）。
+        time_basis: TimeBasis,
         custom_day: Option<i64>,
         custom_end_day: Option<i64>,
         match_mode: MatchMode,
@@ -166,6 +168,18 @@ pub enum UiAction {
     SelectManagerPage(ManagerPage),
     /// 实时预览磨砂透明度（只改运行时，不落盘；点保存才持久化）。
     PreviewGlassOpacity(u8),
+    /// 用系统默认程序打开文件/文件夹。
+    OpenPath(PathBuf),
+    /// 在资源管理器中定位文件（文件夹则直接打开）。
+    RevealPath(PathBuf),
+    /// 把路径文本复制到剪贴板。
+    CopyPath(String),
+    /// 图片另存为：UI 已用系统保存框选好目标路径，Lead 转 `StoreCmd::SaveImageAs`。
+    SaveImageAs { id: ClipId, path: PathBuf },
+    /// 文本另存为：Lead 转 `StoreCmd::SaveTextAs`。
+    SaveTextAs { id: ClipId, path: PathBuf },
+    /// 时间范围筛选依据变更（最近使用 / 复制时间），Lead 落盘到设置。
+    SetTimeFilterBasis(TimeBasis),
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +264,8 @@ pub struct UiState {
     source_apps_due: bool,
     picker_time_range: TimeRange,
     manager_time_range: TimeRange,
+    /// 时间范围筛选依据（最近使用 / 复制时间），与设置保持同步。
+    time_basis: TimeBasis,
     /// 时间范围筛选行是否展开（默认隐藏，由「筛选」按钮控制）。
     picker_time_open: bool,
     manager_time_open: bool,
@@ -331,6 +347,7 @@ impl UiState {
             source_apps_due: false,
             picker_time_range: TimeRange::All,
             manager_time_range: TimeRange::All,
+            time_basis: settings.time_filter_basis,
             picker_time_open: false,
             manager_time_open: false,
             picker_custom_day: None,
@@ -425,6 +442,21 @@ impl UiState {
         self.settings = settings.clone();
         self.settings_draft = settings.clone();
         self.paused = settings.pause_capture;
+        self.time_basis = settings.time_filter_basis;
+    }
+
+    /// 当前时间筛选依据。
+    pub fn time_basis(&self) -> TimeBasis {
+        self.time_basis
+    }
+
+    /// 切换时间筛选依据；变化时立即重查（下次 `begin_frame` 带上新 basis）。
+    pub fn set_time_basis(&mut self, basis: TimeBasis) {
+        if self.time_basis == basis {
+            return;
+        }
+        self.time_basis = basis;
+        self.schedule_search(true);
     }
 
     /// 同步运行期临时暂停（A3：来自 Sys 线程的 `Event::TempPauseChanged`）。
@@ -683,6 +715,7 @@ impl UiState {
                     text: self.search_text.clone(),
                     filter: self.effective_filter(),
                     time_range: self.effective_time_range(),
+                    time_basis: self.time_basis,
                     custom_day: self.effective_custom_day(),
                     custom_end_day: self.effective_custom_end(),
                     match_mode: self.match_mode,
@@ -873,6 +906,7 @@ impl UiState {
             text: self.search_text.clone(),
             filter: self.effective_filter(),
             time_range: self.effective_time_range(),
+            time_basis: self.time_basis,
             custom_day: self.effective_custom_day(),
             custom_end_day: self.effective_custom_end(),
             match_mode: self.match_mode,
