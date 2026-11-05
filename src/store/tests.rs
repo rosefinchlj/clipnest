@@ -192,6 +192,7 @@ pub(crate) fn search_query(
         filter,
         time_range: crate::model::TimeRange::All,
         custom_day: None,
+        custom_end_day: None,
         offset,
         limit,
         trash: false,
@@ -484,7 +485,20 @@ fn time_range_filters_by_last_used() {
     assert_eq!(page.total, 1);
     assert_eq!(page.items[0].id, recent_id);
     query.custom_day = Some(today - 86_400_000);
+    query.custom_end_day = None;
     assert_eq!(db.search(&query).unwrap().total, 0);
+
+    // 日期范围：起止都包含，且起点晚于终点时自动交换。
+    query.custom_day = Some(today - 50 * 86_400_000);
+    query.custom_end_day = Some(today - 30 * 86_400_000);
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, old_id);
+    query.custom_day = Some(today - 30 * 86_400_000);
+    query.custom_end_day = Some(today - 50 * 86_400_000);
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, old_id);
 }
 
 #[test]
@@ -881,6 +895,7 @@ fn trash_soft_delete_search_restore_and_purge() {
             filter: ClipFilter::All,
             time_range: crate::model::TimeRange::All,
             custom_day: None,
+            custom_end_day: None,
             offset: 0,
             limit: 10,
             trash: true,

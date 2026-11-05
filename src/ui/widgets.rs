@@ -414,10 +414,10 @@ pub fn time_range_chips(ui: &mut egui::Ui, current: &mut TimeRange) -> bool {
     chips(ui, current, &TimeRange::all(), |range| range.label())
 }
 
-/// 指定日期弹窗的结果。
+/// 指定日期范围弹窗的结果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DatePickerAction {
-    Selected(i64),
+    Selected { start: i64, end: i64 },
     Closed,
 }
 
@@ -435,6 +435,15 @@ pub fn format_day_ms(ms: i64) -> String {
         .map(|dt| dt.date_naive())
         .unwrap_or_else(|| Local::now().date_naive());
     date.format("%Y-%m-%d").to_string()
+}
+
+/// 日期范围显示：单日只显示一天，多日显示 `起 ~ 止`。
+pub fn format_day_range(start: i64, end: i64) -> String {
+    if start == end {
+        format_day_ms(start)
+    } else {
+        format!("{} ~ {}", format_day_ms(start), format_day_ms(end))
+    }
 }
 
 /// 时间戳所在月份的第一天 00:00。
@@ -472,19 +481,20 @@ fn shift_month(date: NaiveDate, delta: i32) -> NaiveDate {
         .unwrap_or(date)
 }
 
-/// 居中日历弹窗；`month` 是当前显示月份的第一天时间戳，返回选择结果或关闭。
+fn date_of(ms: i64) -> Option<NaiveDate> {
+    Local.timestamp_millis_opt(ms).single().map(|dt| dt.date_naive())
+}
+
+/// 居中日历弹窗（选择闭区间日期范围）；`month` 是当前显示月份的第一天时间戳。
 pub fn date_picker_modal(
     ctx: &egui::Context,
-    selected_day: &mut Option<i64>,
+    start: &mut Option<i64>,
+    end: &mut Option<i64>,
     month: &mut i64,
 ) -> Option<DatePickerAction> {
     let mut result = None;
-    let selected_date = selected_day.and_then(|ms| {
-        Local
-            .timestamp_millis_opt(ms)
-            .single()
-            .map(|dt| dt.date_naive())
-    });
+    let start_date = start.and_then(date_of);
+    let end_date = end.and_then(date_of);
     let mut shown = Local
         .timestamp_millis_opt(*month)
         .single()
@@ -492,7 +502,8 @@ pub fn date_picker_modal(
         .unwrap_or_else(|| Local::now().date_naive())
         .with_day(1)
         .unwrap_or_else(|| Local::now().date_naive());
-    let modal = egui::Modal::new(egui::Id::new("clipnest-date-picker"))
+
+    let modal = egui::Modal::new(egui::Id::new("clipnest-date-range-picker"))
         .frame(
             theme::popup_frame()
                 .inner_margin(egui::Margin::same(18))
@@ -502,24 +513,27 @@ pub fn date_picker_modal(
     let resp = modal.show(ctx, |ui| {
         ui.set_width(286.0);
         ui.horizontal(|ui| {
-            if ui
-                .add_sized([30.0, 26.0], egui::Button::new("‹"))
-                .clicked()
-            {
+            if ui.add_sized([30.0, 26.0], egui::Button::new("‹")).clicked() {
                 shown = shift_month(shown, -1);
             }
             ui.add_space(6.0);
             ui.label(theme::title(&format!("{} 年 {} 月", shown.year(), shown.month())));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_sized([30.0, 26.0], egui::Button::new("›"))
-                    .clicked()
-                {
+                if ui.add_sized([30.0, 26.0], egui::Button::new("›")).clicked() {
                     shown = shift_month(shown, 1);
                 }
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(4.0);
+        let hint = if start_date.is_some() && end_date.is_none() {
+            "再点结束日期"
+        } else if start_date.is_some() && end_date.is_some() {
+            "点选新的开始日期"
+        } else {
+            "先点开始日期，再点结束日期"
+        };
+        ui.label(theme::aux(hint));
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for weekday in ["一", "二", "三", "四", "五", "六", "日"] {
@@ -535,9 +549,7 @@ pub fn date_picker_modal(
         });
         let first = shown.with_day(1).unwrap_or(shown);
         let offset = first.weekday().num_days_from_monday() as u64;
-        let grid_start = first
-            .checked_sub_days(Days::new(offset))
-            .unwrap_or(first);
+        let grid_start = first.checked_sub_days(Days::new(offset)).unwrap_or(first);
         for week in 0..6 {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -547,10 +559,17 @@ pub fn date_picker_modal(
                         .unwrap_or(grid_start);
                     let (rect, resp) =
                         ui.allocate_exact_size(Vec2::new(34.0, 28.0), Sense::click());
-                    let selected = selected_date == Some(date);
+                    let is_start = start_date == Some(date);
+                    let is_end = end_date == Some(date);
+                    let in_range = match (start_date, end_date) {
+                        (Some(a), Some(b)) => date > a && date < b,
+                        _ => false,
+                    };
                     let in_month = date.month() == shown.month();
-                    let fill = if selected {
+                    let fill = if is_start || is_end {
                         theme::selection()
+                    } else if in_range {
+                        theme::selection_fill()
                     } else if resp.hovered() {
                         theme::hover_fill()
                     } else {
@@ -563,7 +582,7 @@ pub fn date_picker_modal(
                             fill,
                         );
                     }
-                    let color = if selected {
+                    let color = if is_start || is_end {
                         theme::selection_text()
                     } else if in_month {
                         theme::text()
@@ -578,9 +597,29 @@ pub fn date_picker_modal(
                         color,
                     );
                     if resp.clicked() {
-                        if let Some(ms) = date_start_ms(date) {
-                            *selected_day = Some(ms);
-                            result = Some(DatePickerAction::Selected(ms));
+                        let Some(ms) = date_start_ms(date) else { continue };
+                        match (*start, *end) {
+                            (Some(_), Some(_)) => {
+                                *start = Some(ms);
+                                *end = None;
+                            }
+                            (Some(s), None) => {
+                                if ms < s {
+                                    *start = Some(ms);
+                                    *end = Some(s);
+                                } else {
+                                    *start = Some(s);
+                                    *end = Some(ms);
+                                }
+                                result = Some(DatePickerAction::Selected {
+                                    start: start.unwrap(),
+                                    end: end.unwrap(),
+                                });
+                            }
+                            _ => {
+                                *start = Some(ms);
+                                *end = None;
+                            }
                         }
                     }
                 }
@@ -591,8 +630,9 @@ pub fn date_picker_modal(
             if button(ui, "今天", ButtonKind::Secondary).clicked() {
                 let today = Local::now().date_naive();
                 if let Some(ms) = date_start_ms(today) {
-                    *selected_day = Some(ms);
-                    result = Some(DatePickerAction::Selected(ms));
+                    *start = Some(ms);
+                    *end = Some(ms);
+                    result = Some(DatePickerAction::Selected { start: ms, end: ms });
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

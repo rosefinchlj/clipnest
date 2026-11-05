@@ -190,7 +190,11 @@ impl PreviewState {
             if std::env::var_os("CLIPNEST_PREVIEW_DATE").is_some() {
                 let day = crate::ui::widgets::today_start_ms();
                 state.picker_time_range = crate::model::TimeRange::Custom;
-                state.picker_custom_day = Some(day);
+                state.picker_time_open = true;
+                state.picker_custom_day = Some(day - 2 * 86_400_000);
+                state.picker_custom_end = Some(day);
+                state.date_picker_start = Some(day - 2 * 86_400_000);
+                state.date_picker_end = Some(day);
                 state.date_picker_month = Some(crate::ui::widgets::month_start_ms(day));
                 state.date_picker_open = std::env::var_os("CLIPNEST_PREVIEW_DATE_ONLY").is_none();
                 state.pending = None;
@@ -200,7 +204,11 @@ impl PreviewState {
         {
             let day = crate::ui::widgets::today_start_ms();
             state.manager_time_range = crate::model::TimeRange::Custom;
-            state.manager_custom_day = Some(day);
+            state.manager_time_open = true;
+            state.manager_custom_day = Some(day - 2 * 86_400_000);
+            state.manager_custom_end = Some(day);
+            state.date_picker_start = Some(day - 2 * 86_400_000);
+            state.date_picker_end = Some(day);
             state.date_picker_month = Some(crate::ui::widgets::month_start_ms(day));
             state.date_picker_open = std::env::var_os("CLIPNEST_PREVIEW_DATE_ONLY").is_none();
             state.pending = None;
@@ -297,12 +305,17 @@ impl PreviewState {
                     filter,
                     time_range,
                     custom_day,
+                    custom_end_day,
                     offset,
                     trash,
                     gen,
                 } => {
                     let _ = trash;
-                    let bounds = time_range.bounds(crate::model::now_ms(), custom_day);
+                    let bounds = time_range.bounds(
+                        crate::model::now_ms(),
+                        custom_day,
+                        custom_end_day,
+                    );
                     let items: Vec<_> = filter_items(&self.all_items, &text, filter)
                         .into_iter()
                         .filter(|item| {

@@ -684,3 +684,24 @@
   - `time_range_filters_by_last_used` 增加「今天命中、昨天不命中」的自定义日期断言。
   - `entering_picker_or_manager_resets_time_range` 增加自定义日期清理断言。
 - 截图：`docs/screenshots/picker.png`（指定日期按钮）、`docs/screenshots/picker-date.png`（日历弹窗）、`docs/screenshots/manager-history.png`、`docs/screenshots/manager-date.png`。
+
+---
+
+## 31. v1.9.13（2026-11-05，日期范围与筛选开关）
+
+### 用户反馈
+- 日期选择现在只能选某一天，需要支持一个范围。
+- 新增的日期行默认隐藏，给出一个筛选控制开关。
+
+### 实现
+- `TimeRange::Custom` 从单日改为日期范围：`custom_day` 为起始日、`custom_end_day` 为结束日（均本地 00:00，包含结束日）；起止顺序颠倒时自动交换，单日时起止相同。
+- SQL 使用左闭右开区间：`last_used_at >= 起始日 00:00` 且 `last_used_at < 结束日次日 00:00`，与关键词、分类、收藏、回收站等条件继续叠加。
+- 日历弹窗改为范围选择：第一次点选开始日期，第二次点选结束日期并应用；起止日期用实色胶囊、区间内日期用浅色底；顶部提示「先点开始日期，再点结束日期 / 再点结束日期 / 点选新的开始日期」；「今天」选择当天单日，「取消」关闭。
+- 候选窗和管理台的时间/日期行默认收起，只保留「筛选」按钮；展开后显示时间胶囊与日期范围按钮，收起时若有生效中的时间筛选，按钮显示青色小圆点。
+- 日期范围按钮显示 `YYYY-MM-DD`（单日）或 `YYYY-MM-DD ~ YYYY-MM-DD`（范围），点击可重新打开日历修改。
+
+### 校验
+- `cargo test --release`：**163 passed / 0 failed / 1 ignored**
+  - `time_range_filters_by_last_used` 增加日期范围命中、起止倒置自动交换断言；
+  - `entering_picker_or_manager_resets_time_range` 增加结束日期与筛选展开状态清理断言。
+- 截图：`docs/screenshots/picker.png`（默认收起）、`docs/screenshots/picker-date.png`（范围日历）、`docs/screenshots/manager-history.png`、`docs/screenshots/manager-date.png`。

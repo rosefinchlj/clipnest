@@ -343,6 +343,7 @@ fn search(
             filter,
             time_range: crate::model::TimeRange::All,
             custom_day: None,
+            custom_end_day: None,
             offset,
             limit,
             trash: false,

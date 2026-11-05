@@ -57,14 +57,22 @@ fn entering_picker_or_manager_resets_time_range() {
     let mut s = state();
     s.picker_time_range = TimeRange::Last7Days;
     s.picker_custom_day = Some(123);
+    s.picker_custom_end = Some(456);
+    s.picker_time_open = true;
     s.enter_picker();
     assert_eq!(s.picker_time_range, TimeRange::All);
     assert_eq!(s.picker_custom_day, None);
+    assert_eq!(s.picker_custom_end, None);
+    assert!(!s.picker_time_open);
     s.manager_time_range = TimeRange::Last30Days;
     s.manager_custom_day = Some(456);
+    s.manager_custom_end = Some(789);
+    s.manager_time_open = true;
     s.enter_manager(ManagerPage::History);
     assert_eq!(s.manager_time_range, TimeRange::All);
     assert_eq!(s.manager_custom_day, None);
+    assert_eq!(s.manager_custom_end, None);
+    assert!(!s.manager_time_open);
 }
 
 #[test]

@@ -333,8 +333,13 @@ impl TimeRange {
         }
     }
 
-    /// 时间窗口 `[start, end)`；`Custom` 使用 `custom_day`（本地 00:00 时间戳）当天。
-    pub fn bounds(self, now: i64, custom_day: Option<i64>) -> Option<(i64, Option<i64>)> {
+    /// 时间窗口 `[start, end)`；`Custom` 使用 `custom_day`（起始日）与 `custom_end_day`（结束日，均本地 00:00）。
+    pub fn bounds(
+        self,
+        now: i64,
+        custom_day: Option<i64>,
+        custom_end_day: Option<i64>,
+    ) -> Option<(i64, Option<i64>)> {
         let day = 24 * 60 * 60 * 1000;
         match self {
             TimeRange::All => None,
@@ -344,7 +349,13 @@ impl TimeRange {
             TimeRange::Last90Days => Some((now - 90 * day, None)),
             TimeRange::Custom => {
                 let start = custom_day?;
-                let end = local_next_midnight(start).unwrap_or(start + day);
+                let end_day = custom_end_day.unwrap_or(start);
+                let (start, end_day) = if end_day < start {
+                    (end_day, start)
+                } else {
+                    (start, end_day)
+                };
+                let end = local_next_midnight(end_day).unwrap_or(end_day + day);
                 Some((start, Some(end)))
             }
         }
@@ -379,8 +390,10 @@ pub struct SearchQuery {
     pub text: String,
     pub filter: ClipFilter,
     pub time_range: TimeRange,
-    /// `TimeRange::Custom` 时的本地 00:00 时间戳。
+    /// `TimeRange::Custom` 起始日的本地 00:00 时间戳。
     pub custom_day: Option<i64>,
+    /// `TimeRange::Custom` 结束日的本地 00:00 时间戳；与起始日相同表示单日。
+    pub custom_end_day: Option<i64>,
     pub offset: usize,
     pub limit: usize,
     /// true 时查询回收站（deleted_at 非空）。
@@ -396,6 +409,7 @@ impl Default for SearchQuery {
             filter: ClipFilter::All,
             time_range: TimeRange::All,
             custom_day: None,
+            custom_end_day: None,
             offset: 0,
             limit: 200,
             trash: false,

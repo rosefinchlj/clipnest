@@ -92,6 +92,7 @@ pub enum UiAction {
         filter: ClipFilter,
         time_range: TimeRange,
         custom_day: Option<i64>,
+        custom_end_day: Option<i64>,
         offset: usize,
         trash: bool,
         gen: u64,
@@ -214,10 +215,17 @@ pub struct UiState {
     manager_filter: ClipFilter,
     picker_time_range: TimeRange,
     manager_time_range: TimeRange,
+    /// 时间范围筛选行是否展开（默认隐藏，由「筛选」按钮控制）。
+    picker_time_open: bool,
+    manager_time_open: bool,
     picker_custom_day: Option<i64>,
     manager_custom_day: Option<i64>,
+    picker_custom_end: Option<i64>,
+    manager_custom_end: Option<i64>,
     date_picker_open: bool,
     date_picker_month: Option<i64>,
+    date_picker_start: Option<i64>,
+    date_picker_end: Option<i64>,
 
     // ---- 反馈 ----
     toast: Option<ToastState>,
@@ -271,10 +279,16 @@ impl UiState {
             manager_filter: ClipFilter::All,
             picker_time_range: TimeRange::All,
             manager_time_range: TimeRange::All,
+            picker_time_open: false,
+            manager_time_open: false,
             picker_custom_day: None,
             manager_custom_day: None,
+            picker_custom_end: None,
+            manager_custom_end: None,
             date_picker_open: false,
             date_picker_month: None,
+            date_picker_start: None,
+            date_picker_end: None,
             toast: None,
             paused: settings.pause_capture,
             capturing: false,
@@ -371,7 +385,9 @@ impl UiState {
         self.manager_search_focus = false;
         self.search_focus = false;
         self.manager_time_range = TimeRange::All;
+        self.manager_time_open = false;
         self.manager_custom_day = None;
+        self.manager_custom_end = None;
         self.date_picker_open = false;
         if matches!(
             page,
@@ -391,7 +407,9 @@ impl UiState {
         self.search_text.clear();
         self.picker_filter = ClipFilter::All;
         self.picker_time_range = TimeRange::All;
+        self.picker_time_open = false;
         self.picker_custom_day = None;
+        self.picker_custom_end = None;
         self.date_picker_open = false;
         self.selected = Some(0);
         self.pending_scroll_row = Some(0);
@@ -513,6 +531,7 @@ impl UiState {
                     filter: self.effective_filter(),
                     time_range: self.effective_time_range(),
                     custom_day: self.effective_custom_day(),
+                    custom_end_day: self.effective_custom_end(),
                     offset: pending.offset,
                     trash: self.search_trash(),
                     gen: pending.gen,
@@ -576,10 +595,24 @@ impl UiState {
         }
     }
 
+    pub(crate) fn effective_custom_end(&self) -> Option<i64> {
+        match self.mode {
+            WindowMode::Picker => self.picker_custom_end,
+            WindowMode::Manager => self.manager_custom_end,
+        }
+    }
+
     pub(crate) fn set_effective_custom_day(&mut self, day: Option<i64>) {
         match self.mode {
             WindowMode::Picker => self.picker_custom_day = day,
             WindowMode::Manager => self.manager_custom_day = day,
+        }
+    }
+
+    pub(crate) fn set_effective_custom_end(&mut self, day: Option<i64>) {
+        match self.mode {
+            WindowMode::Picker => self.picker_custom_end = day,
+            WindowMode::Manager => self.manager_custom_end = day,
         }
     }
 
@@ -630,6 +663,7 @@ impl UiState {
             filter: self.effective_filter(),
             time_range: self.effective_time_range(),
             custom_day: self.effective_custom_day(),
+            custom_end_day: self.effective_custom_end(),
             offset: self.items.len(),
             trash: self.search_trash(),
             gen,
@@ -847,6 +881,9 @@ impl UiState {
         self.manager_page = page;
         self.multi_selected.clear();
         self.manager_time_range = TimeRange::All;
+        self.manager_custom_day = None;
+        self.manager_custom_end = None;
+        self.date_picker_open = false;
         if matches!(
             page,
             ManagerPage::History | ManagerPage::Favorites | ManagerPage::Trash

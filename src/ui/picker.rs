@@ -57,10 +57,13 @@ pub(crate) fn show(
     }
     let search_top = full.top() + DRAG_STRIP;
     let chips_top = search_top + theme::SEARCH_HEIGHT + theme::GAP_S;
+    let time_open = state.picker_time_open;
     let time_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_XS;
-    let custom = state.picker_time_range == TimeRange::Custom;
+    let custom = time_open && state.picker_time_range == TimeRange::Custom;
     let date_top = time_top + theme::CHIP_HEIGHT + theme::GAP_XS;
-    let list_top = if custom {
+    let list_top = if !time_open {
+        chips_top + theme::CHIP_HEIGHT + theme::GAP_S
+    } else if custom {
         date_top + theme::CHIP_HEIGHT + theme::GAP_S
     } else {
         time_top + theme::CHIP_HEIGHT + theme::GAP_S
@@ -147,60 +150,115 @@ pub(crate) fn show(
         }
     });
 
-    // ---- 3b) 时间范围 ----
-    let time_rect = Rect::from_min_size(
-        Pos2::new(full.left(), time_top),
-        Vec2::new(full.width(), theme::CHIP_HEIGHT),
+    // ---- 3b) 日期筛选开关 + 时间范围 ----
+    let toggle_rect = Rect::from_min_size(
+        Pos2::new(full.right() - 74.0, chips_top),
+        Vec2::new(64.0, theme::CHIP_HEIGHT),
     );
-    ui.scope_builder(UiBuilder::new().max_rect(time_rect), |ui| {
-        if widgets::time_range_chips(ui, &mut state.picker_time_range) {
-            if state.picker_time_range == TimeRange::Custom {
-                let day = state
-                    .picker_custom_day
-                    .unwrap_or_else(widgets::today_start_ms);
-                state.picker_custom_day = Some(day);
-                state.date_picker_month = Some(widgets::month_start_ms(day));
-                state.date_picker_open = true;
-            } else {
-                state.date_picker_open = false;
-            }
-            state.schedule_search(true);
+    if widgets::button_at(
+        ui,
+        toggle_rect,
+        "筛选",
+        widgets::ButtonKind::Secondary,
+    )
+    .clicked()
+    {
+        state.picker_time_open = !time_open;
+        if !state.picker_time_open {
+            state.date_picker_open = false;
         }
-    });
-
-    if custom {
-        let day = state
-            .picker_custom_day
-            .unwrap_or_else(widgets::today_start_ms);
-        state.picker_custom_day = Some(day);
-        let date_rect = Rect::from_min_size(
-            Pos2::new(full.left(), date_top),
-            Vec2::new(112.0, theme::CHIP_HEIGHT),
+    }
+    let chevron = Pos2::new(toggle_rect.right() - 12.0, toggle_rect.center().y);
+    let stroke = egui::Stroke::new(1.4_f32, theme::text_secondary());
+    if time_open {
+        ui.painter().line_segment(
+            [Pos2::new(chevron.x - 4.0, chevron.y + 2.0), chevron],
+            stroke,
         );
-        ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
-            if widgets::button(
-                ui,
-                &widgets::format_day_ms(day),
-                widgets::ButtonKind::Secondary,
-            )
-            .clicked()
-            {
-                state.date_picker_open = true;
-                state.date_picker_month = Some(widgets::month_start_ms(day));
+        ui.painter().line_segment(
+            [chevron, Pos2::new(chevron.x + 4.0, chevron.y + 2.0)],
+            stroke,
+        );
+    } else {
+        ui.painter().line_segment(
+            [Pos2::new(chevron.x - 4.0, chevron.y - 2.0), chevron],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [chevron, Pos2::new(chevron.x + 4.0, chevron.y - 2.0)],
+            stroke,
+        );
+    }
+    if !time_open && state.picker_time_range != TimeRange::All {
+        ui.painter().circle_filled(
+            Pos2::new(toggle_rect.right() - 9.0, toggle_rect.top() + 8.0),
+            2.5,
+            theme::accent(),
+        );
+    }
+
+    if time_open {
+        let time_rect = Rect::from_min_size(
+            Pos2::new(full.left(), time_top),
+            Vec2::new(full.width(), theme::CHIP_HEIGHT),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(time_rect), |ui| {
+            if widgets::time_range_chips(ui, &mut state.picker_time_range) {
+                if state.picker_time_range == TimeRange::Custom {
+                    let start = state
+                        .picker_custom_day
+                        .unwrap_or_else(widgets::today_start_ms);
+                    let end = state.picker_custom_end.unwrap_or(start);
+                    state.picker_custom_day = Some(start);
+                    state.picker_custom_end = Some(end);
+                    state.date_picker_start = Some(start);
+                    state.date_picker_end = Some(end);
+                    state.date_picker_month = Some(widgets::month_start_ms(start));
+                    state.date_picker_open = true;
+                } else {
+                    state.date_picker_open = false;
+                }
+                state.schedule_search(true);
             }
         });
+
+        if custom {
+            let start = state
+                .picker_custom_day
+                .unwrap_or_else(widgets::today_start_ms);
+            let end = state.picker_custom_end.unwrap_or(start);
+            state.picker_custom_day = Some(start);
+            state.picker_custom_end = Some(end);
+            let label = widgets::format_day_range(start, end);
+            let date_rect = Rect::from_min_size(
+                Pos2::new(full.left(), date_top),
+                Vec2::new(210.0, theme::CHIP_HEIGHT),
+            );
+            ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
+                if widgets::button_at(ui, date_rect, &label, widgets::ButtonKind::Secondary).clicked() {
+                    state.date_picker_start = Some(start);
+                    state.date_picker_end = Some(end);
+                    state.date_picker_open = true;
+                    state.date_picker_month = Some(widgets::month_start_ms(start));
+                }
+            });
+        }
     }
 
     if state.date_picker_open {
-        let mut day = state.picker_custom_day;
+        let mut start = state.date_picker_start;
+        let mut end = state.date_picker_end;
         let mut month = state
             .date_picker_month
             .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
-        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut day, &mut month) {
-            state.picker_custom_day = day;
+        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month) {
+            state.date_picker_start = start;
+            state.date_picker_end = end;
             state.date_picker_month = Some(month);
             state.date_picker_open = false;
-            if matches!(action, widgets::DatePickerAction::Selected(_)) {
+            if let widgets::DatePickerAction::Selected { start, end } = action {
+                state.picker_custom_day = Some(start);
+                state.picker_custom_end = Some(end);
                 state.schedule_search(true);
             }
         } else {
