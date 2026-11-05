@@ -27,9 +27,13 @@ pub use fonts::install_fonts;
 pub use theme::install_theme;
 pub use thumbs::ThumbCache;
 
-use crate::model::{ClipFilter, ClipId, ClipItem, SearchPage, Settings, Stats, TimeRange};
+use crate::model::{
+    fmt_size, BackupPreview, ClipFilter, ClipId, ClipItem, CopyState, SearchPage, Settings, Stats,
+    TempPause, TimeRange,
+};
 use eframe::egui;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// 搜索防抖 80ms（spec §6.1/§11）。
@@ -114,10 +118,19 @@ pub enum UiAction {
     PurgeTrash { ids: Vec<ClipId> },
     /// 清空回收站。
     EmptyTrash,
-    /// 清空历史。
-    Clear { delete_blobs: bool },
-    /// 把文件条目实体复制进数据目录（收藏时）。
+    /// 清空历史（`include_favorites` 需要用户额外输入确认）。
+    Clear {
+        delete_blobs: bool,
+        include_favorites: bool,
+    },
+    /// 把文件条目实体复制进数据目录（收藏时，或详情里重试失败副本）。
     SaveFavoriteFiles(ClipId),
+    /// 临时暂停/恢复采集（运行期生效，不写入设置文件；A3）。
+    SetTempPause(TempPause),
+    /// 重新检查一次文件副本状态（A4 失败重试）。
+    RetryFileCopy(ClipId),
+    /// 把来源应用加入忽略名单并保存设置（A3 隐私）。
+    IgnoreSourceApp(String),
     /// 打开管理台。
     OpenManager,
     /// 回到候选窗。
@@ -134,6 +147,12 @@ pub enum UiAction {
     SetPause(bool),
     /// 导出 JSON。
     ExportJson,
+    /// 创建完整备份（Lead 弹原生另存为对话框后发 `StoreCmd::CreateBackup`）。
+    CreateBackup,
+    /// 从备份恢复：Lead 弹原生打开对话框并发 `StoreCmd::InspectBackup`。
+    RestoreBackup,
+    /// 恢复预览中确认执行（Lead 发 `StoreCmd::RestoreBackup`）。
+    ConfirmRestore { path: PathBuf },
     /// 打开数据目录。
     OpenDataDir,
     /// 刷新统计。
@@ -236,6 +255,10 @@ pub struct UiState {
     // ---- 状态展示 ----
     hotkey_status: Option<(bool, Option<String>)>,
 
+    // ---- 完整备份/恢复 ----
+    /// 已检查通过、正在预览的备份（恢复确认框显示中）。
+    backup_preview: Option<BackupPreview>,
+
     // ---- Manager ----
     detail_open: bool,
     multi_selected: HashSet<ClipId>,
@@ -247,6 +270,14 @@ pub struct UiState {
     rec: widgets::HotkeyRecorderState,
     ignore_input: String,
     clear_delete_blobs: bool,
+    /// 清空确认框：是否连收藏一起清空（A2）。
+    clear_include_favorites: bool,
+    /// 清空确认框：清空收藏时必须输入的确认词。
+    clear_confirm_text: String,
+    /// 运行期临时暂停状态（A3，不写入设置文件）。
+    temp_pause: TempPause,
+    /// 文件副本状态（A4：本次会话内由 `Event::FileCopyState` 回填）。
+    copy_states: HashMap<ClipId, CopyState>,
 }
 
 impl UiState {
@@ -294,6 +325,7 @@ impl UiState {
             paused: settings.pause_capture,
             capturing: false,
             hotkey_status: None,
+            backup_preview: None,
             detail_open: true,
             multi_selected: HashSet::new(),
             last_click_index: None,
@@ -302,6 +334,10 @@ impl UiState {
             rec: widgets::HotkeyRecorderState::default(),
             ignore_input: String::new(),
             clear_delete_blobs: true,
+            clear_include_favorites: false,
+            clear_confirm_text: String::new(),
+            temp_pause: TempPause::Off,
+            copy_states: HashMap::new(),
         };
         s.schedule_search(true);
         s
@@ -345,6 +381,11 @@ impl UiState {
         self.stats = stats;
     }
 
+    /// 显示恢复预览对话框（Store 校验备份通过后调用）。
+    pub fn set_backup_preview(&mut self, preview: BackupPreview) {
+        self.backup_preview = Some(preview);
+    }
+
     /// 应用 Win+V 接管状态。
     /// 应用备用快捷键注册状态。
     pub fn apply_hotkey_status(&mut self, ok: bool, reason: Option<String>) {
@@ -364,6 +405,83 @@ impl UiState {
         self.settings = settings.clone();
         self.settings_draft = settings.clone();
         self.paused = settings.pause_capture;
+    }
+
+    /// 同步运行期临时暂停（A3：来自 Sys 线程的 `Event::TempPauseChanged`）。
+    pub fn set_temp_pause(&mut self, pause: TempPause) {
+        self.temp_pause = pause;
+    }
+
+    /// 回填文件副本状态（A4：来自 `Event::FileCopyState`）。
+    pub fn apply_file_copy_state(&mut self, clip_id: ClipId, state: CopyState) {
+        self.copy_states.insert(clip_id, state);
+        if let Some(item) = self.items.iter_mut().find(|i| i.id == clip_id) {
+            match state {
+                CopyState::Stored | CopyState::Pending => {
+                    for file in &mut item.files {
+                        file.copy_state = Some(state);
+                    }
+                }
+                other => {
+                    for file in &mut item.files {
+                        if file.copy_state.is_none() || file.copy_state == Some(CopyState::Pending) {
+                            file.copy_state = Some(other);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 该条目的副本状态（优先事件回填，其次条目自带的 copy_state）。
+    pub(crate) fn copy_state_for(&self, item: &ClipItem) -> Option<CopyState> {
+        self.copy_states.get(&item.id).copied().or_else(|| {
+            item.files
+                .iter()
+                .filter_map(|f| f.copy_state)
+                .max_by_key(|s| match s {
+                    CopyState::Failed => 5,
+                    CopyState::Missing => 4,
+                    CopyState::TooLarge => 3,
+                    CopyState::Pending => 2,
+                    CopyState::Stored => 1,
+                    CopyState::NotNeeded => 0,
+                })
+        })
+    }
+
+    /// 把来源应用加入忽略名单（A3 隐私）。
+    ///
+    /// 返回 `true` 表示名单确实变化（调用方负责落盘/同步 Sys 线程）；
+    /// 空名称或已在名单中返回 `false`。
+    pub fn add_ignore_app(&mut self, app: &str) -> bool {
+        let app = app.trim().to_ascii_lowercase();
+        if app.is_empty() {
+            return false;
+        }
+        if self
+            .settings
+            .ignore_apps
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&app))
+        {
+            return false;
+        }
+        self.settings.ignore_apps.push(app.clone());
+        if !self
+            .settings_draft
+            .ignore_apps
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&app))
+        {
+            self.settings_draft.ignore_apps.push(app);
+        }
+        true
+    }
+
+    /// 当前忽略名单（A3：忽略来源应用后调用方需要落盘）。
+    pub(crate) fn ignore_apps(&self) -> &[String] {
+        &self.settings.ignore_apps
     }
 
     /// 弹一条 toast。
@@ -498,6 +616,7 @@ impl UiState {
             }
         }
         self.show_confirm(ctx, &mut actions);
+        self.show_backup_preview(ctx, &mut actions);
         self.end_frame(ctx);
         actions
     }
@@ -512,6 +631,7 @@ impl UiState {
             WindowMode::Manager => manager::show(self, ui, thumbs, &mut actions),
         }
         self.show_confirm(&ctx, &mut actions);
+        self.show_backup_preview(&ctx, &mut actions);
         self.end_frame(&ctx);
         actions
     }
@@ -902,6 +1022,10 @@ impl UiState {
         let Some(confirm) = &self.confirm else {
             return;
         };
+        if matches!(confirm.kind, ConfirmKind::Clear) {
+            self.show_clear_confirm(ctx, actions);
+            return;
+        }
         match widgets::confirm_dialog(ctx, &confirm.state) {
             Some(true) => {
                 let confirm = self.confirm.take().expect("确认框存在");
@@ -918,12 +1042,7 @@ impl UiState {
                         actions.push(UiAction::EmptyTrash);
                         self.toast(format!("正在清空回收站（{count} 条）…"));
                     }
-                    ConfirmKind::Clear => {
-                        actions.push(UiAction::Clear {
-                            delete_blobs: self.clear_delete_blobs,
-                        });
-                        self.toast("正在清空历史…");
-                    }
+                    ConfirmKind::Clear => {}
                 }
             }
             Some(false) => {
@@ -933,18 +1052,221 @@ impl UiState {
         }
     }
 
-    /// 请求清空历史（设置页调用；二次确认）。
+    /// 显示恢复预览对话框（含 manifest 摘要与校验结果）。
+    fn show_backup_preview(&mut self, ctx: &egui::Context, actions: &mut Vec<UiAction>) {
+        let Some(preview) = self.backup_preview.take() else {
+            return;
+        };
+        let mut decision: Option<bool> = None;
+        let file_name = preview
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| preview.path.display().to_string());
+        let checksum_text = if preview.checksum_ok {
+            "全部通过".to_string()
+        } else {
+            format!(
+                "失败（{} 处）：{}",
+                preview.checksum_errors, preview.checksum_note
+            )
+        };
+        let modal = egui::Modal::new(egui::Id::new("clipnest-backup-preview"))
+            .frame(
+                theme::popup_frame()
+                    .inner_margin(egui::Margin::same(20))
+                    .shadow(theme::window_shadow()),
+            )
+            .backdrop_color(egui::Color32::from_black_alpha(120));
+        let resp = modal.show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(theme::title("恢复备份预览"));
+            ui.add_space(10.0);
+            egui::Grid::new("clipnest-backup-preview-grid")
+                .num_columns(2)
+                .spacing([18.0, 7.0])
+                .show(ui, |ui| {
+                    backup_info_row(ui, "备份文件", file_name);
+                    backup_info_row(ui, "备份时间", format_backup_time(preview.created_at));
+                    backup_info_row(
+                        ui,
+                        "程序版本",
+                        format!(
+                            "v{}（备份格式 v{}）",
+                            preview.app_version, preview.format_version
+                        ),
+                    );
+                    backup_info_row(ui, "条目数", format!("{} 条", preview.clips));
+                    backup_info_row(ui, "图片", format!("{} 张", preview.images));
+                    backup_info_row(
+                        ui,
+                        "收藏文件副本",
+                        format!("{} 个", preview.favorite_files),
+                    );
+                    backup_info_row(
+                        ui,
+                        "备份内容",
+                        format!(
+                            "{} 个文件，共 {}",
+                            preview.file_count,
+                            fmt_size(preview.total_bytes)
+                        ),
+                    );
+                    let checksum = if preview.checksum_ok {
+                        theme::body(checksum_text.clone()).color(theme::success())
+                    } else {
+                        theme::body(checksum_text.clone()).color(theme::danger())
+                    };
+                    ui.label(theme::weak("完整性校验"));
+                    ui.add(egui::Label::new(checksum).wrap_mode(egui::TextWrapMode::Wrap));
+                    ui.end_row();
+                });
+            ui.add_space(10.0);
+            ui.add(
+                egui::Label::new(theme::weak(
+                    "恢复方式：合并导入。按内容 hash 去重，已存在的条目会跳过，不会删除现有历史；\
+                     恢复前会再次校验备份，失败时现有数据库与文件不受影响。",
+                ))
+                .wrap_mode(egui::TextWrapMode::Wrap),
+            );
+            ui.add_space(18.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if preview.checksum_ok {
+                        if widgets::button(ui, "开始恢复", widgets::ButtonKind::Primary).clicked() {
+                            decision = Some(true);
+                        }
+                        if widgets::button(ui, "取消", widgets::ButtonKind::Secondary).clicked() {
+                            decision = Some(false);
+                        }
+                    } else if widgets::button(ui, "关闭", widgets::ButtonKind::Secondary).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+        });
+        if decision.is_none() && resp.should_close() {
+            decision = Some(false);
+        }
+        match decision {
+            Some(true) => {
+                actions.push(UiAction::ConfirmRestore {
+                    path: preview.path.clone(),
+                });
+            }
+            Some(false) => {}
+            None => self.backup_preview = Some(preview),
+        }
+    }
+
+    /// 清空历史专用确认框（A2）：默认只清未收藏；勾选清收藏时必须输入确认词。
+    fn show_clear_confirm(&mut self, ctx: &egui::Context, actions: &mut Vec<UiAction>) {
+        let total = self.stats.total;
+        let favorites = self.stats.favorited.min(total);
+        let unfavorited = total.saturating_sub(favorites);
+        let mut result: Option<bool> = None;
+        let modal = egui::Modal::new(egui::Id::new("clipnest-clear-confirm"))
+            .frame(
+                theme::popup_frame()
+                    .inner_margin(egui::Margin::same(20))
+                    .shadow(theme::window_shadow()),
+            )
+            .backdrop_color(egui::Color32::from_black_alpha(120));
+        let resp = modal.show(ctx, |ui| {
+            ui.set_width(430.0);
+            ui.label(theme::title("清空剪贴板历史"));
+            ui.add_space(10.0);
+            ui.add(
+                egui::Label::new(theme::body_secondary(format!(
+                    "共 {total} 条记录，其中收藏 {favorites} 条。默认只清空未收藏记录（{unfavorited} 条），收藏记录及其文件副本会保留。"
+                )))
+                .wrap_mode(egui::TextWrapMode::Wrap),
+            );
+            ui.add_space(12.0);
+            ui.checkbox(&mut self.clear_include_favorites, "同时清空收藏记录");
+            if self.clear_include_favorites {
+                ui.add_space(8.0);
+                ui.add(
+                    egui::Label::new(theme::body_secondary(
+                        "收藏记录的文件副本也会一并删除。请输入「清空收藏」以确认：",
+                    ))
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+                ui.add_space(6.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.clear_confirm_text)
+                        .hint_text("清空收藏")
+                        .desired_width(f32::INFINITY),
+                );
+            }
+            if !self.clear_delete_blobs {
+                ui.add_space(8.0);
+                ui.add(
+                    egui::Label::new(theme::body_secondary(
+                        "提示：当前未勾选「同时删除图片/文件副本」，图片与文件副本文件会保留在数据目录。",
+                    ))
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+            }
+            ui.add_space(20.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let typed_ok =
+                        !self.clear_include_favorites || self.clear_confirm_text.trim() == "清空收藏";
+                    let confirm_resp = ui.add_enabled_ui(typed_ok, |ui| {
+                        widgets::button(ui, "清空", widgets::ButtonKind::Danger)
+                    });
+                    if confirm_resp.inner.clicked() {
+                        result = Some(true);
+                    }
+                    if widgets::button(ui, "取消", widgets::ButtonKind::Secondary).clicked() {
+                        result = Some(false);
+                    }
+                });
+            });
+        });
+        if result.is_none() && resp.should_close() {
+            result = Some(false);
+        }
+        match result {
+            Some(true) => {
+                let include_favorites = self.clear_include_favorites;
+                let delete_blobs = self.clear_delete_blobs;
+                self.confirm = None;
+                self.clear_include_favorites = false;
+                self.clear_confirm_text.clear();
+                self.items.retain(|item| include_favorites || item.favorited);
+                self.loaded_ids = self.items.iter().map(|i| i.id).collect();
+                self.total = self.items.len();
+                self.selected = if self.items.is_empty() { None } else { Some(0) };
+                self.multi_selected.clear();
+                actions.push(UiAction::Clear {
+                    delete_blobs,
+                    include_favorites,
+                });
+                self.toast(if include_favorites {
+                    "正在清空全部历史（含收藏）…"
+                } else {
+                    "正在清空未收藏历史…"
+                });
+            }
+            Some(false) => {
+                self.confirm = None;
+                self.clear_include_favorites = false;
+                self.clear_confirm_text.clear();
+            }
+            None => {}
+        }
+    }
+
+    /// 请求清空历史（设置页调用；随后弹出带输入确认的专用确认框）。
     pub(crate) fn request_clear(&mut self) {
+        self.clear_include_favorites = false;
+        self.clear_confirm_text.clear();
         self.confirm = Some(Confirm {
             state: widgets::ConfirmState {
                 title: "清空剪贴板历史".to_string(),
-                message: if self.clear_delete_blobs {
-                    "将删除全部历史记录（含回收站），并同时删除图片/文件副本，操作不可恢复。确定继续吗？"
-                        .to_string()
-                } else {
-                    "将删除全部历史记录（含回收站，保留图片/文件副本文件）。操作不可恢复，确定继续吗？"
-                        .to_string()
-                },
+                message: String::new(),
                 confirm_label: "清空".to_string(),
                 danger: true,
             },
@@ -964,6 +1286,24 @@ impl UiState {
     // -----------------------------------------------------------------------
     // 预览支持（assert 用）
     // -----------------------------------------------------------------------
+}
+
+// ---------------------------------------------------------------------------
+// 备份预览辅助
+// ---------------------------------------------------------------------------
+
+fn backup_info_row(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
+    ui.label(theme::weak(label));
+    ui.add(egui::Label::new(theme::body(value)).wrap_mode(egui::TextWrapMode::Wrap));
+    ui.end_row();
+}
+
+fn format_backup_time(ms: i64) -> String {
+    use chrono::TimeZone;
+    match chrono::Local.timestamp_millis_opt(ms).single() {
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => "未知".to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------

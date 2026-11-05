@@ -8,7 +8,9 @@
 //!
 //! `--ui-preview <mode>` 模式走独立的假数据预览入口，不启动 Store/Sys。
 
-use crate::model::{ClipId, Event, SearchQuery, Settings, StoreCmd, SysCmd, ThemeMode};
+use crate::model::{
+    fmt_size, BackupEvent, ClipId, Event, SearchQuery, Settings, StoreCmd, SysCmd, ThemeMode,
+};
 use crate::store::StoreHandle;
 use crate::sys::SysHandle;
 use crate::ui::{ManagerPage, ThumbCache, UiAction, UiState, WindowMode};
@@ -74,6 +76,8 @@ pub struct ClipNestApp {
     /// App 创建时刻（调试用：隐藏启动后延时显示）。
     #[allow(dead_code)]
     started_at: Instant,
+    /// A5：首次启动的欢迎提示，延迟到面板第一次真正显示时再弹（启动时窗口在屏幕外）。
+    welcome_pending: bool,
     quitting: bool,
 }
 
@@ -164,6 +168,22 @@ impl ClipNestApp {
         ui.preview_mode(preview.is_some());
         let thumbs = ThumbCache::new(&cc.egui_ctx);
 
+        // A5：首次启动引导 —— 只弹一条欢迎提示并落「已引导」标记；
+        // 不强制开机自启（设置里仍可自行开启），也不打断正常使用。
+        // 提示延迟到面板首次显示时再弹，避免启动时窗口在屏幕外看不到。
+        let welcome_pending = !settings.first_run_done && preview.is_none();
+        let mut settings = settings;
+        if welcome_pending {
+            settings.first_run_done = true;
+            if let Ok(mut shared) = settings_shared.lock() {
+                *shared = settings.clone();
+            }
+            if let Err(err) = crate::config::save_settings(&settings) {
+                crate::logging::warn(&format!("写入首次启动标记失败：{err}"));
+            }
+            crate::logging::log("首次启动：已记录引导标记，面板首次显示时提示");
+        }
+
         Self {
             settings,
             settings_shared,
@@ -190,6 +210,7 @@ impl ClipNestApp {
             focus_due: None,
             settings_stamp: settings_stamp(),
             started_at: Instant::now(),
+            welcome_pending,
             quitting: false,
         }
     }
@@ -285,6 +306,15 @@ impl ClipNestApp {
             crate::window::force_foreground(hwnd);
         }
         self.shown_at = Some(Instant::now());
+        // A5：面板第一次真正显示时补上欢迎提示（此时窗口已可见）。
+        if self.welcome_pending {
+            self.welcome_pending = false;
+            self.ui.toast(format!(
+                "欢迎使用 ClipNest！按 {} 打开面板，右键托盘图标可临时暂停或退出；默认不随系统启动，需要可在设置里开启。",
+                self.settings.hotkey_picker.label()
+            ));
+            crate::logging::log("首次启动：已显示欢迎提示");
+        }
         self.focus_due = Some(Instant::now() + FOCUS_RETRY);
         crate::logging::log(&format!(
             "候选窗显示耗时 {}ms（已就绪，直接移入屏幕）",
@@ -419,6 +449,23 @@ impl ClipNestApp {
                 }
             }
             Event::Toast(message) => self.ui.toast(message),
+            Event::Backup(event) => match event {
+                BackupEvent::Created(report) => self.ui.toast(format!(
+                    "已创建完整备份：{} 条 / {} 张图片 / {} 个文件副本，共 {}",
+                    report.clips,
+                    report.images,
+                    report.favorite_files,
+                    fmt_size(report.bytes)
+                )),
+                BackupEvent::Inspected(preview) => self.ui.set_backup_preview(*preview),
+                BackupEvent::Restored(report) => self.ui.toast(format!(
+                    "恢复完成：新增 {} 条，跳过 {} 条（重复或缺失），备份大小 {}",
+                    report.inserted,
+                    report.skipped,
+                    fmt_size(report.bytes)
+                )),
+                BackupEvent::Failed(reason) => self.ui.toast(reason),
+            },
             Event::SettingsUpdated(next) => {
                 let next = *next;
                 let hotkey_changed = next.hotkey_picker != self.settings.hotkey_picker;
@@ -472,6 +519,14 @@ impl ClipNestApp {
                         reason.unwrap_or_else(|| "可能被其他程序占用".into())
                     ));
                 }
+            }
+            Event::TempPauseChanged(pause) => {
+                self.ui.set_temp_pause(pause);
+                ctx.request_repaint();
+            }
+            Event::FileCopyState { clip_id, state } => {
+                self.ui.apply_file_copy_state(clip_id, state);
+                ctx.request_repaint();
             }
             Event::Captured(input) => {
                 if let Some(tx) = &self.store_tx {
@@ -592,15 +647,43 @@ impl ClipNestApp {
                 }
                 self.ui.refresh();
             }
-            UiAction::Clear { delete_blobs } => {
+            UiAction::Clear {
+                delete_blobs,
+                include_favorites,
+            } => {
                 if let Some(tx) = &self.store_tx {
-                    let _ = tx.send(StoreCmd::Clear { delete_blobs });
+                    let _ = tx.send(StoreCmd::Clear {
+                        delete_blobs,
+                        include_favorites,
+                    });
                 }
                 self.ui.refresh();
             }
-            UiAction::SaveFavoriteFiles(id) => {
+            UiAction::SaveFavoriteFiles(id) | UiAction::RetryFileCopy(id) => {
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::SaveFavoriteFiles(id));
+                }
+            }
+            UiAction::SetTempPause(pause) => {
+                // A3：临时暂停只走运行期 Sys 命令，不写 settings.json。
+                if let Some(tx) = &self.sys_tx {
+                    let _ = tx.send(SysCmd::SetTempPause(pause));
+                }
+                self.ui.set_temp_pause(pause);
+            }
+            UiAction::IgnoreSourceApp(app) => {
+                // A3：一键忽略来源应用（密码管理器等），立即落盘供 Sys 线程读取。
+                if self.ui.add_ignore_app(&app) {
+                    self.settings.ignore_apps = self.ui.ignore_apps().to_vec();
+                    if let Ok(mut shared) = self.settings_shared.lock() {
+                        *shared = self.settings.clone();
+                    }
+                    self.persist_settings();
+                    self.ui
+                        .toast(format!("已忽略来源应用：{}（设置已保存）", app.trim()));
+                } else {
+                    self.ui
+                        .toast(format!("{} 已在忽略名单中", app.trim()));
                 }
             }
             UiAction::OpenManager => {
@@ -643,6 +726,32 @@ impl ClipNestApp {
                         let _ = tx.send(StoreCmd::ExportJson { path: path.clone() });
                         self.ui.toast(format!("正在导出到 {}", path.display()));
                     }
+                }
+            }
+            UiAction::CreateBackup => {
+                let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                let default_name = format!("clipnest-backup-{stamp}.cnbak");
+                if let Some(path) =
+                    crate::ui::export_dialog::choose_backup_save_path(&default_name)
+                {
+                    if let Some(tx) = &self.store_tx {
+                        let _ = tx.send(StoreCmd::CreateBackup { path });
+                        self.ui.toast("正在创建完整备份…");
+                    }
+                }
+            }
+            UiAction::RestoreBackup => {
+                if let Some(path) = crate::ui::export_dialog::choose_backup_open_path() {
+                    if let Some(tx) = &self.store_tx {
+                        let _ = tx.send(StoreCmd::InspectBackup { path });
+                        self.ui.toast("正在检查备份文件…");
+                    }
+                }
+            }
+            UiAction::ConfirmRestore { path } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::RestoreBackup { path });
+                    self.ui.toast("正在恢复备份（合并导入）…");
                 }
             }
             UiAction::OpenDataDir => {
@@ -750,6 +859,16 @@ impl ClipNestApp {
         crate::logging::log("退出 ClipNest");
         crate::window::close_window_by_title_prefix(&format!("{} · 管理", crate::model::APP_TITLE));
         self.persist_settings();
+        // A2：退出清理策略 —— 先把清理命令排进 Store 队列；下面的 `store = None`
+        // 会触发 StoreHandle::drop（发送 Shutdown 并 join），保证 Store 线程先处理完
+        // ClearForExit、真正落盘后才退出进程。
+        let exit_policy = self.settings.exit_clear_policy;
+        if exit_policy.clears() {
+            if let Some(tx) = &self.store_tx {
+                let _ = tx.send(StoreCmd::ClearForExit(exit_policy));
+                crate::logging::log(&format!("退出清理：{}", exit_policy.label()));
+            }
+        }
         if let Some(tx) = &self.sys_tx {
             let _ = tx.send(SysCmd::Shutdown);
         }

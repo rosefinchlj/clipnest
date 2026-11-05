@@ -89,7 +89,11 @@ fn maybe_save_screenshot(ctx: &egui::Context, mode: &str) {
         counter.set(next);
         next
     });
-    if frame < 6 {
+    let shot_frame = std::env::var("CLIPNEST_PREVIEW_SHOT_FRAME")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(6);
+    if frame < shot_frame {
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
         return;
     }
@@ -302,6 +306,9 @@ impl PreviewState {
         for action in actions {
             match action {
                 UiAction::PreviewGlassOpacity(_) => {}
+                UiAction::CreateBackup | UiAction::RestoreBackup | UiAction::ConfirmRestore { .. } => {
+                    self.state.toast("（预览）备份/恢复仅在实际运行中可用");
+                }
                 UiAction::Search {
                     text,
                     filter,
@@ -421,6 +428,19 @@ impl PreviewState {
                 } else {
                     "（预览）已恢复记录"
                 }),
+                UiAction::SetTempPause(pause) => {
+                    self.state.set_temp_pause(pause);
+                    self.state.toast(format!("（预览）临时暂停：{}", pause.label()));
+                }
+                UiAction::RetryFileCopy(_) => self.state.toast("（预览）重试保存文件副本（未执行）"),
+                UiAction::IgnoreSourceApp(app) => {
+                    let changed = self.state.add_ignore_app(&app);
+                    self.state.toast(if changed {
+                        format!("（预览）已忽略来源应用：{}（未写磁盘）", app.trim())
+                    } else {
+                        format!("（预览）{} 已在忽略名单中", app.trim())
+                    });
+                }
                 UiAction::ExportJson => self.state.toast("（预览）导出 JSON（未执行）"),
                 UiAction::OpenDataDir => self.state.toast("（预览）打开数据目录（未执行）"),
                 UiAction::RefreshStats => self.state.toast("（预览）刷新统计"),
@@ -552,6 +572,7 @@ fn files_item(id: i64, files: &[(&str, &str, u64, bool)], app: &str, minutes_ago
             size: *size,
             exists: *exists,
             stored: false,
+            copy_state: None,
         })
         .collect();
     let byte_len = entries.iter().map(|f| f.size).sum();

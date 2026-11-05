@@ -155,6 +155,30 @@ pub fn window_pid(hwnd: isize) -> u32 {
     pid
 }
 
+/// 弹出系统消息框（A5：第二个实例提示「已在运行」时使用）。
+///
+/// 失败时静默返回，绝不 panic；`warning` 为 `true` 时使用警告图标。
+pub fn message_box(title: &str, text: &str, warning: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+    };
+    let title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let text: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let icon = if warning {
+        MB_ICONWARNING
+    } else {
+        MB_ICONINFORMATION
+    };
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | icon | MB_TOPMOST | MB_SETFOREGROUND,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
