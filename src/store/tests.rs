@@ -191,6 +191,7 @@ pub(crate) fn search_query(
         text: text.to_string(),
         filter,
         time_range: crate::model::TimeRange::All,
+        time_basis: crate::model::TimeBasis::LastUsed,
         custom_day: None,
         custom_end_day: None,
         offset,
@@ -436,6 +437,74 @@ fn search_filters() {
         .unwrap();
     assert_eq!(page.total, 0);
 }
+
+#[test]
+fn time_basis_switches_between_used_and_captured() {
+    let (_dir, db) = open_db("time-basis");
+    let now = now_ms();
+    let old = now - 40 * 86_400_000;
+    let UpsertOutcome::Inserted(used_now_id) = db.upsert(&text_input_at("旧复制但最近用过", old)).unwrap()
+    else {
+        panic!("应插入旧记录");
+    };
+    let UpsertOutcome::Inserted(captured_now_id) = db
+        .upsert(&text_input_at("刚复制但很久没用", now))
+        .unwrap()
+    else {
+        panic!("应插入新记录");
+    };
+    db.conn
+        .execute(
+            "UPDATE clips SET last_used_at = ?1 WHERE id = ?2",
+            params![now, used_now_id],
+        )
+        .unwrap();
+    db.conn
+        .execute(
+            "UPDATE clips SET last_used_at = ?1 WHERE id = ?2",
+            params![old, captured_now_id],
+        )
+        .unwrap();
+
+    let mut query = search_query("", ClipFilter::All, 0, 10, 1);
+    query.time_range = TimeRange::Last7Days;
+
+    // 「最近使用」：命中 40 天前复制、刚刚用过的记录。
+    query.time_basis = TimeBasis::LastUsed;
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, used_now_id);
+
+    // 「复制时间」：命中刚复制、很久没用的记录。
+    query.time_basis = TimeBasis::Captured;
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, captured_now_id);
+
+    // 时间范围为 All 时两种依据都返回全部。
+    query.time_range = TimeRange::All;
+    assert_eq!(db.search(&query).unwrap().total, 2);
+    query.time_basis = TimeBasis::LastUsed;
+    assert_eq!(db.search(&query).unwrap().total, 2);
+}
+
+#[test]
+fn save_text_as_writes_utf8_file() {
+    let (dir, db) = open_db("save-text-as");
+    let UpsertOutcome::Inserted(id) = db.upsert(&text_input("另存为文本内容")).unwrap() else {
+        panic!("应插入文本记录");
+    };
+    let dest = dir.join("exported.txt");
+    assert!(db.save_text_as(id, &dest).unwrap(), "保存应成功");
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        "另存为文本内容",
+        "文件内容应为原文本"
+    );
+    // 不存在的记录 → 返回 false（UI toast 提示已被清理），不 panic。
+    assert!(!db.save_text_as(id + 999, &dir.join("missing.txt")).unwrap());
+}
+
 
 #[test]
 fn time_range_filters_by_last_used() {
@@ -894,6 +963,7 @@ fn trash_soft_delete_search_restore_and_purge() {
             text: String::new(),
             filter: ClipFilter::All,
             time_range: crate::model::TimeRange::All,
+            time_basis: crate::model::TimeBasis::LastUsed,
             custom_day: None,
             custom_end_day: None,
             offset: 0,

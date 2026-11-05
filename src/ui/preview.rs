@@ -286,7 +286,15 @@ impl PreviewState {
             child.set_min_size(content_rect.size());
             actions = state.render_into(&mut child, thumbs);
         } else {
-            // 管理台：整窗填充（窗口 1100×720，由 Lead 控制）
+            // 管理台：整窗填充（窗口 1100×720，由 Lead 控制）。
+            // 真实管理台窗口不透明（无 Acrylic），预览这里也铺一层实底，
+            // 否则截图/显示器上会透出桌面，像“破洞”。
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            painter.rect_filled(
+                ctx.screen_rect(),
+                egui::CornerRadius::same(theme::RADIUS_WINDOW),
+                theme::window_base(),
+            );
             egui::CentralPanel::default()
                 .frame(theme::manager_frame())
                 .show(ctx, |ui| {
@@ -306,6 +314,7 @@ impl PreviewState {
                     text,
                     filter,
                     time_range,
+                    time_basis,
                     custom_day,
                     custom_end_day,
                     offset,
@@ -319,8 +328,11 @@ impl PreviewState {
                         .into_iter()
                         .filter(|item| {
                             bounds.map_or(true, |(start, end)| {
-                                item.last_used_at >= start
-                                    && end.map_or(true, |end| item.last_used_at < end)
+                                let at = match time_basis {
+                                    crate::model::TimeBasis::Captured => item.created_at,
+                                    crate::model::TimeBasis::LastUsed => item.last_used_at,
+                                };
+                                at >= start && end.map_or(true, |end| at < end)
                             })
                         })
                         .collect();
@@ -425,6 +437,22 @@ impl PreviewState {
                 UiAction::OpenDataDir => self.state.toast("（预览）打开数据目录（未执行）"),
                 UiAction::RefreshStats => self.state.toast("（预览）刷新统计"),
                 UiAction::SelectManagerPage(_) => {}
+                UiAction::SetTimeFilterBasis(basis) => {
+                    self.state.set_time_basis(basis);
+                    self.state
+                        .toast(format!("（预览）时间筛选依据：{}", basis.label()));
+                }
+                UiAction::OpenPath(path) => {
+                    self.state.toast(format!("（预览）打开 {}", path.display()))
+                }
+                UiAction::RevealPath(path) => {
+                    self.state.toast(format!("（预览）定位 {}", path.display()))
+                }
+                UiAction::CopyPath(path) => {
+                    self.state.toast(format!("（预览）复制路径 {}", path))
+                }
+                UiAction::SaveImageAs { .. } => self.state.toast("（预览）图片另存为（未执行）"),
+                UiAction::SaveTextAs { .. } => self.state.toast("（预览）文本另存为（未执行）"),
             }
         }
     }

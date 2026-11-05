@@ -9,6 +9,7 @@
 
 use rusqlite::params_from_iter;
 use rusqlite::types::Value;
+use std::path::Path;
 use std::time::Instant;
 
 use crate::model::{
@@ -68,10 +69,12 @@ impl Db {
             query.custom_day,
             query.custom_end_day,
         ) {
-            conditions.push("clips.last_used_at >= ?".to_string());
+            // 时间列由筛选依据决定：最近使用（last_used_at）或复制时间（created_at）。
+            let column = query.time_basis.column();
+            conditions.push(format!("{column} >= ?"));
             args.push(Value::Integer(start));
             if let Some(end) = end {
-                conditions.push("clips.last_used_at < ?".to_string());
+                conditions.push(format!("{column} < ?"));
                 args.push(Value::Integer(end));
             }
         }
@@ -269,6 +272,58 @@ impl Db {
             rusqlite::params![now_ms(), id],
         )?;
         Ok(changed > 0)
+    }
+
+    /// 图片另存为：把该条记录的图片 blob 复制到 `dest`。
+    ///
+    /// 返回 `Ok(false)` 表示记录不存在、类型不是图片或 blob 文件缺失（调用方提示即可）。
+    pub fn save_image_as(&self, id: ClipId, dest: &Path) -> StoreResult<bool> {
+        let Some(item) = self.item(id)? else {
+            return Ok(false);
+        };
+        let Some(blob_id) = item.blob_id.as_deref() else {
+            return Ok(false);
+        };
+        let src = self.image_blob_path(blob_id)?;
+        if !src.is_file() {
+            return Ok(false);
+        }
+        std::fs::copy(&src, dest)
+            .map_err(|err| crate::store::StoreError::Msg(format!("保存图片失败：{err}")))?;
+        Ok(true)
+    }
+
+    /// 文本另存为：把该条记录的文本内容以 UTF-8 写入 `dest`。
+    ///
+    /// 返回 `Ok(false)` 表示记录不存在或类型不是文本。
+    pub fn save_text_as(&self, id: ClipId, dest: &Path) -> StoreResult<bool> {
+        let Some(item) = self.item(id)? else {
+            return Ok(false);
+        };
+        if item.kind != ClipKind::Text {
+            return Ok(false);
+        }
+        let text = item.text.unwrap_or(item.preview);
+        std::fs::write(dest, text.as_bytes())
+            .map_err(|err| crate::store::StoreError::Msg(format!("保存文本失败：{err}")))?;
+        Ok(true)
+    }
+
+    /// 图片 blob 的绝对路径：优先 `blobs.rel_path`，缺失时按约定路径回退。
+    fn image_blob_path(&self, blob_id: &str) -> StoreResult<std::path::PathBuf> {
+        use rusqlite::OptionalExtension;
+        let rel: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT rel_path FROM blobs WHERE id = ?1",
+                [blob_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(match rel {
+            Some(rel) => blob::blob_path(&self.data_dir, &rel),
+            None => blob::image_path(&self.data_dir, blob_id),
+        })
     }
 }
 

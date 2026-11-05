@@ -4,7 +4,10 @@
 //! [`UiAction::SetSettings`] 交给 Lead 落盘；开自启/暂停/导出/清空等即时动作
 //! 通过对应 [`UiAction`] 发送。**UI 不直接写设置文件**。
 
-use crate::model::{fmt_size, PasteKey, SelectionPreset, Settings, ThemeMode};
+use crate::model::{
+    clamp_ui_scale, fmt_size, PasteKey, SelectionPreset, Settings, ThemeMode,
+    PICKER_SIZE_PRESETS, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP,
+};
 use crate::ui::{theme, widgets, UiAction, UiState};
 use eframe::egui::{self, Pos2, Rect, UiBuilder, Vec2};
 
@@ -113,21 +116,42 @@ fn appearance_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<
             "终端式 Acrylic 磨砂：越低越透；深色 tint 有下限，白底/亮色窗口上文字仍可读。只作用于候选窗。",
             |ui| {
                 let mut opacity = state.settings_draft.glass_opacity as u32;
-                ui.scope(|ui| {
-                    // 默认控件底色与卡片同色，滑轨会“消失”；这里单独给滑轨一点可见度。
-                    let visuals = ui.visuals_mut();
-                    visuals.widgets.inactive.bg_fill = theme::border();
-                    visuals.widgets.inactive.weak_bg_fill = theme::border();
-                    visuals.widgets.hovered.bg_fill = theme::accent();
-                    visuals.widgets.active.bg_fill = theme::accent();
-                    visuals.selection.bg_fill = theme::accent();
-                    visuals.slider_trailing_fill = true;
-                    let slider = egui::Slider::new(&mut opacity, 35..=100)
-                        .suffix(" %")
-                        .fixed_decimals(0);
-                    if ui.add(slider).changed() {
-                        state.settings_draft.glass_opacity = opacity as u8;
-                        actions.push(UiAction::PreviewGlassOpacity(opacity as u8));
+                let slider = egui::Slider::new(&mut opacity, 35..=100)
+                    .suffix(" %")
+                    .fixed_decimals(0);
+                if slider_with_rail(ui, slider).changed() {
+                    state.settings_draft.glass_opacity = opacity as u8;
+                    actions.push(UiAction::PreviewGlassOpacity(opacity as u8));
+                }
+            },
+        );
+        setting_row(
+            ui,
+            "界面缩放",
+            "整体 UI 缩放（候选窗与管理台），0.8×–1.5×；保存后立即生效，高分屏可适当放大。",
+            |ui| {
+                let mut scale = state.settings_draft.ui_scale;
+                let slider = egui::Slider::new(&mut scale, UI_SCALE_MIN..=UI_SCALE_MAX)
+                    .step_by(UI_SCALE_STEP as f64)
+                    .fixed_decimals(2)
+                    .suffix("×");
+                if slider_with_rail(ui, slider).changed() {
+                    state.settings_draft.ui_scale = clamp_ui_scale(scale);
+                }
+            },
+        );
+        setting_row(
+            ui,
+            "候选窗尺寸",
+            "候选窗默认大小；也可直接拖动候选窗边缘缩放，尺寸会自动记住。",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for (label, size) in PICKER_SIZE_PRESETS {
+                        let selected = state.settings_draft.picker_size == size;
+                        if ui.selectable_label(selected, label).clicked() {
+                            state.settings_draft.picker_size = size;
+                        }
                     }
                 });
             },
@@ -138,6 +162,21 @@ fn appearance_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<
 // ---------------------------------------------------------------------------
 // 布局辅助
 // ---------------------------------------------------------------------------
+
+/// 给滑条一点可见度：默认 `inactive.bg_fill` 与卡片同色，滑轨会“消失”。
+fn slider_with_rail(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        let visuals = ui.visuals_mut();
+        visuals.widgets.inactive.bg_fill = theme::border();
+        visuals.widgets.inactive.weak_bg_fill = theme::border();
+        visuals.widgets.hovered.bg_fill = theme::accent();
+        visuals.widgets.active.bg_fill = theme::accent();
+        visuals.selection.bg_fill = theme::accent();
+        visuals.slider_trailing_fill = true;
+        ui.add(slider)
+    })
+    .inner
+}
 
 /// 一个设置分区卡片（标题 + 内容）。
 fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {

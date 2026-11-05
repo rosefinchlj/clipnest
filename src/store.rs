@@ -371,6 +371,22 @@ impl Store {
                 ));
                 Ok(false)
             }
+            StoreCmd::SaveImageAs { id, path } => {
+                match self.db.save_image_as(id, &path) {
+                    Ok(true) => self.toast(format!("已保存图片到 {}", path.display())),
+                    Ok(false) => self.toast("图片内容不存在或已被清理".to_string()),
+                    Err(err) => self.toast(format!("保存图片失败：{err}")),
+                }
+                Ok(false)
+            }
+            StoreCmd::SaveTextAs { id, path } => {
+                match self.db.save_text_as(id, &path) {
+                    Ok(true) => self.toast(format!("已保存文本到 {}", path.display())),
+                    Ok(false) => self.toast("文本内容不存在或已被清理".to_string()),
+                    Err(err) => self.toast(format!("保存文本失败：{err}")),
+                }
+                Ok(false)
+            }
             StoreCmd::Shutdown => Ok(true),
         }
     }

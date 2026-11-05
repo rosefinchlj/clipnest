@@ -284,7 +284,7 @@ impl ClipFilter {
     }
 }
 
-/// 列表时间范围筛选。按 `last_used_at` 计算。
+/// 列表时间范围筛选。按 [`TimeBasis`] 指定的时间列（最近使用 / 复制时间）计算。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum TimeRange {
     #[default]
@@ -362,6 +362,38 @@ impl TimeRange {
     }
 }
 
+/// 时间筛选依据：按「最近使用」或「复制时间」过滤。
+///
+/// 默认按最近使用，与旧版本行为一致；设为「复制时间」时改用 `created_at`。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeBasis {
+    #[default]
+    LastUsed,
+    Captured,
+}
+
+impl TimeBasis {
+    pub fn label(self) -> &'static str {
+        match self {
+            TimeBasis::LastUsed => "最近使用",
+            TimeBasis::Captured => "复制时间",
+        }
+    }
+
+    pub fn all() -> [TimeBasis; 2] {
+        [TimeBasis::LastUsed, TimeBasis::Captured]
+    }
+
+    /// 对应 SQL 时间列（查询时拼接进时间范围条件）。
+    pub fn column(self) -> &'static str {
+        match self {
+            TimeBasis::LastUsed => "clips.last_used_at",
+            TimeBasis::Captured => "clips.created_at",
+        }
+    }
+}
+
 /// 本地时间戳所在日期次日 00:00。
 fn local_next_midnight(day_start: i64) -> Option<i64> {
     use chrono::{Days, Local, TimeZone};
@@ -394,6 +426,8 @@ pub struct SearchQuery {
     pub custom_day: Option<i64>,
     /// `TimeRange::Custom` 结束日的本地 00:00 时间戳；与起始日相同表示单日。
     pub custom_end_day: Option<i64>,
+    /// 时间范围按哪一列计算：最近使用或复制时间。
+    pub time_basis: TimeBasis,
     pub offset: usize,
     pub limit: usize,
     /// true 时查询回收站（deleted_at 非空）。
@@ -410,6 +444,7 @@ impl Default for SearchQuery {
             time_range: TimeRange::All,
             custom_day: None,
             custom_end_day: None,
+            time_basis: TimeBasis::LastUsed,
             offset: 0,
             limit: 200,
             trash: false,
@@ -643,6 +678,10 @@ pub struct Settings {
 
     pub picker_size: [f32; 2],
     pub manager_size: [f32; 2],
+    /// 界面缩放（0.8–1.5；1.0 为 100%）。启动与保存设置后立即生效。
+    pub ui_scale: f32,
+    /// 时间范围筛选依据：最近使用（默认）或复制时间。
+    pub time_filter_basis: TimeBasis,
     pub hide_on_blur: bool,
 
     pub keep_clipboard_after_paste: bool,
@@ -673,6 +712,8 @@ impl Default for Settings {
 
             picker_size: [620.0, 560.0],
             manager_size: [1060.0, 700.0],
+            ui_scale: 1.0,
+            time_filter_basis: TimeBasis::LastUsed,
             hide_on_blur: true,
 
             keep_clipboard_after_paste: true,
@@ -688,6 +729,28 @@ impl Default for Settings {
 // ---------------------------------------------------------------------------
 // 线程间消息
 // ---------------------------------------------------------------------------
+
+/// 界面缩放下限（80%）。
+pub const UI_SCALE_MIN: f32 = 0.8;
+/// 界面缩放上限（150%）。
+pub const UI_SCALE_MAX: f32 = 1.5;
+/// 界面缩放步长。
+pub const UI_SCALE_STEP: f32 = 0.05;
+
+/// 把界面缩放缓动到合法区间；NaN 回退 100%（无穷大按上下限夹取）。
+pub fn clamp_ui_scale(scale: f32) -> f32 {
+    if scale.is_nan() {
+        return 1.0;
+    }
+    scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+}
+
+/// 候选窗尺寸预设：紧凑 / 标准 / 宽大。
+pub const PICKER_SIZE_PRESETS: [(&str, [f32; 2]); 3] = [
+    ("紧凑", [520.0, 480.0]),
+    ("标准", [620.0, 560.0]),
+    ("宽大", [760.0, 640.0]),
+];
 
 /// 后台 → UI 事件。
 #[derive(Clone, Debug)]
@@ -750,6 +813,16 @@ pub enum StoreCmd {
     SaveFavoriteFiles(ClipId),
     RefreshStats,
     ExportJson {
+        path: PathBuf,
+    },
+    /// 图片另存为：把该条记录的图片 blob 复制到用户选择的位置。
+    SaveImageAs {
+        id: ClipId,
+        path: PathBuf,
+    },
+    /// 文本另存为：把该条记录的文本内容以 UTF-8 写入用户选择的位置。
+    SaveTextAs {
+        id: ClipId,
         path: PathBuf,
     },
     Shutdown,
@@ -927,5 +1000,40 @@ mod tests {
         item.width = Some(1920);
         item.height = Some(1080);
         assert_eq!(item.title(), "图片 1920×1080");
+    }
+
+    #[test]
+    fn time_basis_labels_and_columns() {
+        assert_eq!(TimeBasis::default(), TimeBasis::LastUsed);
+        assert_eq!(TimeBasis::LastUsed.label(), "最近使用");
+        assert_eq!(TimeBasis::Captured.label(), "复制时间");
+        assert_eq!(TimeBasis::LastUsed.column(), "clips.last_used_at");
+        assert_eq!(TimeBasis::Captured.column(), "clips.created_at");
+        assert_eq!(TimeBasis::all().len(), 2);
+        assert_eq!(
+            serde_json::to_string(&TimeBasis::Captured).unwrap(),
+            "\"captured\""
+        );
+        assert_eq!(
+            serde_json::from_str::<TimeBasis>("\"last_used\"").unwrap(),
+            TimeBasis::LastUsed
+        );
+    }
+
+    #[test]
+    fn ui_scale_clamped_and_defaults() {
+        assert_eq!(clamp_ui_scale(0.5), UI_SCALE_MIN);
+        assert_eq!(clamp_ui_scale(2.0), UI_SCALE_MAX);
+        assert_eq!(clamp_ui_scale(1.1), 1.1);
+        assert_eq!(clamp_ui_scale(f32::NAN), 1.0);
+        assert_eq!(clamp_ui_scale(f32::INFINITY), UI_SCALE_MAX);
+        let s = Settings::default();
+        assert_eq!(s.ui_scale, 1.0);
+        assert_eq!(s.time_filter_basis, TimeBasis::LastUsed);
+        // 旧版 settings.json 缺少新字段时回退默认值。
+        let old: Settings = serde_json::from_str(r#"{"max_items": 42}"#).unwrap();
+        assert_eq!(old.ui_scale, 1.0);
+        assert_eq!(old.time_filter_basis, TimeBasis::LastUsed);
+        assert_eq!(PICKER_SIZE_PRESETS[1].1, [620.0, 560.0]);
     }
 }

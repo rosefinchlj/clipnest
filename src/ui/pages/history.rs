@@ -5,11 +5,13 @@
 use crate::model::{
     fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, TimeRange,
 };
+use crate::ui::export_dialog;
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, UiAction, UiState};
 use eframe::egui::{
     self, Align2, CornerRadius, FontId, Pos2, Rect, Sense, StrokeKind, UiBuilder, Vec2,
 };
+use std::path::PathBuf;
 
 /// 历史页入口。
 pub(crate) fn show(
@@ -219,7 +221,23 @@ pub(crate) fn page(
                 state.schedule_search(true);
             }
         });
-        body_top = time_rect.bottom() + 12.0;
+        // 时间依据：最近使用（last_used_at）/ 复制时间（created_at），写回设置并重查。
+        let basis_rect = Rect::from_min_size(
+            Pos2::new(inner.left(), time_rect.bottom() + 6.0),
+            Vec2::new(inner.width(), theme::CHIP_HEIGHT),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(basis_rect), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::aux("时间依据"));
+                ui.add_space(2.0);
+                let mut basis = state.time_basis();
+                if widgets::time_basis_toggle(ui, &mut basis) {
+                    state.set_time_basis(basis);
+                    actions.push(UiAction::SetTimeFilterBasis(basis));
+                }
+            });
+        });
+        body_top = basis_rect.bottom() + 12.0;
 
         if state.manager_time_range == TimeRange::Custom {
             let start = state
@@ -696,6 +714,48 @@ fn table(
                             });
                             ui.close();
                         }
+                        ui.separator();
+                        // 文件/图片/文本快捷动作（与详情面板一致；文件多选作用于第一个）。
+                        if item.kind == ClipKind::Files {
+                            if let Some(file) = item.files.first() {
+                                let path = PathBuf::from(&file.path);
+                                if widgets::menu_item(ui, "打开文件").clicked() {
+                                    actions.push(UiAction::OpenPath(path.clone()));
+                                    ui.close();
+                                }
+                                if widgets::menu_item(ui, "所在文件夹").clicked() {
+                                    actions.push(UiAction::RevealPath(path));
+                                    ui.close();
+                                }
+                                if widgets::menu_item(ui, "复制路径").clicked() {
+                                    actions.push(UiAction::CopyPath(file.path.clone()));
+                                    ui.close();
+                                }
+                            }
+                        } else if widgets::menu_item(
+                            ui,
+                            if item.kind == ClipKind::Image {
+                                "图片另存为…"
+                            } else {
+                                "文本另存为…"
+                            },
+                        )
+                        .clicked()
+                        {
+                            if let Some(path) = export_dialog::choose_item_save_path(&item) {
+                                match item.kind {
+                                    ClipKind::Image => {
+                                        actions.push(UiAction::SaveImageAs { id: item.id, path })
+                                    }
+                                    ClipKind::Text => {
+                                        actions.push(UiAction::SaveTextAs { id: item.id, path })
+                                    }
+                                    ClipKind::Files => {}
+                                }
+                            }
+                            ui.close();
+                        }
+                        ui.separator();
                         if widgets::menu_item(ui, "删除").clicked() {
                             state.selected = Some(i);
                             state.request_delete_ids(vec![item.id], actions);
@@ -1021,9 +1081,55 @@ fn detail_panel(
         extra_h = btn_h + 8.0;
     }
 
+    // 第二行操作（B4）：文件打开/定位/复制路径，图片/文本另存为。
+    let mut second_row: Vec<(&str, u8)> = Vec::new();
+    match item.kind {
+        ClipKind::Files if !item.files.is_empty() => {
+            second_row.push(("打开文件", 0));
+            second_row.push(("所在文件夹", 1));
+            second_row.push(("复制路径", 2));
+        }
+        ClipKind::Image => second_row.push(("图片另存为…", 3)),
+        ClipKind::Text => second_row.push(("文本另存为…", 4)),
+        _ => {}
+    }
+    let mut extra2_h = 0.0;
+    if !second_row.is_empty() {
+        let row_y = btn_y + btn_h + 8.0 + extra_h;
+        let mut x = inner.left();
+        for (label, action) in second_row {
+            let w = paint::text_width(ui, label, theme::font_body()) + 22.0;
+            let rect = Rect::from_min_size(Pos2::new(x, row_y), Vec2::new(w, btn_h));
+            if widgets::button_at(ui, rect, label, widgets::ButtonKind::Secondary).clicked() {
+                match action {
+                    0 | 1 | 2 => {
+                        if let Some(file) = item.files.first() {
+                            match action {
+                                0 => actions.push(UiAction::OpenPath(PathBuf::from(&file.path))),
+                                1 => actions.push(UiAction::RevealPath(PathBuf::from(&file.path))),
+                                _ => actions.push(UiAction::CopyPath(file.path.clone())),
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(path) = export_dialog::choose_item_save_path(&item) {
+                            if action == 3 {
+                                actions.push(UiAction::SaveImageAs { id: item.id, path });
+                            } else {
+                                actions.push(UiAction::SaveTextAs { id: item.id, path });
+                            }
+                        }
+                    }
+                }
+            }
+            x += w + 8.0;
+        }
+        extra2_h = btn_h + 8.0;
+    }
+
     // 内容区
     let content_rect = Rect::from_min_max(
-        Pos2::new(inner.left(), btn_y + btn_h + 12.0 + extra_h),
+        Pos2::new(inner.left(), btn_y + btn_h + 12.0 + extra_h + extra2_h),
         inner.max,
     );
     ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
