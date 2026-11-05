@@ -640,6 +640,7 @@ mod tests {
                 size: 0,
                 exists: false,
                 stored: false,
+                copy_state: None,
             }],
             ..text_input_stub()
         };
@@ -653,6 +654,7 @@ mod tests {
                 size: 0,
                 exists: false,
                 stored: false,
+                copy_state: None,
             }],
             ..text_input_stub()
         };

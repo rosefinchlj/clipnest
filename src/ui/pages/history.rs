@@ -3,7 +3,7 @@
 //! 表格列：多选框 / 类型 / 内容摘要 / 来源 / 时间 / 大小 / 收藏（spec §6.4）。
 
 use crate::model::{
-    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, TimeRange,
+    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, CopyState, TimeRange,
 };
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, UiAction, UiState};
@@ -1095,30 +1095,66 @@ fn detail_panel(
                 }
                 ClipKind::Files => {
                     for file in &item.files {
-                        let status = if file.stored {
-                            "已保存副本"
-                        } else if file.exists {
-                            "仅路径"
-                        } else {
-                            "文件已不存在"
+                        let copy = file.copy_state;
+                        let status = match copy {
+                            Some(CopyState::Stored) => "已保存副本",
+                            Some(CopyState::Pending) => "正在保存副本…",
+                            Some(CopyState::Failed) => "副本保存失败",
+                            Some(CopyState::TooLarge) => "超出上限，未保存副本",
+                            Some(CopyState::Missing) => "源文件不存在",
+                            Some(CopyState::NotNeeded) | None => {
+                                if file.stored {
+                                    "已保存副本"
+                                } else if file.exists {
+                                    "仅路径"
+                                } else {
+                                    "文件已不存在"
+                                }
+                            }
                         };
-                        let color = if file.stored {
-                            theme::success()
-                        } else if file.exists {
-                            theme::text_secondary()
-                        } else {
-                            theme::danger()
+                        let color = match copy {
+                            Some(CopyState::Stored) => theme::success(),
+                            Some(CopyState::Pending) => theme::pinned(),
+                            Some(CopyState::Failed | CopyState::Missing) => theme::danger(),
+                            Some(CopyState::TooLarge) => theme::text_secondary(),
+                            Some(CopyState::NotNeeded) | None => {
+                                if file.stored {
+                                    theme::success()
+                                } else if file.exists {
+                                    theme::text_secondary()
+                                } else {
+                                    theme::danger()
+                                }
+                            }
                         };
                         ui.horizontal(|ui| {
                             ui.label(theme::body(file.display_name()));
-                            ui.label(theme::aux(format!(" {} · {}", fmt_size(file.size), status)));
-                            let _ = color;
+                            ui.label(
+                                egui::RichText::new(format!(" {} · {}", fmt_size(file.size), status))
+                                    .size(theme::SIZE_AUX)
+                                    .color(color),
+                            );
                         });
                         ui.label(theme::mono(file.path.clone()));
                         ui.add_space(6.0);
                     }
                     if item.files.is_empty() {
                         ui.label(theme::weak("（空文件列表）"));
+                    }
+                    // A4：副本状态可见、失败可重试（重试走 Store 线程，不阻塞 UI）。
+                    if let Some(copy_state) = state.copy_state_for(&item) {
+                        if copy_state.retryable() {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if widgets::button(ui, "重试保存副本", widgets::ButtonKind::Secondary)
+                                    .clicked()
+                                {
+                                    actions.push(UiAction::RetryFileCopy(item.id));
+                                    state.toast("正在重试保存文件副本…");
+                                }
+                                ui.label(theme::weak(copy_state.label()));
+                            });
+                        }
                     }
                 }
             });

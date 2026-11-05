@@ -8,7 +8,7 @@
 //! 菜单项：打开面板 / 管理历史 / 暂停记录 / 清空历史 / 设置 / 开机自启 / 退出。
 
 use crate::logging;
-use crate::model::Settings;
+use crate::model::{Settings, TempPause};
 use std::path::PathBuf;
 use tray_icon::menu::{
     accelerator::Accelerator, CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuItem,
@@ -28,6 +28,14 @@ pub const MENU_CLEAR: u32 = 4;
 pub const MENU_SETTINGS: u32 = 5;
 pub const MENU_AUTOSTART: u32 = 6;
 pub const MENU_QUIT: u32 = 7;
+/// 临时暂停 15 分钟（A3，运行期生效、不写 settings）。
+pub const MENU_PAUSE_15: u32 = 8;
+/// 临时暂停 1 小时。
+pub const MENU_PAUSE_60: u32 = 9;
+/// 临时暂停到本次运行结束（重启后恢复记录）。
+pub const MENU_PAUSE_RESTART: u32 = 10;
+/// 恢复记录（清除所有暂停）。
+pub const MENU_RESUME: u32 = 11;
 
 /// 托盘左键单击动作编码（通过 `WM_APP_TRAY` 的 wparam 传递）。
 pub const TRAY_LEFT_CLICK: u32 = 1;
@@ -37,7 +45,7 @@ pub const TRAY_RIGHT_CLICK: u32 = 2;
 /// 托盘句柄集合（必须在 Sys 线程创建、持有、drop）。
 pub struct TrayState {
     /// 图标本体；drop 时自动从通知区移除。
-    _tray: TrayIcon,
+    tray: TrayIcon,
     /// 菜单本体：不由 tray-icon 自动弹出（它内部 TrackPopupMenu 不产生 MenuEvent），
     /// 而是右键时在 Sys 线程调用 `show_context_menu_for_hwnd`，这样点击项会通过
     /// muda 的 MenuEvent handler 回到 `install_event_handlers`。
@@ -46,6 +54,10 @@ pub struct TrayState {
     pause_item: CheckMenuItem,
     /// 开机自启勾选项。
     autostart_item: CheckMenuItem,
+    /// 临时暂停状态文字（禁用项，只用于展示）。
+    temp_status_item: MenuItem,
+    /// 「恢复记录」：只有存在暂停时才可点。
+    resume_item: MenuItem,
 }
 
 impl TrayState {
@@ -57,12 +69,47 @@ impl TrayState {
         self.autostart_item.set_checked(enabled);
     }
 
+    /// 更新临时暂停状态展示与「恢复记录」可用性（A3）。
+    pub fn set_temp_pause(&self, pause: TempPause, permanent_paused: bool) {
+        self.temp_status_item
+            .set_text(format!("临时暂停：{}", temp_pause_short(pause)));
+        self.resume_item
+            .set_enabled(!matches!(pause, TempPause::Off) || permanent_paused);
+    }
+
+    /// 托盘 tooltip 追加当前暂停状态（未暂停时恢复默认文案）。
+    pub fn set_pause_tooltip(&self, pause: TempPause, permanent_paused: bool) {
+        let text = if permanent_paused {
+            "ClipNest · 剪贴匣（已暂停记录）".to_string()
+        } else {
+            match pause {
+                TempPause::Off => "ClipNest · 剪贴匣".to_string(),
+                _ => format!("ClipNest · 剪贴匣（{}）", temp_pause_short(pause)),
+            }
+        };
+        if let Err(err) = self.tray.set_tooltip(Some(&text)) {
+            logging::debug(&format!("更新托盘 tooltip 失败：{err}"));
+        }
+    }
+
     /// 在指定 owner 窗口上弹出托盘菜单（阻塞式 TrackPopupMenu，但事件循环正常）。
     /// 必须由 Sys 线程调用（菜单归属创建线程）。
     pub fn show_menu(&self, owner: HWND) {
         unsafe {
             self.menu.show_context_menu_for_hwnd(owner as isize, None);
         }
+    }
+}
+
+/// 临时暂停的短文案（菜单/托盘 tooltip 用）。
+pub fn temp_pause_short(pause: TempPause) -> String {
+    match pause {
+        TempPause::Off => "未开启".to_string(),
+        TempPause::Timed { until_ms } => {
+            let minutes = ((until_ms - crate::model::now_ms()).max(0) + 59_999) / 60_000;
+            format!("{minutes} 分钟后恢复")
+        }
+        TempPause::UntilRestart => "直到重启".to_string(),
     }
 }
 
@@ -76,6 +123,10 @@ fn menu_code(id: &str) -> Option<u32> {
         "tray.settings" => Some(MENU_SETTINGS),
         "tray.autostart" => Some(MENU_AUTOSTART),
         "tray.quit" => Some(MENU_QUIT),
+        "tray.pause15" => Some(MENU_PAUSE_15),
+        "tray.pause60" => Some(MENU_PAUSE_60),
+        "tray.pause_restart" => Some(MENU_PAUSE_RESTART),
+        "tray.resume" => Some(MENU_RESUME),
         _ => None,
     }
 }
@@ -235,6 +286,20 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
         None::<Accelerator>,
     );
     let item_clear = MenuItem::with_id("tray.clear", "清空历史…", true, None::<Accelerator>);
+    // A3：临时暂停（运行期生效，不写 settings.json）
+    let temp_status_item = MenuItem::with_id(
+        "tray.temp_status",
+        "临时暂停：未开启",
+        false,
+        None::<Accelerator>,
+    );
+    let item_pause15 =
+        MenuItem::with_id("tray.pause15", "暂停 15 分钟", true, None::<Accelerator>);
+    let item_pause60 =
+        MenuItem::with_id("tray.pause60", "暂停 1 小时", true, None::<Accelerator>);
+    let item_pause_restart =
+        MenuItem::with_id("tray.pause_restart", "暂停到重启", true, None::<Accelerator>);
+    let item_resume = MenuItem::with_id("tray.resume", "恢复记录", false, None::<Accelerator>);
     let item_settings = MenuItem::with_id("tray.settings", "设置", true, None::<Accelerator>);
     let item_autostart = CheckMenuItem::with_id(
         "tray.autostart",
@@ -252,6 +317,18 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
     menu.append(&item_pause)
+        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
+    menu.append(&temp_status_item)
+        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
+    menu.append(&item_pause15)
+        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
+    menu.append(&item_pause60)
+        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
+    menu.append(&item_pause_restart)
+        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
+    menu.append(&item_resume)
+        .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
+    menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
     menu.append(&item_clear)
         .map_err(|e| format!("托盘菜单创建失败：{e}"))?;
@@ -276,12 +353,14 @@ pub fn create(settings: &Settings) -> Result<TrayState, String> {
         .build()
         .map_err(|e| format!("托盘创建失败：{e}"))?;
 
-    logging::log("托盘创建成功（打开面板/管理历史/暂停/清空/设置/开机自启/退出）");
+    logging::log("托盘创建成功（打开面板/管理历史/暂停/临时暂停/清空/设置/开机自启/退出）");
     Ok(TrayState {
-        _tray: tray,
+        tray,
         menu,
         pause_item: item_pause,
         autostart_item: item_autostart,
+        temp_status_item,
+        resume_item: item_resume,
     })
 }
 
@@ -299,6 +378,10 @@ mod tests {
             MENU_SETTINGS,
             MENU_AUTOSTART,
             MENU_QUIT,
+            MENU_PAUSE_15,
+            MENU_PAUSE_60,
+            MENU_PAUSE_RESTART,
+            MENU_RESUME,
         ];
         let mut sorted = codes.to_vec();
         sorted.sort_unstable();
@@ -306,6 +389,19 @@ mod tests {
         assert_eq!(sorted.len(), codes.len());
         assert_eq!(menu_code("tray.open"), Some(MENU_OPEN));
         assert_eq!(menu_code("tray.quit"), Some(MENU_QUIT));
+        assert_eq!(menu_code("tray.pause15"), Some(MENU_PAUSE_15));
+        assert_eq!(menu_code("tray.resume"), Some(MENU_RESUME));
+        assert_eq!(menu_code("tray.temp_status"), None);
         assert_eq!(menu_code("unknown"), None);
+    }
+
+    #[test]
+    fn temp_pause_short_texts() {
+        assert_eq!(temp_pause_short(TempPause::Off), "未开启");
+        assert_eq!(temp_pause_short(TempPause::UntilRestart), "直到重启");
+        let pause = TempPause::Timed {
+            until_ms: crate::model::now_ms() + 15 * 60_000,
+        };
+        assert!(temp_pause_short(pause).contains("15 分钟"));
     }
 }

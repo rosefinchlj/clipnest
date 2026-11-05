@@ -248,6 +248,7 @@ pub(crate) fn run(
         diag: diag.clone(),
         cmd_rx: cmd_rx_internal,
         last_external_fg: 0,
+        temp_pause: crate::model::TempPause::Off,
     });
     let state_ptr = Box::into_raw(state);
     let title = wide("ClipNest");
@@ -343,6 +344,8 @@ pub(crate) fn run(
     with_state(hwnd, |state| {
         state.picker_hotkey = Some(registration);
         state.tray = tray_state;
+        // 托盘创建后同步一次暂停状态（勾选/临时暂停文案/tooltip）。
+        state.sync_tray_pause_state();
         state.update_diag(|d| {
             d.tray_ok = tray_ok;
             d.hotkey_requested = Some(requested);

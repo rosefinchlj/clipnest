@@ -304,8 +304,11 @@ fn run_selftest_body(dir: &Path, check: &mut CheckFn<'_>) -> Result<(), String> 
             page_after_delete.as_ref().map(|p| p.total).unwrap_or(0)
         ),
     );
-    tx.send(StoreCmd::Clear { delete_blobs: true })
-        .map_err(|e| e.to_string())?;
+    tx.send(StoreCmd::Clear {
+        delete_blobs: true,
+        include_favorites: false,
+    })
+    .map_err(|e| e.to_string())?;
     let _ = wait_clips_changed(&events, WAIT);
     let page_after_clear = search(&events, &tx, "", ClipFilter::All, 0, 50);
     check(
