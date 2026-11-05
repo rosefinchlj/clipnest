@@ -130,6 +130,9 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
                     .fit_to_exact_size(size)
                     .corner_radius(CornerRadius::same(theme::RADIUS_THUMB)),
             );
+            // `ui.put` 会把父 Ui 的 cursor 推进到图片矩形底部（40px 图标 → 52px），
+            // 比整行 64px 矮，导致后续图片行上移、行距不一致。恢复到整行底部。
+            ui.advance_cursor_after_rect(rect);
         } else {
             paint::paint_thumb_placeholder(&painter, icon_rect);
         }

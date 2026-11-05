@@ -933,3 +933,28 @@
 ### 说明
 - 日期弹窗首帧不响应外部点击，从第二帧起恢复点击遮罩/取消关闭。
 - 图片行改用 ASCII 尺寸格式，不改变实际尺寸、复制或粘贴行为。
+
+## 43. v1.12.4（2026-11-05，图片行行距 / 日期弹窗）
+
+### 用户反馈
+- 候选窗图片条目的上下间距仍与文本行不一致，左侧缩略图之间出现空白差。
+- 日期选择器点击没反应，无法选择起止日期范围。
+
+### 根因
+- `src/ui/row.rs::clip_row` 先按 64px 分配整行，再对图片缩略图调用 `ui.put(icon_rect, Image)`；`ui.put` 会把父 `Ui` 的光标推进到缩略图矩形底部（40px 图 + 行内偏移约 52px），而不是整行 64px。图片行因此实际只占 52px，后续行上移，形成“只有图片行间距不对”。
+- `src/ui/widgets.rs::date_picker_modal` 仍依赖 `egui::Modal::should_close()`。打开弹窗的点击或遮罩点击在某些窗口/合成器下会在弹窗刚出现时被判定为“点击外部”，导致弹窗立即关闭，看起来像“点日期没反应”。
+
+### 实现
+- `src/ui/row.rs`：图片缩略图 `ui.put(...)` 后调用 `ui.advance_cursor_after_rect(rect)`，把布局光标恢复到整行底部。
+- `src/ui/widgets.rs`：删除 `Modal::should_close()` 判定；弹窗只由「取消」/ `Esc` / 选定结束日期关闭。`allow_close` 为真时显式消费 Esc 返回 `DatePickerAction::Closed`。
+- 保留 v1.12.3 的下拉宽度、管理台日期按钮位置和图片 ASCII 尺寸格式。
+
+### 校验
+- `cargo check --all-targets`：零错误。
+- `cargo test --release`：**237 passed / 0 failed / 1 ignored**。
+- `cargo build --release` + `tools/build-release.ps1` 9 尺寸图标 + `--selftest` 15 项 PASS。
+- 预览确认：日期弹窗稳定显示，3–5 日范围高亮、可点击「今天/取消」；候选窗图片行后续行位置恢复 64px 步进。
+
+### 说明
+- 日期弹窗不再点击遮罩关闭，需点「取消」或按 Esc；避免误关。
+- 图片行只修正布局高度，不改缩略图尺寸、粘贴或复制行为。

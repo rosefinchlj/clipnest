@@ -561,7 +561,7 @@ pub fn date_picker_modal(
                 .shadow(theme::window_shadow()),
         )
         .backdrop_color(Color32::from_black_alpha(120));
-    let resp = modal.show(ctx, |ui| {
+    let _resp = modal.show(ctx, |ui| {
         ui.set_width(286.0);
         ui.horizontal(|ui| {
             if ui
@@ -707,10 +707,14 @@ pub fn date_picker_modal(
             });
         });
     });
-    // 打开弹窗的那一次点击本身也在 `ctx.input` 里；Modal 在同一帧会把它
-    // 当成「点击遮罩」并立刻关闭。打开首帧先忽略 should_close，下一帧起
-    // 才允许点击外部关闭。
-    if result.is_none() && allow_close && resp.should_close() {
+    // 日历弹窗只由「取消」/ Esc / 选定结束日期关闭。
+    // 不再依赖 Modal::should_close()：打开弹窗的那一次点击、以及某些
+    // 窗口/合成器下遮罩的点击命中不稳定，会在弹窗刚出现时把它误关掉，
+    // 表现为「点日期没反应」。
+    if result.is_none()
+        && allow_close
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
         result = Some(DatePickerAction::Closed);
     }
     *month = date_start_ms(shown).unwrap_or(*month);

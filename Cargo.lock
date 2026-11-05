@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "clipnest"
-version = "1.12.3"
+version = "1.12.4"
 dependencies = [
  "chrono",
  "eframe",
