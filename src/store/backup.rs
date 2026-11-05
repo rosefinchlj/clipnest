@@ -379,14 +379,14 @@ fn rel_to_entry(rel: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// 打开备份并展示摘要；同时校验 manifest 与每个文件的 sha256。
-pub fn inspect_backup(path: &Path) -> StoreResult<BackupPreview> {
+pub fn inspect_backup(path: &Path, key_hex: Option<&str>) -> StoreResult<BackupPreview> {
     let staging = staging_dir("inspect")?;
-    let result = inspect_inner(path, &staging);
+    let result = inspect_inner(path, &staging, key_hex);
     let _ = fs::remove_dir_all(&staging);
     result
 }
 
-fn inspect_inner(path: &Path, staging: &Path) -> StoreResult<BackupPreview> {
+fn inspect_inner(path: &Path, staging: &Path, key_hex: Option<&str>) -> StoreResult<BackupPreview> {
     let mut archive = open_archive(path)?;
     let manifest = load_manifest(&mut archive)?;
     let (checksum_errors, checksum_note) = verify_archive_members(&mut archive, &manifest)?;
@@ -394,7 +394,7 @@ fn inspect_inner(path: &Path, staging: &Path) -> StoreResult<BackupPreview> {
     // 解出数据库快照，核对条目数与结构（预览里显示真实可恢复数量）。
     let snapshot = staging.join(BACKUP_DB_ENTRY);
     extract_member(&mut archive, BACKUP_DB_ENTRY, &snapshot)?;
-    let conn = open_snapshot(&snapshot)?;
+    let conn = open_snapshot(&snapshot, key_hex)?;
     let clips = snapshot_clip_count(&conn)?;
     drop(conn);
 
@@ -427,8 +427,8 @@ fn inspect_inner(path: &Path, staging: &Path) -> StoreResult<BackupPreview> {
 }
 
 fn open_archive(path: &Path) -> StoreResult<ZipArchive<BufReader<File>>> {
-    let file = File::open(path)
-        .map_err(|err| StoreError::Msg(format!("无法打开备份文件：{err}")))?;
+    let file =
+        File::open(path).map_err(|err| StoreError::Msg(format!("无法打开备份文件：{err}")))?;
     ZipArchive::new(BufReader::new(file)).map_err(|err| zip_error("备份文件不是有效的 zip", err))
 }
 
@@ -585,11 +585,14 @@ fn extract_all_verified(
 }
 
 /// 打开备份里的数据库快照（只读）并做结构与版本检查。
-fn open_snapshot(path: &Path) -> StoreResult<Connection> {
+fn open_snapshot(path: &Path, key_hex: Option<&str>) -> StoreResult<Connection> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    if let Some(key) = key_hex {
+        conn.execute_batch(&format!("PRAGMA key = \"x'{key}'\";"))?;
+    }
     let check: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if check != "ok" {
         return Err(StoreError::Msg(
@@ -674,21 +677,21 @@ fn snapshot_clip_count(conn: &Connection) -> StoreResult<usize> {
 // ---------------------------------------------------------------------------
 
 /// 从备份合并恢复；校验/解压/合并任一环节失败都不会改动现有数据。
-pub fn restore_backup(db: &Db, path: &Path) -> StoreResult<RestoreReport> {
+pub fn restore_backup(db: &Db, path: &Path, key_hex: Option<&str>) -> StoreResult<RestoreReport> {
     let staging = staging_dir("restore")?;
-    let result = restore_inner(db, path, &staging);
+    let result = restore_inner(db, path, &staging, key_hex);
     let _ = fs::remove_dir_all(&staging);
     result
 }
 
-fn restore_inner(db: &Db, path: &Path, staging: &Path) -> StoreResult<RestoreReport> {
+fn restore_inner(db: &Db, path: &Path, staging: &Path, key_hex: Option<&str>) -> StoreResult<RestoreReport> {
     let mut archive = open_archive(path)?;
     let manifest = load_manifest(&mut archive)?;
     // 先完整解压并逐文件校验；只有全部通过才允许触碰现有数据库。
     extract_all_verified(&mut archive, &manifest, staging)?;
 
     let snapshot_path = staging.join(BACKUP_DB_ENTRY);
-    let source = open_snapshot(&snapshot_path)?;
+    let source = open_snapshot(&snapshot_path, key_hex)?;
     let clips = read_clips(&source)?;
     let blobs = read_blobs(&source)?;
     drop(source);
@@ -753,8 +756,7 @@ fn restore_inner(db: &Db, path: &Path, staging: &Path) -> StoreResult<RestoreRep
                         continue;
                     }
                     let dest_dir = blob::blob_path(&db.data_dir, &item.rel_path);
-                    report.favorite_files +=
-                        copy_dir_tracked(&stage_dir, &dest_dir, &mut guard)?;
+                    report.favorite_files += copy_dir_tracked(&stage_dir, &dest_dir, &mut guard)?;
                     register_blob(&tx, item)?;
                     blob_id_out = Some(item.id.clone());
                 }
@@ -815,9 +817,8 @@ fn read_clips(conn: &Connection) -> StoreResult<Vec<BackupClip>> {
 }
 
 fn read_blobs(conn: &Connection) -> StoreResult<HashMap<String, BackupBlob>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, kind, rel_path, byte_len, sha256, created_at FROM blobs",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id, kind, rel_path, byte_len, sha256, created_at FROM blobs")?;
     let rows = stmt.query_map([], |row| {
         Ok(BackupBlob {
             id: row.get(0)?,
@@ -1020,11 +1021,7 @@ fn safe_rel(name: &str) -> StoreResult<PathBuf> {
     for component in path.components() {
         match component {
             Component::Normal(_) => {}
-            _ => {
-                return Err(StoreError::Msg(format!(
-                    "备份中存在越界路径：{name}"
-                )))
-            }
+            _ => return Err(StoreError::Msg(format!("备份中存在越界路径：{name}"))),
         }
     }
     Ok(path.to_path_buf())
@@ -1059,10 +1056,10 @@ fn temp_sibling(path: &Path) -> PathBuf {
 
 /// Windows 上原子替换目标文件（`MoveFileExW` + `MOVEFILE_REPLACE_EXISTING`）。
 fn replace_file(src: &Path, dest: &Path) -> StoreResult<()> {
+    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
-    use std::os::windows::ffi::OsStrExt;
     let to_wide = |path: &Path| -> Vec<u16> {
         path.as_os_str()
             .encode_wide()

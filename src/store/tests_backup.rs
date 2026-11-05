@@ -44,8 +44,7 @@ fn image_input(png: &[u8], seed: u8) -> ClipInput {
 /// 用同样的条目名重写 zip，并把第一张图片的内容替换成垃圾数据（manifest 保持原样）。
 fn tamper_first_image(original: &Path, tampered: &Path) {
     let file = File::open(original).expect("打开原备份失败");
-    let mut archive =
-        zip::ZipArchive::new(BufReader::new(file)).expect("读取原备份 zip 失败");
+    let mut archive = zip::ZipArchive::new(BufReader::new(file)).expect("读取原备份 zip 失败");
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
     for index in 0..archive.len() {
         let mut member = archive.by_index(index).expect("读取 zip 条目失败");
@@ -61,7 +60,9 @@ fn tamper_first_image(original: &Path, tampered: &Path) {
         .compression_method(zip::CompressionMethod::Deflated);
     let mut tampered_one = false;
     for (name, buf) in entries {
-        writer.start_file(&name, options).expect("写入 zip 条目失败");
+        writer
+            .start_file(&name, options)
+            .expect("写入 zip 条目失败");
         if !tampered_one && name.starts_with("blobs/images/") {
             writer
                 .write_all(b"tampered-not-a-png")
@@ -134,7 +135,7 @@ fn backup_roundtrip_restores_text_image_and_favorite_files() {
     assert!(backup_path.is_file(), "备份文件应已落盘");
     assert!(report.bytes > 0);
 
-    let preview = backup::inspect_backup(&backup_path).expect("检查备份失败");
+    let preview = backup::inspect_backup(&backup_path, None).expect("检查备份失败");
     assert!(preview.checksum_ok, "校验应通过：{}", preview.checksum_note);
     assert_eq!(preview.clips, 3);
     assert_eq!(preview.images, 1);
@@ -144,7 +145,7 @@ fn backup_roundtrip_restores_text_image_and_favorite_files() {
 
     // 5) 恢复到另一个隔离库。
     let (dir_b, db_b) = open_db("backup-roundtrip-b");
-    let restored = backup::restore_backup(&db_b, &backup_path).expect("恢复失败");
+    let restored = backup::restore_backup(&db_b, &backup_path, None).expect("恢复失败");
     assert_eq!(restored.inserted, 3);
     assert_eq!(restored.skipped, 0);
     assert_eq!(restored.images, 1);
@@ -172,7 +173,10 @@ fn backup_roundtrip_restores_text_image_and_favorite_files() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("恢复后的图片条目缺失");
-    assert_eq!(restored_blob_id, image_blob_id, "图片 blob id 应保持内容寻址一致");
+    assert_eq!(
+        restored_blob_id, image_blob_id,
+        "图片 blob id 应保持内容寻址一致"
+    );
     assert_eq!(image_favorited, 1);
     assert_eq!(image_pinned, 1);
     let image_path = blob::image_path(&dir_b, &restored_blob_id);
@@ -208,7 +212,7 @@ fn backup_roundtrip_restores_text_image_and_favorite_files() {
     );
 
     // 再次恢复：全部按 hash 去重跳过，不重复插入。
-    let again = backup::restore_backup(&db_b, &backup_path).expect("二次恢复失败");
+    let again = backup::restore_backup(&db_b, &backup_path, None).expect("二次恢复失败");
     assert_eq!(again.inserted, 0);
     assert_eq!(again.skipped, 3);
     assert_eq!(clip_count(&db_b), 3);
@@ -226,15 +230,14 @@ fn corrupted_zip_is_rejected_and_existing_db_untouched() {
     let before = clip_count(&db);
 
     let bad_path = dir.join("broken.cnbak");
-    std::fs::write(&bad_path, b"this is definitely not a zip archive")
-        .expect("写损坏文件失败");
+    std::fs::write(&bad_path, b"this is definitely not a zip archive").expect("写损坏文件失败");
 
-    let inspect_err = backup::inspect_backup(&bad_path).expect_err("损坏 zip 应检查失败");
+    let inspect_err = backup::inspect_backup(&bad_path, None).expect_err("损坏 zip 应检查失败");
     assert!(
         inspect_err.to_string().contains("zip") || inspect_err.to_string().contains("备份"),
         "错误信息应可读：{inspect_err}"
     );
-    let restore_err = backup::restore_backup(&db, &bad_path).expect_err("损坏 zip 应恢复失败");
+    let restore_err = backup::restore_backup(&db, &bad_path, None).expect_err("损坏 zip 应恢复失败");
     let _ = restore_err;
     assert_eq!(clip_count(&db), before, "恢复失败不得改动现有数据库");
     let text: String = db
@@ -258,7 +261,7 @@ fn tampered_backup_fails_checksum_without_touching_db() {
     tamper_first_image(&backup_path, &tampered_path);
 
     // 检查阶段不报错，但会把校验失败标记返回给预览 UI。
-    let preview = backup::inspect_backup(&tampered_path).expect("检查篡改备份失败");
+    let preview = backup::inspect_backup(&tampered_path, None).expect("检查篡改备份失败");
     assert!(!preview.checksum_ok, "篡改后的备份不应通过校验");
     assert!(preview.checksum_errors >= 1);
     assert!(!preview.checksum_note.is_empty());
@@ -268,11 +271,32 @@ fn tampered_backup_fails_checksum_without_touching_db() {
     db_b.upsert(&text_input("目标库原有条目"))
         .expect("写入目标条目失败");
     let before = clip_count(&db_b);
-    let err = backup::restore_backup(&db_b, &tampered_path).expect_err("篡改备份应恢复失败");
+    let err = backup::restore_backup(&db_b, &tampered_path, None).expect_err("篡改备份应恢复失败");
     let message = err.to_string();
     assert!(
         message.contains("校验") || message.contains("大小"),
         "错误信息应说明校验失败：{message}"
     );
     assert_eq!(clip_count(&db_b), before, "恢复失败不得改动现有数据库");
+}
+
+#[test]
+fn encrypted_database_backup_can_be_inspected_and_restored() {
+    let (src_dir, mut src) = open_db("enc-backup-src");
+    src.upsert(&text_input("加密备份内容")).unwrap();
+    src.set_encryption(true).unwrap();
+    let key = crate::db_crypto::load_key_hex(&src_dir).unwrap();
+    assert!(crate::db_crypto::is_encrypted_file(
+        &src_dir.join("data.db")
+    ));
+    let backup_path = src_dir.join("enc.cnbak");
+    backup::create_backup(&src, &backup_path).expect("加密库备份失败");
+    drop(src);
+
+    let preview = backup::inspect_backup(&backup_path, key.as_deref()).expect("检查加密备份失败");
+    assert_eq!(preview.clips, 1);
+    let (_dst_dir, dst) = open_db("enc-backup-dst");
+    let report = backup::restore_backup(&dst, &backup_path, key.as_deref()).expect("恢复加密备份失败");
+    assert_eq!(report.inserted, 1);
+    assert_eq!(clip_count(&dst), 1);
 }

@@ -67,7 +67,7 @@ pub fn ensure_dirs() -> std::io::Result<()> {
 
 /// 读取设置；文件缺失/损坏时返回默认值，损坏文件备份为 `settings.json.bad`。
 pub fn load_settings() -> Settings {
-    match load_settings_strict() {
+    let mut settings = match load_settings_strict() {
         Ok(settings) => settings,
         Err(err) => {
             // 首次运行没有 settings.json 属于正常情况，不刷警告。
@@ -84,7 +84,12 @@ pub fn load_settings() -> Settings {
             }
             Settings::default()
         }
-    }
+    };
+    // 数据库是否加密以实际文件与密钥文件为准，避免 settings.json 被误改后状态不一致。
+    let dir = data_dir();
+    settings.encrypt_db = crate::db_crypto::key_exists(&dir)
+        && crate::db_crypto::is_encrypted_file(&dir.join("data.db"));
+    settings
 }
 
 /// 严格读取设置：允许调用方区分「文件不存在」与「解析失败」（设置监听用，
@@ -100,7 +105,8 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
     ensure_dirs().map_err(|e| format!("创建数据目录失败: {e}"))?;
     let path = settings_path();
     let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(settings).map_err(|e| format!("序列化设置失败: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(settings).map_err(|e| format!("序列化设置失败: {e}"))?;
     fs::write(&tmp, json).map_err(|e| format!("写临时设置失败: {e}"))?;
     fs::rename(&tmp, &path).map_err(|e| format!("替换设置文件失败: {e}"))?;
     Ok(())

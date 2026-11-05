@@ -1,6 +1,6 @@
 [package]
 name = "clipnest"
-version = "1.11.0"
+version = "1.12.0"
 edition = "2021"
 rust-version = "1.85"
 description = "ClipNest · 剪贴匣 —— Windows 深色/浅色磨砂玻璃剪贴板管理器"
@@ -21,7 +21,7 @@ path = "src/bin/patch_icon.rs"
 eframe = "=0.32.3"
 chrono = "0.4.45"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -47,6 +47,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_SystemInformation",
     "Win32_System_Diagnostics_Debug",
     "Win32_Security",
+    "Win32_Security_Cryptography",
 ] }
 raw-window-handle = "0.6.2"
 zip = { version = "=7.3.0", default-features = false, features = ["deflate"] }
@@ -56,4 +57,3 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
-

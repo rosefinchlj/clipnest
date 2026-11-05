@@ -8,9 +8,7 @@
 //! - 粘贴直接写剪贴板并 `restore_and_paste` 到主进程传入的 target；
 //! - 设置保存后通过 WM_COPYDATA 通知主进程立即应用（同时落盘 settings.json）。
 
-use crate::model::{
-    fmt_size, BackupEvent, Event, SearchQuery, Settings, StoreCmd, ThemeMode,
-};
+use crate::model::{fmt_size, BackupEvent, Event, SearchQuery, Settings, StoreCmd, ThemeMode};
 use crate::store::StoreHandle;
 use crate::ui::{ManagerPage, ThumbCache, UiAction, UiState};
 use eframe::egui;
@@ -239,6 +237,26 @@ impl ManagerApp {
                     }
                 }
                 Event::Toast(message) => self.ui.toast(message),
+                Event::EncryptionChanged { enabled, error } => match error {
+                    None => {
+                        self.settings.encrypt_db = enabled;
+                        self.ui.set_encryption_enabled(enabled);
+                        self.persist_settings();
+                        self.notify_main_settings();
+                        self.ui.toast(if enabled {
+                            "已加密本地数据库（当前 Windows 用户密钥）"
+                        } else {
+                            "已关闭数据库加密"
+                        });
+                    }
+                    Some(reason) => {
+                        self.settings.encrypt_db = !enabled;
+                        self.ui.set_encryption_enabled(!enabled);
+                        self.persist_settings();
+                        self.notify_main_settings();
+                        self.ui.toast(format!("数据库加密切换失败：{reason}"));
+                    }
+                },
                 Event::Backup(event) => match event {
                     BackupEvent::Created(report) => self.ui.toast(format!(
                         "已创建完整备份：{} 条 / {} 张图片 / {} 个文件副本，共 {}",
@@ -371,8 +389,7 @@ impl ManagerApp {
             UiAction::SetTempPause(_) => {
                 // 临时暂停属于主进程 Sys 线程的运行期状态，管理台是独立进程，
                 // 这里只提示用户到托盘菜单/主面板设置里操作（不写设置文件）。
-                self.ui
-                    .toast("临时暂停请在托盘菜单或主面板「设置」里操作");
+                self.ui.toast("临时暂停请在托盘菜单或主面板「设置」里操作");
             }
             UiAction::IgnoreSourceApp(app) => {
                 // A3：管理台也可一键忽略来源应用，写设置文件并通知主进程热加载。
@@ -386,8 +403,7 @@ impl ManagerApp {
                     self.ui
                         .toast(format!("已忽略来源应用：{}（设置已保存）", app.trim()));
                 } else {
-                    self.ui
-                        .toast(format!("{} 已在忽略名单中", app.trim()));
+                    self.ui.toast(format!("{} 已在忽略名单中", app.trim()));
                 }
             }
             UiAction::OpenManager => {}
@@ -428,6 +444,16 @@ impl ManagerApp {
                     "已恢复记录"
                 });
             }
+            UiAction::SetDbEncryption(enabled) => {
+                self.settings.encrypt_db = enabled;
+                self.persist_settings();
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::SetEncryption { enabled });
+                    self.ui.toast("正在切换数据库加密…");
+                } else {
+                    self.ui.toast("Store 未就绪，无法切换加密");
+                }
+            }
             UiAction::ExportJson => {
                 let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
                 let default_name = format!("clipnest-export-{stamp}.json");
@@ -441,8 +467,7 @@ impl ManagerApp {
             UiAction::CreateBackup => {
                 let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
                 let default_name = format!("clipnest-backup-{stamp}.cnbak");
-                if let Some(path) =
-                    crate::ui::export_dialog::choose_backup_save_path(&default_name)
+                if let Some(path) = crate::ui::export_dialog::choose_backup_save_path(&default_name)
                 {
                     if let Some(tx) = &self.store_tx {
                         let _ = tx.send(StoreCmd::CreateBackup { path });

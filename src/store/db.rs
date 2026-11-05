@@ -15,20 +15,34 @@ use crate::store::{schema, StoreError, StoreResult};
 pub const DB_FILE: &str = "data.db";
 
 /// 打开数据库时的选项（测试可强制关闭 FTS 以覆盖 LIKE 降级路径）。
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DbOptions {
     /// 强制禁用 FTS5，等价于环境变量 `CLIPNEST_DISABLE_FTS=1`。
     pub disable_fts: bool,
+    /// SQLCipher 密钥（64 位小写十六进制）；None 表示明文库。
+    pub key_hex: Option<String>,
 }
 
 impl DbOptions {
-    /// 从环境变量读取：`CLIPNEST_DISABLE_FTS=1` 时禁用 FTS（--selftest / 排查用）。
-    pub fn from_env() -> Self {
+    /// 从环境变量与数据目录读取：`CLIPNEST_DISABLE_FTS=1` 时禁用 FTS（--selftest / 排查用）。
+    pub fn from_env(data_dir: &Path) -> Self {
         let disabled = std::env::var("CLIPNEST_DISABLE_FTS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        let key_hex = if crate::db_crypto::is_encrypted_file(&data_dir.join(DB_FILE)) {
+            match crate::db_crypto::load_key_hex(data_dir) {
+                Ok(key) => key,
+                Err(err) => {
+                    crate::logging::error(&format!("读取数据库密钥失败：{err}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Self {
             disable_fts: disabled,
+            key_hex,
         }
     }
 }
@@ -68,12 +82,21 @@ pub struct Db {
     pub fts_enabled: bool,
     /// FTS 降级原因（启用时为 None）。
     pub fts_error: Option<String>,
+    /// SQLCipher 密钥（64 位十六进制）；明文库为 None。
+    pub key_hex: Option<String>,
 }
 
 impl Db {
     /// 打开（必要时修复）数据库文件；损坏时备份并重建空库（spec §14）。
     pub fn open(db_path: &Path, options: DbOptions) -> StoreResult<Self> {
-        match Self::open_inner(db_path, options) {
+        let encrypted = crate::db_crypto::is_encrypted_file(db_path);
+        if encrypted && options.key_hex.is_none() {
+            return Err(StoreError::Msg(
+                "数据库已加密，但缺少本机密钥（db.key）；无法打开。请恢复数据目录或从备份恢复。"
+                    .to_string(),
+            ));
+        }
+        match Self::open_inner(db_path, options.clone()) {
             Ok(db) => Ok(db),
             Err(err) if db_corrupted(&err) => {
                 crate::logging::error(&format!("数据库损坏或无法识别（{err}），备份后将重建空库"));
@@ -102,6 +125,23 @@ impl Db {
             }
         }
         let conn = Connection::open(db_path)?;
+        let key_hex = if crate::db_crypto::is_encrypted_file(db_path) {
+            options.key_hex.clone()
+        } else {
+            None
+        };
+        if let Some(key) = key_hex.as_deref() {
+            conn.execute_batch(&format!("PRAGMA key = \"x'{key}'\";"))?;
+            // 提前验证密钥；错误密钥不能让后续 quick_check 被误判为损坏并重建。
+            conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|err| {
+                StoreError::Msg(format!(
+                    "数据库密钥不正确，无法解密数据库：{err}；请检查 db.key 是否属于当前 Windows 用户"
+                ))
+            })?;
+        }
         Self::tune(&conn)?;
         let data_dir = db_path
             .parent()
@@ -113,6 +153,7 @@ impl Db {
             db_path: db_path.to_path_buf(),
             fts_enabled: false,
             fts_error: None,
+            key_hex,
         };
         // 启动完整性检查（spec §14：quick_check 失败 → 备份重建）
         if !quick_check(&db.conn)? {
@@ -148,6 +189,85 @@ impl Db {
         self.fts_enabled = outcome.fts_enabled;
         self.fts_error = outcome.fts_error.clone();
         Ok(outcome)
+    }
+
+    /// 开启/关闭整库加密（SQLCipher）。
+    ///
+    /// SQLCipher 不支持直接对明文库 `PRAGMA rekey`，也不支持把密文库
+    /// 直接 rekey 成明文；两个方向都通过 `sqlcipher_export()` 导出到临时库，
+    /// 校验后再原子替换主库。返回是否真的发生了变化。
+    pub fn set_encryption(&mut self, enabled: bool) -> StoreResult<bool> {
+        if self.key_hex.is_some() == enabled {
+            return Ok(false);
+        }
+        let temp = self
+            .db_path
+            .with_extension(if enabled { "encrypt.tmp" } else { "plain.tmp" });
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(sibling_path(&temp, suffix));
+        }
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+
+        let new_key = if enabled {
+            let key = crate::db_crypto::generate_key_hex()
+                .map_err(|err| StoreError::Msg(format!("生成数据库密钥失败：{err}")))?;
+            crate::db_crypto::save_key_hex(&self.data_dir, &key)
+                .map_err(|err| StoreError::Msg(format!("保存数据库密钥失败：{err}")))?;
+            Some(key)
+        } else {
+            None
+        };
+
+        let export_result = self.export_to(&temp, new_key.as_deref());
+        if let Err(err) = export_result {
+            if enabled {
+                let _ = crate::db_crypto::delete_key(&self.data_dir);
+            }
+            let _ = std::fs::remove_file(&temp);
+            return Err(err);
+        }
+
+        // 关闭旧连接，替换主库文件后重新打开。
+        let old = std::mem::replace(&mut self.conn, Connection::open_in_memory()?);
+        drop(old);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(sibling_path(&self.db_path, suffix));
+        }
+        std::fs::rename(&temp, &self.db_path)?;
+        if !enabled {
+            let _ = crate::db_crypto::delete_key(&self.data_dir);
+        }
+        let path = self.db_path.clone();
+        let reopened = Db::open(
+            &path,
+            DbOptions {
+                disable_fts: false,
+                key_hex: new_key,
+            },
+        )?;
+        *self = reopened;
+        Ok(true)
+    }
+
+    fn export_to(&self, dest: &Path, key_hex: Option<&str>) -> StoreResult<()> {
+        let dest = dest
+            .to_str()
+            .ok_or_else(|| StoreError::Msg("临时数据库路径包含非 UTF-8 字符".to_string()))?;
+        let dest = dest.replace('\'', "''");
+        let attach = match key_hex {
+            Some(key) => format!("ATTACH DATABASE '{dest}' AS target KEY \"x'{key}'\";"),
+            None => format!("ATTACH DATABASE '{dest}' AS target KEY '';"),
+        };
+        self.conn.execute_batch(&attach)?;
+        let result = self
+            .conn
+            .execute_batch("SELECT sqlcipher_export('target'); DETACH DATABASE target;");
+        if result.is_err() {
+            let _ = self.conn.execute_batch("DETACH DATABASE target;");
+        }
+        result?;
+        Ok(())
     }
 
     /// `meta.schema_version`（未初始化时为 0）。

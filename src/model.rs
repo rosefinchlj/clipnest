@@ -931,6 +931,8 @@ pub struct Settings {
     pub exit_clear_policy: ExitClearPolicy,
     /// 首次引导是否已完成（欢迎提示 + 自启选项只出现一次）。
     pub first_run_done: bool,
+    /// 本地数据库是否使用 SQLCipher 加密（密钥由 Windows 当前用户 DPAPI 保护）。
+    pub encrypt_db: bool,
 
     pub max_items: usize,
     pub max_image_bytes: u64,
@@ -967,6 +969,7 @@ impl Default for Settings {
             ignore_apps: default_ignore_apps(),
             exit_clear_policy: ExitClearPolicy::Off,
             first_run_done: false,
+            encrypt_db: false,
             keep_search_on_open: false,
 
             max_items: 5000,
@@ -1115,14 +1118,16 @@ pub enum Event {
     /// 运行期临时暂停状态变化（托盘菜单 / 设置页共用）。
     TempPauseChanged(TempPause),
     /// 收藏文件副本状态变化（A4）：Pending 先发、完成后再发最终状态。
-    FileCopyState {
-        clip_id: ClipId,
-        state: CopyState,
-    },
+    FileCopyState { clip_id: ClipId, state: CopyState },
     /// 剪贴板监听线程捕获到新内容（正常情况下 Sys 发 `Event::Captured`，由 UI 线程转发 `StoreCmd::Upsert`）。
     Captured(ClipInput),
     /// 完整备份/恢复任务进度与结果（Store 线程串行执行）。
     Backup(BackupEvent),
+    /// 数据库加密开关结果（B6）。
+    EncryptionChanged {
+        enabled: bool,
+        error: Option<String>,
+    },
 }
 
 /// UI → Store 命令。
@@ -1191,6 +1196,10 @@ pub enum StoreCmd {
     SaveTextAs {
         id: ClipId,
         path: PathBuf,
+    },
+    /// 开启/关闭整库加密（B6）。结果通过 `Event::EncryptionChanged` 回传。
+    SetEncryption {
+        enabled: bool,
     },
     Shutdown,
 }
@@ -1350,8 +1359,13 @@ mod tests {
         assert!(TempPause::UntilRestart.is_active());
         let until = now_ms() + 15 * 60_000;
         assert!(TempPause::Timed { until_ms: until }.is_active());
-        assert!(!TempPause::Timed { until_ms: now_ms() - 1 }.is_active());
-        assert!(TempPause::Timed { until_ms: until }.label().contains("暂停"));
+        assert!(!TempPause::Timed {
+            until_ms: now_ms() - 1
+        }
+        .is_active());
+        assert!(TempPause::Timed { until_ms: until }
+            .label()
+            .contains("暂停"));
         assert_eq!(ExitClearPolicy::Off.clears(), false);
         assert_eq!(ExitClearPolicy::Unfavorited.clears(), true);
         assert!(!ExitClearPolicy::Unfavorited.include_favorites());

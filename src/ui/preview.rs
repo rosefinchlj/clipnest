@@ -180,13 +180,7 @@ impl PreviewState {
         let filter = state.effective_filter();
         let preview_search = std::env::var("CLIPNEST_PREVIEW_SEARCH").unwrap_or_default();
         state.search_text = preview_search.clone();
-        let items = filter_items(
-            &all_items,
-            &preview_search,
-            filter,
-            MatchMode::Any,
-            None,
-        );
+        let items = filter_items(&all_items, &preview_search, filter, MatchMode::Any, None);
         state.apply_search_page(SearchPage {
             gen: state.active_gen,
             total: fake_stats().total,
@@ -322,7 +316,9 @@ impl PreviewState {
         for action in actions {
             match action {
                 UiAction::PreviewGlassOpacity(_) => {}
-                UiAction::CreateBackup | UiAction::RestoreBackup | UiAction::ConfirmRestore { .. } => {
+                UiAction::CreateBackup
+                | UiAction::RestoreBackup
+                | UiAction::ConfirmRestore { .. } => {
                     self.state.toast("（预览）备份/恢复仅在实际运行中可用");
                 }
                 UiAction::ListSourceApps => {
@@ -470,9 +466,12 @@ impl PreviewState {
                 }),
                 UiAction::SetTempPause(pause) => {
                     self.state.set_temp_pause(pause);
-                    self.state.toast(format!("（预览）临时暂停：{}", pause.label()));
+                    self.state
+                        .toast(format!("（预览）临时暂停：{}", pause.label()));
                 }
-                UiAction::RetryFileCopy(_) => self.state.toast("（预览）重试保存文件副本（未执行）"),
+                UiAction::RetryFileCopy(_) => {
+                    self.state.toast("（预览）重试保存文件副本（未执行）")
+                }
                 UiAction::IgnoreSourceApp(app) => {
                     let changed = self.state.add_ignore_app(&app);
                     self.state.toast(if changed {
@@ -496,11 +495,13 @@ impl PreviewState {
                 UiAction::RevealPath(path) => {
                     self.state.toast(format!("（预览）定位 {}", path.display()))
                 }
-                UiAction::CopyPath(path) => {
-                    self.state.toast(format!("（预览）复制路径 {}", path))
-                }
+                UiAction::CopyPath(path) => self.state.toast(format!("（预览）复制路径 {}", path)),
                 UiAction::SaveImageAs { .. } => self.state.toast("（预览）图片另存为（未执行）"),
                 UiAction::SaveTextAs { .. } => self.state.toast("（预览）文本另存为（未执行）"),
+                UiAction::SetDbEncryption(enabled) => {
+                    self.state.set_encryption_enabled(enabled);
+                    self.state.toast("（预览）数据库加密开关（未执行）");
+                }
             }
         }
     }
@@ -572,9 +573,9 @@ fn sort_items(items: &mut [ClipItem], sort: SortOrder) {
                 .cmp(&b.last_used_at)
                 .then_with(|| a.id.cmp(&b.id))
         }),
-        SortOrder::Largest => items.sort_by(|a, b| {
-            b.byte_len.cmp(&a.byte_len).then_with(|| b.id.cmp(&a.id))
-        }),
+        SortOrder::Largest => {
+            items.sort_by(|a, b| b.byte_len.cmp(&a.byte_len).then_with(|| b.id.cmp(&a.id)))
+        }
         SortOrder::Type => items.sort_by(|a, b| {
             a.kind
                 .as_i32()
@@ -948,22 +949,27 @@ mod tests {
         let multi_all = filter_items(&items, "周会 报告", ClipFilter::All, MatchMode::All, None);
         assert!(multi_all.len() <= multi_any.len());
         // 无结果
-        assert!(filter_items(&items, "不存在的关键词xyz", ClipFilter::All, MatchMode::Any, None)
-            .is_empty());
+        assert!(filter_items(
+            &items,
+            "不存在的关键词xyz",
+            ClipFilter::All,
+            MatchMode::Any,
+            None
+        )
+        .is_empty());
     }
 
     #[test]
     fn sort_items_follows_sort_order() {
-        let item = |id: i64, kind: ClipKind, byte_len: u64, use_count: u32, last_used_at: i64| {
-            ClipItem {
+        let item =
+            |id: i64, kind: ClipKind, byte_len: u64, use_count: u32, last_used_at: i64| ClipItem {
                 id,
                 kind,
                 byte_len,
                 use_count,
                 last_used_at,
                 ..Default::default()
-            }
-        };
+            };
         let items = vec![
             item(1, ClipKind::Text, 10, 5, 3_000),
             item(2, ClipKind::Text, 500, 2, 2_000),

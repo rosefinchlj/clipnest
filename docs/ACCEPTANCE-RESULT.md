@@ -831,3 +831,26 @@
 - `cargo check --all-targets`：零错误。
 - 已知限制：多文件条目仅对第一个文件提供打开/定位/复制路径；另存为依赖图片/文本 blob，blob 被清理时提示内容不存在；`ui_scale` 只缩放 egui 内容、不改变原生窗口尺寸；复杂 CSS/脚本不保留。
 - B6（可选数据库加密）本版未实现，留待单独评估密码解锁、备份/导入与搜索兼容性。
+
+## 39. v1.12.0（2026-11-05，第三批 B6：可选数据库加密）
+
+### 用户需求
+- B6：可选数据库加密，默认关闭；开启后数据库文件不可被其它本机账户直接读取；备份/恢复、搜索需兼容。
+
+### 实现
+- 构建：`rusqlite` 切换到 `bundled-sqlcipher-vendored-openssl`；本机用 Git MSYS Perl + VS 工具链静态编译 OpenSSL 3.0.16（`E:\use\ai\deepseek\Rust\openssl-static`），release 仍为单 exe / 静态 CRT。构建环境需 `OPENSSL_DIR`、`OPENSSL_STATIC=1`、`OPENSSL_NO_VENDOR=1`、`OPENSSL_LIBS=libssl:libcrypto`。
+- 密钥：新增 `src/db_crypto.rs`。32 字节随机密钥（`BCryptGenRandom`）经 Windows DPAPI（当前用户）加密后写入 `数据目录/db.key`，启动时自动解密解锁，不把明文密钥落盘；同机其他 Windows 用户无法解密。
+- 数据库：`DbOptions.key_hex` / `Db.key_hex`；打开加密库时先 `PRAGMA key = "x'...'"` 并查询 `sqlite_master` 验证，缺密钥/密钥错误返回明确错误，不触发损坏重建。
+- 开关：`StoreCmd::SetEncryption`、`Event::EncryptionChanged`；`Db::set_encryption()` 启用/关闭均通过 `sqlcipher_export()` 导出临时库（`data.encrypt.tmp` / `data.plain.tmp`），关闭旧连接、原子替换 `data.db`、再重新打开；失败时保留原库与密钥并回滚。
+- UI：设置 → 数据新增「本地数据加密（SQLCipher）」开关；`config::load_settings` 以 `db.key` + 实际数据库头校正 `encrypt_db` 状态；主窗口与管理台均处理开关与结果事件。
+- 备份：`backup::inspect_backup`/`restore_backup` 打开加密快照时传入当前 `key_hex`，加密库的完整备份可在同一 Windows 用户下检查与恢复。
+
+### 校验
+- `cargo test --release`：**231 passed / 0 failed / 1 ignored**。新增 `database_encryption_roundtrip_and_disable`（写库 → 开启加密 → 关闭旧连接用 key 重开 → 数据保留 → 关闭加密 → 明文重开数据保留）；`db_crypto` 新增密钥 DPAPI 往返与密文头检测测试。
+- `cargo check --all-targets`：零错误。
+- `--selftest`：PASS（15 项）；release 构建 + 9 尺寸图标 patch 成功。
+
+### 取舍与限制
+- 为保持启动自动解锁与单 exe，采用 **Windows DPAPI 当前用户密钥**而非每次输入密码；同一 Windows 账户可自动打开，换机/换用户或丢失 `db.key` 无法解密。
+- 加密后的 `.cnbak` 备份同样绑定当前 Windows 用户；跨机迁移应先关闭加密或导出未加密备份。
+- B6 未实现“输入密码解锁 / 跨机密码迁移”；如需该能力，应在后续版本增加密码派生密钥与解锁对话框。
