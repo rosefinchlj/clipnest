@@ -20,6 +20,8 @@ pub struct ClipRow<'a> {
     pub ordinal: usize,
     /// 是否处于收藏列表：只有收藏列表才用金色标记置顶。
     pub highlight_pinned: bool,
+    /// 当前搜索关键字；非空时在标题/预览中把命中文字标红。
+    pub keyword: &'a str,
 }
 
 /// 列表行输出。
@@ -149,16 +151,18 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
     let text_left = icon_rect.right() + 10.0;
     let text_right = rect.right() - 116.0;
     let title = row.item.title();
-    paint::paint_elided(
+    paint::paint_elided_highlighted(
         ui,
         Pos2::new(text_left, rect.top() + 11.0),
         title,
         theme::font_row_title(),
         theme::text(),
+        row.keyword,
+        theme::danger(),
         text_right - text_left,
     );
     let subtitle = row.item.subtitle();
-    paint::paint_elided(
+    paint::paint_elided_highlighted(
         ui,
         Pos2::new(text_left, rect.top() + 34.0),
         subtitle,
@@ -168,6 +172,8 @@ pub fn clip_row(ui: &mut egui::Ui, row: ClipRow<'_>) -> ClipRowOutput {
         } else {
             theme::text_secondary()
         },
+        row.keyword,
+        theme::danger(),
         text_right - text_left,
     );
 

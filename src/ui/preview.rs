@@ -172,7 +172,9 @@ impl PreviewState {
         state.pending = None;
         state.active_gen = state.next_gen;
         let filter = state.effective_filter();
-        let items = filter_items(&all_items, "", filter);
+        let preview_search = std::env::var("CLIPNEST_PREVIEW_SEARCH").unwrap_or_default();
+        state.search_text = preview_search.clone();
+        let items = filter_items(&all_items, &preview_search, filter);
         state.apply_search_page(SearchPage {
             gen: state.active_gen,
             total: fake_stats().total,
@@ -311,11 +313,8 @@ impl PreviewState {
                     gen,
                 } => {
                     let _ = trash;
-                    let bounds = time_range.bounds(
-                        crate::model::now_ms(),
-                        custom_day,
-                        custom_end_day,
-                    );
+                    let bounds =
+                        time_range.bounds(crate::model::now_ms(), custom_day, custom_end_day);
                     let items: Vec<_> = filter_items(&self.all_items, &text, filter)
                         .into_iter()
                         .filter(|item| {

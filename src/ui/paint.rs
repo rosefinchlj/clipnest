@@ -16,6 +16,101 @@ pub fn text_width(ui: &egui::Ui, text: impl Into<String>, font: FontId) -> f32 {
     ui.fonts(|f| f.layout_no_wrap(text.into(), font, Color32::WHITE).size().x)
 }
 
+/// 查找 `keyword` 在 `text` 中的出现位置（字节区间），用于搜索命中高亮。
+///
+/// 只做逐字符大小写不敏感匹配（ASCII 大小写折叠），中文与全角字符按原样比较；
+/// 返回的区间互不重叠，按出现顺序排列。
+pub fn match_ranges(text: &str, keyword: &str) -> Vec<(usize, usize)> {
+    let needle = keyword.trim();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let needle_chars: Vec<char> = needle.chars().collect();
+    if needle_chars.is_empty() || needle_chars.len() > chars.len() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i + needle_chars.len() <= chars.len() {
+        let matched = needle_chars
+            .iter()
+            .enumerate()
+            .all(|(k, want)| chars[i + k].1 == *want || chars[i + k].1.eq_ignore_ascii_case(want));
+        if matched {
+            let start = chars[i].0;
+            let end = chars
+                .get(i + needle_chars.len())
+                .map(|(byte, _)| *byte)
+                .unwrap_or(text.len());
+            ranges.push((start, end));
+            i += needle_chars.len();
+        } else {
+            i += 1;
+        }
+    }
+    ranges
+}
+
+/// 把文本按命中区间切成普通的/高亮的两类片段，追加到 `job`。
+fn append_highlighted(
+    job: &mut egui::text::LayoutJob,
+    text: &str,
+    font: &FontId,
+    color: Color32,
+    keyword: &str,
+    highlight: Color32,
+) {
+    let ranges = match_ranges(text, keyword);
+    if ranges.is_empty() {
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color,
+                ..Default::default()
+            },
+        );
+        return;
+    }
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start > cursor {
+            job.append(
+                &text[cursor..start],
+                0.0,
+                egui::TextFormat {
+                    font_id: font.clone(),
+                    color,
+                    ..Default::default()
+                },
+            );
+        }
+        job.append(
+            &text[start..end],
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color: highlight,
+                ..Default::default()
+            },
+        );
+        cursor = end;
+    }
+    if cursor < text.len() {
+        job.append(
+            &text[cursor..],
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color,
+                ..Default::default()
+            },
+        );
+    }
+}
+
 /// 单行省略排版：超宽用 `…` 截断（`max_width <= 0` 时不截断）。
 pub fn elided(
     ui: &egui::Ui,
@@ -54,6 +149,62 @@ pub fn paint_elided(
     max_width: f32,
 ) -> f32 {
     let galley = elided(ui, text, font, color, max_width);
+    let size = galley.size();
+    ui.painter().galley(pos, galley, color);
+    size.x
+}
+
+/// 构造带关键字高亮的排版任务（多行 TextEdit 自定义 layouter 用）。
+pub fn layout_job_highlighted(
+    text: &str,
+    font: FontId,
+    color: Color32,
+    keyword: &str,
+    highlight: Color32,
+    wrap_width: f32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    if wrap_width > 0.0 {
+        job.wrap.max_width = wrap_width;
+    }
+    append_highlighted(&mut job, text, &font, color, keyword, highlight);
+    job
+}
+
+/// 单行省略排版，并把命中的搜索关键字标成高亮色（失败时退化为普通排版）。
+pub fn elided_highlighted(
+    ui: &egui::Ui,
+    text: impl Into<String>,
+    font: FontId,
+    color: Color32,
+    keyword: &str,
+    highlight: Color32,
+    max_width: f32,
+) -> Arc<egui::Galley> {
+    let text = text.into();
+    let mut job = egui::text::LayoutJob::default();
+    if max_width > 0.0 {
+        job.wrap.max_width = max_width;
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('…');
+    }
+    append_highlighted(&mut job, &text, &font, color, keyword, highlight);
+    ui.fonts(|f| f.layout_job(job))
+}
+
+/// 在 `pos`（左上角）绘制带关键字高亮的单行省略文本，返回实际绘制宽度。
+pub fn paint_elided_highlighted(
+    ui: &egui::Ui,
+    pos: Pos2,
+    text: impl Into<String>,
+    font: FontId,
+    color: Color32,
+    keyword: &str,
+    highlight: Color32,
+    max_width: f32,
+) -> f32 {
+    let galley = elided_highlighted(ui, text, font, color, keyword, highlight, max_width);
     let size = galley.size();
     ui.painter().galley(pos, galley, color);
     size.x
@@ -444,11 +595,34 @@ mod tests {
 
     #[test]
     fn close_icon_is_square_not_flat() {
-        let icon = close_icon_rect(Rect::from_min_size(
-            Pos2::ZERO,
-            Vec2::new(20.0, 16.0),
-        ));
+        let icon = close_icon_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(20.0, 16.0)));
         assert!((icon.width() - icon.height()).abs() < 0.01);
         assert!(icon.width() >= 10.0, "close icon too small: {:?}", icon);
+    }
+
+    #[test]
+    fn match_ranges_finds_all_case_insensitive_occurrences() {
+        assert_eq!(
+            match_ranges("Foo foo FOOD", "foo"),
+            vec![(0, 3), (4, 7), (8, 11)]
+        );
+    }
+
+    #[test]
+    fn match_ranges_handles_chinese_and_empty_keyword() {
+        assert_eq!(match_ranges("剪贴板 剪贴", "剪贴"), vec![(0, 6), (10, 16)]);
+        assert!(match_ranges("剪贴板", "").is_empty());
+        assert!(match_ranges("剪贴板", "   ").is_empty());
+    }
+
+    #[test]
+    fn match_ranges_keeps_utf8_boundaries() {
+        // 中 = 3 bytes；返回的区间必须落在字符边界上，供 LayoutJob 安全切片。
+        assert_eq!(match_ranges("a中b中", "中"), vec![(1, 4), (5, 8)]);
+        let text = "a中b中";
+        for (start, end) in match_ranges(text, "中") {
+            assert!(text.is_char_boundary(start));
+            assert!(text.is_char_boundary(end));
+        }
     }
 }

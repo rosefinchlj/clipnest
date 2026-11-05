@@ -183,11 +183,13 @@ fn paint_row(
     let text_left = row_rect.left() + 46.0;
     let buttons_w = 160.0;
     let text_right = row_rect.right() - buttons_w - 12.0;
-    let title = paint::elided(
+    let title = paint::elided_highlighted(
         ui,
         item.title(),
         theme::font_body(),
         theme::text(),
+        state.search_text.as_str(),
+        theme::danger(),
         (text_right - text_left).max(40.0),
     );
     painter.galley(

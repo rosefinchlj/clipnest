@@ -85,9 +85,9 @@ pub(crate) fn show(
                 saw_ime_event = true;
                 match ime {
                     egui::ImeEvent::Preedit(text) => composing = !text.is_empty(),
-                    egui::ImeEvent::Commit(_) | egui::ImeEvent::Enabled | egui::ImeEvent::Disabled => {
-                        composing = false
-                    }
+                    egui::ImeEvent::Commit(_)
+                    | egui::ImeEvent::Enabled
+                    | egui::ImeEvent::Disabled => composing = false,
                 }
             }
         }
@@ -99,13 +99,10 @@ pub(crate) fn show(
     // 先于控件绘制路由，保证搜索框聚焦时 ↑↓/Tab/Enter 仍生效。
     if state.confirm.is_none() && !state.date_picker_open {
         // 搜索框有文本时 Delete 留给文本框编辑（否则删一条记录会很反直觉）
-        let allow_delete =
-            !ime_active && !(state.search_focused && !state.search_text.is_empty());
+        let allow_delete = !ime_active && !(state.search_focused && !state.search_text.is_empty());
         // 同上：搜索中按 ←/→ 是移动光标；搜索框为空或未聚焦时切换分类。
-        let allow_arrows =
-            !ime_active && !(state.search_focused && !state.search_text.is_empty());
-        let commands =
-            keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows, !ime_active);
+        let allow_arrows = !ime_active && !(state.search_focused && !state.search_text.is_empty());
+        let commands = keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows, !ime_active);
         for command in commands {
             handle_command(state, command, list_rect.height(), actions);
         }
@@ -155,14 +152,7 @@ pub(crate) fn show(
         Pos2::new(full.right() - 74.0, chips_top),
         Vec2::new(64.0, theme::CHIP_HEIGHT),
     );
-    if widgets::button_at(
-        ui,
-        toggle_rect,
-        "筛选",
-        widgets::ButtonKind::Secondary,
-    )
-    .clicked()
-    {
+    if widgets::button_at(ui, toggle_rect, "筛选", widgets::ButtonKind::Secondary).clicked() {
         state.picker_time_open = !time_open;
         if !state.picker_time_open {
             state.date_picker_open = false;
@@ -235,7 +225,9 @@ pub(crate) fn show(
                 Vec2::new(210.0, theme::CHIP_HEIGHT),
             );
             ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
-                if widgets::button_at(ui, date_rect, &label, widgets::ButtonKind::Secondary).clicked() {
+                if widgets::button_at(ui, date_rect, &label, widgets::ButtonKind::Secondary)
+                    .clicked()
+                {
                     state.date_picker_start = Some(start);
                     state.date_picker_end = Some(end);
                     state.date_picker_open = true;
@@ -251,7 +243,8 @@ pub(crate) fn show(
         let mut month = state
             .date_picker_month
             .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
-        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month) {
+        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month)
+        {
             state.date_picker_start = start;
             state.date_picker_end = end;
             state.date_picker_month = Some(month);
@@ -435,6 +428,7 @@ fn render_list(
                         ordinal: i + 1,
                         highlight_pinned: state.picker_filter
                             == crate::model::ClipFilter::Favorites,
+                        keyword: state.search_text.as_str(),
                     },
                 );
                 if row.response.clicked() {

@@ -2,7 +2,9 @@
 //!
 //! 表格列：多选框 / 类型 / 内容摘要 / 来源 / 时间 / 大小 / 收藏（spec §6.4）。
 
-use crate::model::{fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, TimeRange};
+use crate::model::{
+    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, TimeRange,
+};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, UiAction, UiState};
 use eframe::egui::{
@@ -157,14 +159,7 @@ pub(crate) fn page(
         Pos2::new(inner.left(), toolbar_rect.bottom() + 8.0),
         Vec2::new(66.0, theme::CHIP_HEIGHT),
     );
-    if widgets::button_at(
-        ui,
-        toggle_rect,
-        "筛选",
-        widgets::ButtonKind::Secondary,
-    )
-    .clicked()
-    {
+    if widgets::button_at(ui, toggle_rect, "筛选", widgets::ButtonKind::Secondary).clicked() {
         state.manager_time_open = !time_open;
         if !state.manager_time_open {
             state.date_picker_open = false;
@@ -239,7 +234,8 @@ pub(crate) fn page(
                 Vec2::new(210.0, theme::CHIP_HEIGHT),
             );
             ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
-                if widgets::button_at(ui, date_rect, &label, widgets::ButtonKind::Secondary).clicked()
+                if widgets::button_at(ui, date_rect, &label, widgets::ButtonKind::Secondary)
+                    .clicked()
                 {
                     state.date_picker_start = Some(start);
                     state.date_picker_end = Some(end);
@@ -337,8 +333,7 @@ pub(crate) fn page(
         let mut month = state
             .date_picker_month
             .unwrap_or_else(|| widgets::month_start_ms(widgets::today_start_ms()));
-        if let Some(action) =
-            widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month)
+        if let Some(action) = widgets::date_picker_modal(ui.ctx(), &mut start, &mut end, &mut month)
         {
             state.date_picker_start = start;
             state.date_picker_end = end;
@@ -513,7 +508,12 @@ fn table(
         "时间",
         head_font.clone(),
         head_color,
-        (if cols.show_size { cols.size_x } else { cols.pin_x - 8.0 } - cols.time_x).max(0.0),
+        (if cols.show_size {
+            cols.size_x
+        } else {
+            cols.pin_x - 8.0
+        } - cols.time_x)
+            .max(0.0),
     );
     if cols.show_size {
         paint::paint_elided(
@@ -594,8 +594,7 @@ fn table(
                         } else {
                             theme::accent_fill()
                         };
-                        ui.painter()
-                            .rect_filled(row_rect, CornerRadius::ZERO, fill);
+                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, fill);
                         if selected_single {
                             let bar = Rect::from_min_max(
                                 Pos2::new(row_rect.left(), row_rect.top() + 8.0),
@@ -617,8 +616,11 @@ fn table(
                     }
                     // 只有收藏页/收藏筛选下，置顶行才叠金色底。
                     if pin_mode && item.pinned {
-                        ui.painter()
-                            .rect_filled(row_rect, CornerRadius::ZERO, theme::pinned_fill());
+                        ui.painter().rect_filled(
+                            row_rect,
+                            CornerRadius::ZERO,
+                            theme::pinned_fill(),
+                        );
                     }
                     paint_table_row(
                         state, ui, row_rect, &item, &cols, pin_mode, in_multi, actions,
@@ -747,13 +749,15 @@ fn paint_table_row(
         theme::kind_color(item.kind),
     );
 
-    // 摘要（标题单行省略）
-    paint::paint_elided(
+    // 摘要（标题单行省略；搜索时命中关键字标红）
+    paint::paint_elided_highlighted(
         ui,
         Pos2::new(cols.summary_x, y - theme::SIZE_BODY * 0.5),
         item.title(),
         theme::font_body(),
         theme::text(),
+        state.search_text.as_str(),
+        theme::danger(),
         cols.summary_w,
     );
     // 来源应用（去掉 .exe）
@@ -890,12 +894,14 @@ fn detail_panel(
         widgets::tag(&mut child, item.kind.label(), theme::kind_color(item.kind));
     }
     let title_x = tag_rect.right() + 8.0;
-    paint::paint_elided(
+    paint::paint_elided_highlighted(
         ui,
         Pos2::new(title_x, inner.top() + 2.0),
         item.title(),
         theme::font_row_title(),
         theme::text(),
+        state.search_text.as_str(),
+        theme::danger(),
         inner.right() - title_x,
     );
     // 元信息
@@ -1038,13 +1044,30 @@ fn detail_panel(
                     } else {
                         body.to_string()
                     };
+                    let keyword = state.search_text.clone();
+                    let font = theme::font_mono();
+                    let text_color = theme::text();
+                    let highlight = theme::danger();
+                    let mut layouter =
+                        |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                            let job = paint::layout_job_highlighted(
+                                buf.as_str(),
+                                font.clone(),
+                                text_color,
+                                &keyword,
+                                highlight,
+                                wrap_width,
+                            );
+                            ui.fonts(|f| f.layout_job(job))
+                        };
                     ui.add(
                         egui::TextEdit::multiline(&mut text)
                             .font(theme::font_mono())
                             .text_color(theme::text())
                             .frame(false)
                             .desired_width(f32::INFINITY)
-                            .desired_rows(16),
+                            .desired_rows(16)
+                            .layouter(&mut layouter),
                     );
                 }
                 ClipKind::Image => {
@@ -1101,7 +1124,6 @@ fn detail_panel(
             });
     });
 }
-
 
 #[cfg(test)]
 mod columns_tests {

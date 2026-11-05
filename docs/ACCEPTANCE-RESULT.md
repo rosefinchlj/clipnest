@@ -738,3 +738,22 @@
 - `cargo test --release`：**163 passed / 0 failed / 1 ignored**。
 - `--selftest`：14 项通过。
 - 已实际从管理台按 `Ctrl+E` 打开原生「导出 ClipNest 数据」对话框，并确认导出写入用户选择的位置（系统对话框，无需产品内截图）。
+
+## 34. v1.9.16（2026-11-05，搜索结果关键字标红）
+
+### 用户反馈
+- 搜索结果中，把关键字标红。
+
+### 实现
+- `src/ui/paint.rs` 新增 `match_ranges`、`layout_job_highlighted`、`elided_highlighted`、`paint_elided_highlighted`：按当前搜索词切分 `LayoutJob` 文本片段，命中的字符使用 `theme::danger()`（深色为亮红、浅色为深红）绘制；ASCII 大小写不敏感，中文按原样逐字符匹配，返回 UTF-8 字符边界。
+- 候选窗 `src/ui/row.rs::clip_row` 的标题与预览都接入高亮，`ClipRow` 新增 `keyword` 字段；`src/ui/picker.rs` 传入 `UiState.search_text`。
+- 管理台历史/收藏列表摘要（`src/ui/pages/history.rs::paint_table_row`）、详情面板标题接入高亮；详情正文的只读 `TextEdit` 使用自定义 `layouter` 复用同一套命中切片，正文中的关键字也标红。
+- 回收站摘要（`src/ui/pages/trash.rs::paint_row`）同步接入高亮。
+- 关键字为空或未命中时直接走原来的单行省略排版，不改变现有列表文案。
+
+### 校验
+- `cargo test --release`：**166 passed / 0 failed / 1 ignored**
+  - 新增 `match_ranges_finds_all_case_insensitive_occurrences`（大小写不敏感、多处命中）；
+  - 新增 `match_ranges_handles_chinese_and_empty_keyword`（中文与空关键字）；
+  - 新增 `match_ranges_keeps_utf8_boundaries`（UTF-8 字符边界，避免 LayoutJob 切片 panic）。
+- 截图：`docs/screenshots/search-highlight.png`（候选窗搜索 `ClipNest`，标题/预览命中标红）、`docs/screenshots/manager-search.png`（管理台列表摘要与详情正文标红）。
