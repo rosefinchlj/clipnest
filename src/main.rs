@@ -17,6 +17,7 @@
 mod app;
 mod clipboard;
 mod config;
+mod db_crypto;
 mod diag;
 mod logging;
 mod manager_window;

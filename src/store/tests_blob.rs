@@ -366,7 +366,10 @@ fn export_import_preserves_rich_text_fields() {
     let report = export::export_json(&db, &export_path).unwrap();
     assert_eq!(report.clips, 1);
     let doc = export::read_export(&export_path).unwrap();
-    assert_eq!(doc.clips[0].html.as_deref(), Some("<p><b>富文本导出</b></p>"));
+    assert_eq!(
+        doc.clips[0].html.as_deref(),
+        Some("<p><b>富文本导出</b></p>")
+    );
     assert_eq!(doc.clips[0].rtf.as_deref(), Some("{\\rtf1 富文本导出}"));
 
     let (_dir2, db2) = open_db("export-rich-dst");
@@ -456,7 +459,7 @@ fn corrupt_database_is_backed_up_and_rebuilt() {
     let dir = temp_dir("corrupt");
     std::fs::write(
         dir.join("data.db"),
-        b"this is definitely not a sqlite database",
+        b"SQLite format 3\0this is definitely not a valid sqlite database",
     )
     .unwrap();
     let db = db_open_recovered(&dir);

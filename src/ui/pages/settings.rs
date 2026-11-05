@@ -699,6 +699,25 @@ fn data_section(state: &mut UiState, ui: &mut egui::Ui, actions: &mut Vec<UiActi
              恢复为合并导入：按内容 hash 去重、已存在的条目跳过，恢复失败不会破坏现有数据。",
         ));
         ui.add_space(14.0);
+        ui.label(theme::row_title("本地数据加密"));
+        ui.add_space(4.0);
+        setting_row(
+            ui,
+            "加密数据库（SQLCipher）",
+            "密钥由 Windows 当前用户 DPAPI 保护，无需每次输入密码；同机其它用户无法直接读取数据",
+            |ui| {
+                let mut enabled = state.settings_draft.encrypt_db;
+                widgets::checkbox(ui, &mut enabled);
+                if enabled != state.settings_draft.encrypt_db {
+                    state.settings_draft.encrypt_db = enabled;
+                    actions.push(UiAction::SetDbEncryption(enabled));
+                }
+            },
+        );
+        ui.label(theme::weak(
+            "开启/关闭会在 Store 线程导出临时数据库并原子替换，期间请勿强制结束进程；加密后的备份仍使用同一 Windows 用户密钥。",
+        ));
+        ui.add_space(14.0);
         ui.label(theme::row_title("退出时自动清理"));
         ui.add_space(4.0);
         setting_row(

@@ -152,6 +152,8 @@ pub enum UiAction {
     SetAutostart(bool),
     /// 暂停/恢复记录。
     SetPause(bool),
+    /// 开启/关闭本地数据库加密（B6）。
+    SetDbEncryption(bool),
     /// 导出 JSON。
     ExportJson,
     /// 创建完整备份（Lead 弹原生另存为对话框后发 `StoreCmd::CreateBackup`）。
@@ -476,7 +478,8 @@ impl UiState {
                 }
                 other => {
                     for file in &mut item.files {
-                        if file.copy_state.is_none() || file.copy_state == Some(CopyState::Pending) {
+                        if file.copy_state.is_none() || file.copy_state == Some(CopyState::Pending)
+                        {
                             file.copy_state = Some(other);
                         }
                     }
@@ -1226,11 +1229,7 @@ impl UiState {
                     );
                     backup_info_row(ui, "条目数", format!("{} 条", preview.clips));
                     backup_info_row(ui, "图片", format!("{} 张", preview.images));
-                    backup_info_row(
-                        ui,
-                        "收藏文件副本",
-                        format!("{} 个", preview.favorite_files),
-                    );
+                    backup_info_row(ui, "收藏文件副本", format!("{} 个", preview.favorite_files));
                     backup_info_row(
                         ui,
                         "备份内容",
@@ -1261,13 +1260,15 @@ impl UiState {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if preview.checksum_ok {
-                        if widgets::button(ui, "开始恢复", widgets::ButtonKind::Primary).clicked() {
+                        if widgets::button(ui, "开始恢复", widgets::ButtonKind::Primary).clicked()
+                        {
                             decision = Some(true);
                         }
                         if widgets::button(ui, "取消", widgets::ButtonKind::Secondary).clicked() {
                             decision = Some(false);
                         }
-                    } else if widgets::button(ui, "关闭", widgets::ButtonKind::Secondary).clicked() {
+                    } else if widgets::button(ui, "关闭", widgets::ButtonKind::Secondary).clicked()
+                    {
                         decision = Some(false);
                     }
                 });
@@ -1363,7 +1364,8 @@ impl UiState {
                 self.confirm = None;
                 self.clear_include_favorites = false;
                 self.clear_confirm_text.clear();
-                self.items.retain(|item| include_favorites || item.favorited);
+                self.items
+                    .retain(|item| include_favorites || item.favorited);
                 self.loaded_ids = self.items.iter().map(|i| i.id).collect();
                 self.total = self.items.len();
                 self.selected = if self.items.is_empty() { None } else { Some(0) };
@@ -1409,6 +1411,12 @@ impl UiState {
         self.paused = draft.pause_capture;
         actions.push(UiAction::SetSettings(Box::new(draft)));
         self.toast("设置已保存");
+    }
+
+    /// 数据库加密状态以 Store 实际结果为准确认（B6）。
+    pub(crate) fn set_encryption_enabled(&mut self, enabled: bool) {
+        self.settings.encrypt_db = enabled;
+        self.settings_draft.encrypt_db = enabled;
     }
 
     // -----------------------------------------------------------------------

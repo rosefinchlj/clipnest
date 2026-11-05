@@ -93,9 +93,7 @@ impl ClipNestApp {
         }
         crate::ui::theme::set_selection_preset(settings.selection_preset);
         // 预览候选窗保留磨砂；预览管理台时关闭，和真实管理台窗口一致（不透明背景）。
-        let glass = preview
-            .as_deref()
-            .map_or(true, |mode| mode == "picker")
+        let glass = preview.as_deref().map_or(true, |mode| mode == "picker")
             && std::env::var_os("CLIPNEST_PREVIEW_NO_GLASS").is_none();
         crate::ui::theme::set_glass_enabled(glass);
         // 调试/截图用：临时覆盖磨砂透明度，不写回 settings.json。
@@ -561,6 +559,27 @@ impl ClipNestApp {
                 self.ui.set_temp_pause(pause);
                 ctx.request_repaint();
             }
+            Event::EncryptionChanged { enabled, error } => {
+                match error {
+                    None => {
+                        self.settings.encrypt_db = enabled;
+                        self.ui.set_encryption_enabled(enabled);
+                        self.persist_settings();
+                        self.ui.toast(if enabled {
+                            "已加密本地数据库（当前 Windows 用户密钥）"
+                        } else {
+                            "已关闭数据库加密"
+                        });
+                    }
+                    Some(reason) => {
+                        self.settings.encrypt_db = !enabled;
+                        self.ui.set_encryption_enabled(!enabled);
+                        self.persist_settings();
+                        self.ui.toast(format!("数据库加密切换失败：{reason}"));
+                    }
+                }
+                ctx.request_repaint();
+            }
             Event::FileCopyState { clip_id, state } => {
                 self.ui.apply_file_copy_state(clip_id, state);
                 ctx.request_repaint();
@@ -732,8 +751,7 @@ impl ClipNestApp {
                     self.ui
                         .toast(format!("已忽略来源应用：{}（设置已保存）", app.trim()));
                 } else {
-                    self.ui
-                        .toast(format!("{} 已在忽略名单中", app.trim()));
+                    self.ui.toast(format!("{} 已在忽略名单中", app.trim()));
                 }
             }
             UiAction::OpenManager => {
@@ -768,6 +786,16 @@ impl ClipNestApp {
                     "已恢复记录"
                 });
             }
+            UiAction::SetDbEncryption(enabled) => {
+                self.settings.encrypt_db = enabled;
+                self.persist_settings();
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::SetEncryption { enabled });
+                    self.ui.toast("正在切换数据库加密…");
+                } else {
+                    self.ui.toast("Store 未就绪，无法切换加密");
+                }
+            }
             UiAction::ExportJson => {
                 let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
                 let default_name = format!("clipnest-export-{stamp}.json");
@@ -781,8 +809,7 @@ impl ClipNestApp {
             UiAction::CreateBackup => {
                 let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
                 let default_name = format!("clipnest-backup-{stamp}.cnbak");
-                if let Some(path) =
-                    crate::ui::export_dialog::choose_backup_save_path(&default_name)
+                if let Some(path) = crate::ui::export_dialog::choose_backup_save_path(&default_name)
                 {
                     if let Some(tx) = &self.store_tx {
                         let _ = tx.send(StoreCmd::CreateBackup { path });

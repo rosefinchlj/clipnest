@@ -60,7 +60,7 @@ impl StoreHandle {
         ctx: egui::Context,
     ) -> Result<Self, StoreError> {
         std::fs::create_dir_all(&data_dir)?;
-        let database = Db::open_in_dir(&data_dir, DbOptions::from_env())?;
+        let database = Db::open_in_dir(&data_dir, DbOptions::from_env(&data_dir))?;
         crate::logging::log(&format!(
             "Store 就绪：数据库={}，FTS={}，schema=v{}",
             database.db_path.display(),
@@ -421,7 +421,7 @@ impl Store {
                 Ok(false)
             }
             StoreCmd::InspectBackup { path } => {
-                match backup::inspect_backup(&path) {
+                match backup::inspect_backup(&path, self.db.key_hex.as_deref()) {
                     Ok(preview) => {
                         self.emit(Event::Backup(BackupEvent::Inspected(Box::new(preview))))
                     }
@@ -435,7 +435,7 @@ impl Store {
                 Ok(false)
             }
             StoreCmd::RestoreBackup { path } => {
-                match backup::restore_backup(&self.db, &path) {
+                match backup::restore_backup(&self.db, &path, self.db.key_hex.as_deref()) {
                     Ok(report) => {
                         *dirty = true;
                         *stats_due = true;
@@ -466,6 +466,37 @@ impl Store {
                 }
                 Ok(false)
             }
+            StoreCmd::SetEncryption { enabled } => {
+                match self.db.set_encryption(enabled) {
+                    Ok(changed) => {
+                        *stats_due = true;
+                        self.emit(Event::EncryptionChanged {
+                            enabled,
+                            error: None,
+                        });
+                        self.toast(if enabled {
+                            "数据库已加密（Windows 当前用户密钥，下次启动自动解锁）".to_string()
+                        } else {
+                            "数据库加密已关闭".to_string()
+                        });
+                        if changed {
+                            crate::logging::log(&format!(
+                                "Store: 数据库加密{}",
+                                if enabled { "已开启" } else { "已关闭" }
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        crate::logging::error(&format!("切换数据库加密失败：{err}"));
+                        self.emit(Event::EncryptionChanged {
+                            enabled: !enabled,
+                            error: Some(format!("{err}")),
+                        });
+                        self.toast(format!("切换加密失败：{err}"));
+                    }
+                }
+                Ok(false)
+            }
             StoreCmd::Shutdown => Ok(true),
         }
     }
@@ -487,10 +518,7 @@ impl Store {
             return Ok(());
         };
         let state = copy.overall_state();
-        self.emit(Event::FileCopyState {
-            clip_id: id,
-            state,
-        });
+        self.emit(Event::FileCopyState { clip_id: id, state });
         if copy.limit_hit {
             self.toast("收藏文件副本已达上限，仅保留路径".to_string());
         } else if copy.failed > 0 {

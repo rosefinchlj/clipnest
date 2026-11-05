@@ -40,7 +40,14 @@ pub(crate) fn open_db(tag: &str) -> (PathBuf, Db) {
 /// 打开强制 LIKE 降级的临时新库。
 pub(crate) fn open_db_like(tag: &str) -> (PathBuf, Db) {
     let dir = temp_dir(tag);
-    let db = Db::open_in_dir(&dir, DbOptions { disable_fts: true }).expect("打开测试库失败");
+    let db = Db::open_in_dir(
+        &dir,
+        DbOptions {
+            disable_fts: true,
+            ..Default::default()
+        },
+    )
+    .expect("打开测试库失败");
     (dir, db)
 }
 
@@ -255,7 +262,14 @@ fn enabling_fts_later_rebuilds_existing_rows() {
     // 先在禁用 FTS 的模式下建库写入历史数据，再以 FTS 模式打开：
     // 应创建 clips_fts 并 rebuild 回填已有数据（spec §10.2 创建顺序要求）。
     let dir = temp_dir("fts-rebuild");
-    let db = Db::open_in_dir(&dir, DbOptions { disable_fts: true }).unwrap();
+    let db = Db::open_in_dir(
+        &dir,
+        DbOptions {
+            disable_fts: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     db.upsert(&text_input("稍后启用全文索引的内容")).unwrap();
     drop(db);
 
@@ -449,13 +463,13 @@ fn time_basis_switches_between_used_and_captured() {
     let (_dir, db) = open_db("time-basis");
     let now = now_ms();
     let old = now - 40 * 86_400_000;
-    let UpsertOutcome::Inserted(used_now_id) = db.upsert(&text_input_at("旧复制但最近用过", old)).unwrap()
+    let UpsertOutcome::Inserted(used_now_id) =
+        db.upsert(&text_input_at("旧复制但最近用过", old)).unwrap()
     else {
         panic!("应插入旧记录");
     };
-    let UpsertOutcome::Inserted(captured_now_id) = db
-        .upsert(&text_input_at("刚复制但很久没用", now))
-        .unwrap()
+    let UpsertOutcome::Inserted(captured_now_id) =
+        db.upsert(&text_input_at("刚复制但很久没用", now)).unwrap()
     else {
         panic!("应插入新记录");
     };
@@ -497,7 +511,8 @@ fn time_basis_switches_between_used_and_captured() {
 #[test]
 fn save_text_as_writes_utf8_file() {
     let (dir, db) = open_db("save-text-as");
-    let UpsertOutcome::Inserted(id) = db.upsert(&text_input("另存为文本内容")).unwrap() else {
+    let UpsertOutcome::Inserted(id) = db.upsert(&text_input("另存为文本内容")).unwrap()
+    else {
         panic!("应插入文本记录");
     };
     let dest = dir.join("exported.txt");
@@ -511,17 +526,18 @@ fn save_text_as_writes_utf8_file() {
     assert!(!db.save_text_as(id + 999, &dir.join("missing.txt")).unwrap());
 }
 
-
 #[test]
 fn time_range_filters_by_last_used() {
     let (_dir, db) = open_db("time-range");
     let now = now_ms();
-    let UpsertOutcome::Inserted(old_id) =
-        db.upsert(&text_input_at("旧记录", now - 40 * 86_400_000)).unwrap()
+    let UpsertOutcome::Inserted(old_id) = db
+        .upsert(&text_input_at("旧记录", now - 40 * 86_400_000))
+        .unwrap()
     else {
         panic!("应插入旧记录");
     };
-    let UpsertOutcome::Inserted(recent_id) = db.upsert(&text_input_at("新记录", now)).unwrap() else {
+    let UpsertOutcome::Inserted(recent_id) = db.upsert(&text_input_at("新记录", now)).unwrap()
+    else {
         panic!("应插入新记录");
     };
     db.conn
@@ -654,7 +670,14 @@ fn search_fts_and_like_paths_agree() {
 
     // 关闭 FTS 后在同一数据库文件上走 LIKE 路径，结果一致
     drop(db);
-    let like_db = Db::open_in_dir(&dir, DbOptions { disable_fts: true }).unwrap();
+    let like_db = Db::open_in_dir(
+        &dir,
+        DbOptions {
+            disable_fts: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(!like_db.fts_enabled);
     let like_page = like_db
         .search(&search_query("中文内容", ClipFilter::All, 0, 10, 2))
@@ -1188,9 +1211,11 @@ fn schema_v3_migrates_rich_text_columns() {
 
     let old_id: i64 = db
         .conn
-        .query_row("SELECT id FROM clips WHERE hash = 'legacy-rich'", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT id FROM clips WHERE hash = 'legacy-rich'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let item = db.item(old_id).unwrap().expect("旧条目应保留");
     assert_eq!(item.text.as_deref(), Some("旧文本"));
@@ -1261,7 +1286,11 @@ fn multi_keyword_like_path_and_quoted_phrase() {
     // 引号短语不拆：只有相邻出现的整段命中
     let quoted = db.search(&bulk_query("\"alpha beta\"")).unwrap();
     assert_eq!(quoted.total, 1);
-    assert!(quoted.items[0].text.as_deref().unwrap().contains("连在一起"));
+    assert!(quoted.items[0]
+        .text
+        .as_deref()
+        .unwrap()
+        .contains("连在一起"));
 }
 
 #[test]
@@ -1365,9 +1394,12 @@ fn trash_pagination_covers_all_rows_without_duplicates() {
     let (_dir, db) = open_db("trash-paging");
     let ids: Vec<ClipId> = (0..6)
         .map(|index| {
-            db.upsert(&text_input_at(&format!("回收站条目{index}"), 1_000 + index * 100))
-                .unwrap()
-                .id()
+            db.upsert(&text_input_at(
+                &format!("回收站条目{index}"),
+                1_000 + index * 100,
+            ))
+            .unwrap()
+            .id()
         })
         .collect();
     assert_eq!(db.soft_delete(&ids[..5]).unwrap(), 5);
@@ -1419,4 +1451,37 @@ fn like_search_matches_source_title_and_file_paths() {
     let page = db.search(&bulk_query("预算表")).unwrap();
     assert_eq!(page.total, 1);
     assert_eq!(page.items[0].id, file_id);
+}
+
+#[test]
+fn database_encryption_roundtrip_and_disable() {
+    let (dir, mut db) = open_db("db-encryption");
+    let input = text_input_at("数据库加密测试", now_ms());
+    db.upsert(&input).unwrap();
+    assert!(db.set_encryption(true).unwrap());
+    assert!(crate::db_crypto::key_exists(&dir));
+    assert!(crate::db_crypto::is_encrypted_file(
+        &dir.join(super::db::DB_FILE)
+    ));
+    drop(db);
+
+    let key = crate::db_crypto::load_key_hex(&dir).unwrap();
+    let mut db = Db::open_in_dir(
+        &dir,
+        DbOptions {
+            key_hex: key.clone(),
+            ..Default::default()
+        },
+    )
+    .expect("加密库应能用本机密钥打开");
+    assert_eq!(db.counts().unwrap().total, 1);
+    assert!(db.set_encryption(false).unwrap());
+    assert!(!crate::db_crypto::key_exists(&dir));
+    assert!(!crate::db_crypto::is_encrypted_file(
+        &dir.join(super::db::DB_FILE)
+    ));
+    drop(db);
+
+    let db = Db::open_in_dir(&dir, DbOptions::default()).expect("关闭加密后应能用明文打开");
+    assert_eq!(db.counts().unwrap().total, 1);
 }
