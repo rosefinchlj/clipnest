@@ -225,6 +225,7 @@ impl ManagerApp {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::SearchPage(page) => self.ui.apply_search_page(page),
+                Event::SourceApps(apps) => self.ui.apply_source_apps(apps),
                 Event::Stats(stats) => self.ui.apply_stats(stats),
                 Event::ClipsChanged => {
                     self.ui.refresh();
@@ -256,6 +257,9 @@ impl ManagerApp {
                 time_range,
                 custom_day,
                 custom_end_day,
+                match_mode,
+                source_app,
+                sort,
                 offset,
                 trash,
                 gen,
@@ -267,11 +271,19 @@ impl ManagerApp {
                         time_range,
                         custom_day,
                         custom_end_day,
+                        match_mode,
+                        source_app,
+                        sort,
                         offset,
                         limit: 500,
                         trash,
                         gen,
                     }));
+                }
+            }
+            UiAction::ListSourceApps => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::ListSourceApps);
                 }
             }
             UiAction::Paste { id, plain } => {

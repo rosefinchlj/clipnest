@@ -262,6 +262,11 @@ impl Store {
                 self.emit(Event::SearchPage(page));
                 Ok(false)
             }
+            StoreCmd::ListSourceApps => {
+                let apps = self.db.source_apps()?;
+                self.emit(Event::SourceApps(apps));
+                Ok(false)
+            }
             StoreCmd::SetFavorited { id, favorited } => {
                 if !self.db.set_favorited(id, favorited)? {
                     self.toast("记录已不存在".to_string());

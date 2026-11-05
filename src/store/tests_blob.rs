@@ -314,6 +314,7 @@ fn export_import_roundtrip() {
             limit: 10,
             trash: false,
             gen: 1,
+            ..SearchQuery::default()
         })
         .unwrap();
     assert_eq!(page.total, 3);
@@ -333,6 +334,7 @@ fn export_import_roundtrip() {
             limit: 10,
             trash: false,
             gen: 2,
+            ..SearchQuery::default()
         })
         .unwrap();
     assert_eq!(files_page.total, 1);

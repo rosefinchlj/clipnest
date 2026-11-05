@@ -2,7 +2,7 @@
 //!
 //! 交互严格对应 spec §6.1 键盘表与 §6.2 列表项规格；所有副作用通过 [`UiAction`] 交给 Lead。
 
-use crate::model::{ClipItem, TimeRange};
+use crate::model::{ClipItem, MatchMode, SortOrder, TimeRange};
 use crate::ui::keys::{self, PickerCommand};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, ManagerPage, UiAction, UiState};
@@ -57,12 +57,14 @@ pub(crate) fn show(
     }
     let search_top = full.top() + DRAG_STRIP;
     let chips_top = search_top + theme::SEARCH_HEIGHT + theme::GAP_S;
+    // 关键字模式 / 排序 / 来源：过滤胶囊下方的一行紧凑控件。
+    let meta_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let time_open = state.picker_time_open;
-    let time_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_XS;
+    let time_top = meta_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let custom = time_open && state.picker_time_range == TimeRange::Custom;
     let date_top = time_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let list_top = if !time_open {
-        chips_top + theme::CHIP_HEIGHT + theme::GAP_S
+        meta_top + theme::CHIP_HEIGHT + theme::GAP_S
     } else if custom {
         date_top + theme::CHIP_HEIGHT + theme::GAP_S
     } else {
@@ -146,11 +148,106 @@ pub(crate) fn show(
         }
     });
 
-    // ---- 3b) 日期筛选开关 + 时间范围 ----
+    // ---- 3a) 关键字模式 / 排序 / 来源（紧凑一行）----
+    let meta_rect = Rect::from_min_size(
+        Pos2::new(full.left(), meta_top),
+        Vec2::new(full.width(), theme::CHIP_HEIGHT),
+    );
     let toggle_rect = Rect::from_min_size(
-        Pos2::new(full.right() - 74.0, chips_top),
+        Pos2::new(full.right() - 74.0, meta_top),
         Vec2::new(64.0, theme::CHIP_HEIGHT),
     );
+    let controls_right = toggle_rect.left() - theme::GAP_S;
+    // 来源下拉：0 = 全部来源，1..=n 对应 source_apps。
+    let source_labels: Vec<String> = std::iter::once("全部来源".to_string())
+        .chain(state.source_apps.iter().cloned())
+        .collect();
+    let source_options: Vec<(usize, &str)> = source_labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| (index, label.as_str()))
+        .collect();
+    let source_index = state
+        .source_app
+        .as_ref()
+        .and_then(|app| {
+            state
+                .source_apps
+                .iter()
+                .position(|candidate| candidate.eq_ignore_ascii_case(app))
+        })
+        .map_or(0, |index| index + 1);
+    let mut next_mode = None;
+    let mut next_sort = None;
+    let mut next_source = None;
+    ui.scope_builder(UiBuilder::new().max_rect(meta_rect), |ui| {
+        let mut left = full.left();
+        let mode_rect = Rect::from_min_size(
+            Pos2::new(left, meta_top),
+            Vec2::new(88.0, theme::CHIP_HEIGHT),
+        );
+        left = mode_rect.right() + theme::GAP_XS;
+        let mode_options: Vec<(MatchMode, &str)> = MatchMode::all()
+            .iter()
+            .map(|mode| (*mode, mode.label()))
+            .collect();
+        if let Some(mode) = widgets::dropdown_at(
+            ui,
+            mode_rect,
+            "picker-match-mode",
+            state.match_mode,
+            &mode_options,
+        ) {
+            next_mode = Some(mode);
+        }
+        let sort_rect = Rect::from_min_size(
+            Pos2::new(left, meta_top),
+            Vec2::new(104.0, theme::CHIP_HEIGHT),
+        );
+        left = sort_rect.right() + theme::GAP_XS;
+        let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
+            .iter()
+            .map(|sort| (*sort, sort.label()))
+            .collect();
+        if let Some(sort) = widgets::dropdown_at(
+            ui,
+            sort_rect,
+            "picker-sort",
+            state.sort,
+            &sort_options,
+        ) {
+            next_sort = Some(sort);
+        }
+        let source_width = (controls_right - left).max(96.0);
+        let source_rect = Rect::from_min_size(
+            Pos2::new(left, meta_top),
+            Vec2::new(source_width, theme::CHIP_HEIGHT),
+        );
+        if let Some(index) = widgets::dropdown_at(
+            ui,
+            source_rect,
+            "picker-source",
+            source_index,
+            &source_options,
+        ) {
+            next_source = Some(if index == 0 {
+                None
+            } else {
+                Some(state.source_apps.get(index - 1).cloned().unwrap_or_default())
+            });
+        }
+    });
+    if let Some(mode) = next_mode {
+        state.set_match_mode(mode);
+    }
+    if let Some(sort) = next_sort {
+        state.set_sort(sort);
+    }
+    if let Some(source) = next_source {
+        state.set_source_app(source);
+    }
+
+    // ---- 3b) 日期筛选开关 + 时间范围 ----
     if widgets::button_at(ui, toggle_rect, "筛选", widgets::ButtonKind::Secondary).clicked() {
         state.picker_time_open = !time_open;
         if !state.picker_time_open {

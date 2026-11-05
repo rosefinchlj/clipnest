@@ -3,7 +3,8 @@
 //! 表格列：多选框 / 类型 / 内容摘要 / 来源 / 时间 / 大小 / 收藏（spec §6.4）。
 
 use crate::model::{
-    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, TimeRange,
+    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, MatchMode, SortOrder,
+    TimeRange,
 };
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, UiAction, UiState};
@@ -194,11 +195,112 @@ pub(crate) fn page(
         );
     }
 
+    // ---- 关键字模式 / 排序 / 来源 ----
+    let mut left = toggle_rect.right() + 12.0;
+    let mode_rect = Rect::from_min_size(
+        Pos2::new(left, toggle_rect.top()),
+        Vec2::new(96.0, theme::CHIP_HEIGHT),
+    );
+    left = mode_rect.right() + theme::GAP_XS;
+    let sort_rect = Rect::from_min_size(
+        Pos2::new(left, toggle_rect.top()),
+        Vec2::new(112.0, theme::CHIP_HEIGHT),
+    );
+    left = sort_rect.right() + theme::GAP_XS;
+    let source_rect = Rect::from_min_size(
+        Pos2::new(left, toggle_rect.top()),
+        Vec2::new(150.0, theme::CHIP_HEIGHT),
+    );
+    let mode_options: Vec<(MatchMode, &str)> = MatchMode::all()
+        .iter()
+        .map(|mode| (*mode, mode.label()))
+        .collect();
+    if let Some(mode) = widgets::dropdown_at(
+        ui,
+        mode_rect,
+        "history-match-mode",
+        state.match_mode,
+        &mode_options,
+    ) {
+        state.set_match_mode(mode);
+    }
+    let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
+        .iter()
+        .map(|sort| (*sort, sort.label()))
+        .collect();
+    if let Some(sort) =
+        widgets::dropdown_at(ui, sort_rect, "history-sort", state.sort, &sort_options)
+    {
+        state.set_sort(sort);
+    }
+    let source_labels: Vec<String> = std::iter::once("全部来源".to_string())
+        .chain(state.source_apps.iter().cloned())
+        .collect();
+    let source_options: Vec<(usize, &str)> = source_labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| (index, label.as_str()))
+        .collect();
+    let source_index = state
+        .source_app
+        .as_ref()
+        .and_then(|app| {
+            state
+                .source_apps
+                .iter()
+                .position(|candidate| candidate.eq_ignore_ascii_case(app))
+        })
+        .map_or(0, |index| index + 1);
+    if let Some(index) = widgets::dropdown_at(
+        ui,
+        source_rect,
+        "history-source",
+        source_index,
+        &source_options,
+    ) {
+        let source = if index == 0 {
+            None
+        } else {
+            state.source_apps.get(index - 1).cloned()
+        };
+        state.set_source_app(source);
+    }
+
+    // ---- 右侧：结果计数 + 全选当前结果 ----
+    let select_all_rect = Rect::from_min_size(
+        Pos2::new(inner.right() - 104.0, toggle_rect.top()),
+        Vec2::new(104.0, theme::CHIP_HEIGHT),
+    );
+    let count_text = format!("共 {} 条", state.total.max(state.items.len()));
+    painter.text(
+        Pos2::new(select_all_rect.left() - 12.0, select_all_rect.center().y),
+        Align2::RIGHT_CENTER,
+        count_text,
+        FontId::proportional(12.0),
+        theme::text_weak(),
+    );
+    if widgets::button_at(
+        ui,
+        select_all_rect,
+        "全选当前结果",
+        widgets::ButtonKind::Ghost,
+    )
+    .clicked()
+    {
+        state.multi_selected = state.items.iter().map(|item| item.id).collect();
+        if state.multi_selected.is_empty() {
+            state.toast("当前没有可选的记录");
+        } else {
+            let count = state.multi_selected.len();
+            state.toast(format!("已选择 {count} 项"));
+        }
+    }
+
     let mut body_top = toggle_rect.bottom() + 12.0;
     if time_open {
         let time_rect = Rect::from_min_size(
-            Pos2::new(inner.left() + 68.0, toggle_rect.top()),
-            Vec2::new((inner.width() - 68.0).max(120.0), theme::CHIP_HEIGHT),
+            Pos2::new(inner.left(), toggle_rect.bottom() + 8.0),
+            Vec2::new(inner.width(), theme::CHIP_HEIGHT),
         );
         ui.scope_builder(UiBuilder::new().max_rect(time_rect), |ui| {
             if widgets::time_range_chips(ui, &mut state.manager_time_range) {
@@ -230,7 +332,7 @@ pub(crate) fn page(
             state.manager_custom_end = Some(end);
             let label = widgets::format_day_range(start, end);
             let date_rect = Rect::from_min_size(
-                Pos2::new(inner.left(), toggle_rect.bottom() + 6.0),
+                Pos2::new(inner.left(), time_rect.bottom() + 6.0),
                 Vec2::new(210.0, theme::CHIP_HEIGHT),
             );
             ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
@@ -248,7 +350,7 @@ pub(crate) fn page(
     }
 
     // ---- 批量操作条（多选时出现）----
-    if !state.multi_selected.is_empty() && !favorites {
+    if !state.multi_selected.is_empty() {
         let batch_rect = Rect::from_min_size(
             Pos2::new(inner.left(), body_top),
             Vec2::new(inner.width(), 34.0),
@@ -277,25 +379,31 @@ pub(crate) fn page(
             let ids: Vec<ClipId> = state.multi_selected.iter().copied().collect();
             state.request_delete_ids(ids, actions);
         }
-        let pin_w = 88.0;
+        // 收藏页里批量操作就是「取消收藏」，其它页是「收藏」
+        let fav_label = if favorites {
+            "批量取消收藏"
+        } else {
+            "批量收藏"
+        };
+        let fav_w = if favorites { 112.0 } else { 88.0 };
         let pin_rect = Rect::from_min_size(
-            Pos2::new(del_rect.left() - pin_w - 8.0, del_rect.top()),
-            Vec2::new(pin_w, 28.0),
+            Pos2::new(del_rect.left() - fav_w - 8.0, del_rect.top()),
+            Vec2::new(fav_w, 28.0),
         );
-        if widgets::button_at(ui, pin_rect, "批量收藏", widgets::ButtonKind::Secondary).clicked()
-        {
+        if widgets::button_at(ui, pin_rect, fav_label, widgets::ButtonKind::Secondary).clicked() {
             let ids: Vec<ClipId> = state.multi_selected.iter().copied().collect();
             for id in ids {
-                let favorited = state
-                    .items
-                    .iter()
-                    .find(|i| i.id == id)
-                    .map(|i| i.favorited)
-                    .unwrap_or(false);
-                actions.push(UiAction::Favorite {
-                    id,
-                    favorited: !favorited,
-                });
+                let favorited = if favorites {
+                    false
+                } else {
+                    !state
+                        .items
+                        .iter()
+                        .find(|i| i.id == id)
+                        .map(|i| i.favorited)
+                        .unwrap_or(false)
+                };
+                actions.push(UiAction::Favorite { id, favorited });
             }
             state.toast("已更新收藏状态");
         }

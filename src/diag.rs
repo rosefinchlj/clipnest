@@ -348,6 +348,7 @@ fn search(
             limit,
             trash: false,
             gen,
+            ..SearchQuery::default()
         }))
         .is_err()
     {
