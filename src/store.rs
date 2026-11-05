@@ -11,6 +11,7 @@
 //! - 命令处理中的 panic 被捕获并写日志，线程继续存活（CONTRACT §0）；
 //! - 日志只记录类型/大小/哈希前 8 位，绝不记录剪贴板全文。
 
+pub(crate) mod backup;
 pub(crate) mod blob;
 pub(crate) mod db;
 pub(crate) mod export;
@@ -20,11 +21,13 @@ pub(crate) mod schema;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_backup;
+#[cfg(test)]
 mod tests_blob;
 #[cfg(test)]
 mod tests_thread;
 
-use crate::model::{Event, Settings, StoreCmd};
+use crate::model::{BackupEvent, Event, Settings, StoreCmd};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -369,6 +372,48 @@ impl Store {
                     report.clips,
                     report.path.display()
                 ));
+                Ok(false)
+            }
+            StoreCmd::CreateBackup { path } => {
+                match backup::create_backup(&self.db, &path) {
+                    Ok(report) => self.emit(Event::Backup(BackupEvent::Created(report))),
+                    Err(err) => {
+                        crate::logging::error(&format!("创建完整备份失败：{err}"));
+                        self.emit(Event::Backup(BackupEvent::Failed(format!(
+                            "创建备份失败：{err}"
+                        ))));
+                    }
+                }
+                Ok(false)
+            }
+            StoreCmd::InspectBackup { path } => {
+                match backup::inspect_backup(&path) {
+                    Ok(preview) => {
+                        self.emit(Event::Backup(BackupEvent::Inspected(Box::new(preview))))
+                    }
+                    Err(err) => {
+                        crate::logging::warn(&format!("检查备份失败：{err}"));
+                        self.emit(Event::Backup(BackupEvent::Failed(format!(
+                            "检查备份失败：{err}"
+                        ))));
+                    }
+                }
+                Ok(false)
+            }
+            StoreCmd::RestoreBackup { path } => {
+                match backup::restore_backup(&self.db, &path) {
+                    Ok(report) => {
+                        *dirty = true;
+                        *stats_due = true;
+                        self.emit(Event::Backup(BackupEvent::Restored(report)));
+                    }
+                    Err(err) => {
+                        crate::logging::error(&format!("从备份恢复失败：{err}"));
+                        self.emit(Event::Backup(BackupEvent::Failed(format!(
+                            "恢复失败：{err}"
+                        ))));
+                    }
+                }
                 Ok(false)
             }
             StoreCmd::Shutdown => Ok(true),

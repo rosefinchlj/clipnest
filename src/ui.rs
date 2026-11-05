@@ -27,9 +27,12 @@ pub use fonts::install_fonts;
 pub use theme::install_theme;
 pub use thumbs::ThumbCache;
 
-use crate::model::{ClipFilter, ClipId, ClipItem, SearchPage, Settings, Stats, TimeRange};
+use crate::model::{
+    fmt_size, BackupPreview, ClipFilter, ClipId, ClipItem, SearchPage, Settings, Stats, TimeRange,
+};
 use eframe::egui;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// 搜索防抖 80ms（spec §6.1/§11）。
@@ -134,6 +137,12 @@ pub enum UiAction {
     SetPause(bool),
     /// 导出 JSON。
     ExportJson,
+    /// 创建完整备份（Lead 弹原生另存为对话框后发 `StoreCmd::CreateBackup`）。
+    CreateBackup,
+    /// 从备份恢复：Lead 弹原生打开对话框并发 `StoreCmd::InspectBackup`。
+    RestoreBackup,
+    /// 恢复预览中确认执行（Lead 发 `StoreCmd::RestoreBackup`）。
+    ConfirmRestore { path: PathBuf },
     /// 打开数据目录。
     OpenDataDir,
     /// 刷新统计。
@@ -236,6 +245,10 @@ pub struct UiState {
     // ---- 状态展示 ----
     hotkey_status: Option<(bool, Option<String>)>,
 
+    // ---- 完整备份/恢复 ----
+    /// 已检查通过、正在预览的备份（恢复确认框显示中）。
+    backup_preview: Option<BackupPreview>,
+
     // ---- Manager ----
     detail_open: bool,
     multi_selected: HashSet<ClipId>,
@@ -294,6 +307,7 @@ impl UiState {
             paused: settings.pause_capture,
             capturing: false,
             hotkey_status: None,
+            backup_preview: None,
             detail_open: true,
             multi_selected: HashSet::new(),
             last_click_index: None,
@@ -343,6 +357,11 @@ impl UiState {
     /// 应用统计信息。
     pub fn apply_stats(&mut self, stats: Stats) {
         self.stats = stats;
+    }
+
+    /// 显示恢复预览对话框（Store 校验备份通过后调用）。
+    pub fn set_backup_preview(&mut self, preview: BackupPreview) {
+        self.backup_preview = Some(preview);
     }
 
     /// 应用 Win+V 接管状态。
@@ -498,6 +517,7 @@ impl UiState {
             }
         }
         self.show_confirm(ctx, &mut actions);
+        self.show_backup_preview(ctx, &mut actions);
         self.end_frame(ctx);
         actions
     }
@@ -512,6 +532,7 @@ impl UiState {
             WindowMode::Manager => manager::show(self, ui, thumbs, &mut actions),
         }
         self.show_confirm(&ctx, &mut actions);
+        self.show_backup_preview(&ctx, &mut actions);
         self.end_frame(&ctx);
         actions
     }
@@ -933,6 +954,113 @@ impl UiState {
         }
     }
 
+    /// 显示恢复预览对话框（含 manifest 摘要与校验结果）。
+    fn show_backup_preview(&mut self, ctx: &egui::Context, actions: &mut Vec<UiAction>) {
+        let Some(preview) = self.backup_preview.take() else {
+            return;
+        };
+        let mut decision: Option<bool> = None;
+        let file_name = preview
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| preview.path.display().to_string());
+        let checksum_text = if preview.checksum_ok {
+            "全部通过".to_string()
+        } else {
+            format!(
+                "失败（{} 处）：{}",
+                preview.checksum_errors, preview.checksum_note
+            )
+        };
+        let modal = egui::Modal::new(egui::Id::new("clipnest-backup-preview"))
+            .frame(
+                theme::popup_frame()
+                    .inner_margin(egui::Margin::same(20))
+                    .shadow(theme::window_shadow()),
+            )
+            .backdrop_color(egui::Color32::from_black_alpha(120));
+        let resp = modal.show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(theme::title("恢复备份预览"));
+            ui.add_space(10.0);
+            egui::Grid::new("clipnest-backup-preview-grid")
+                .num_columns(2)
+                .spacing([18.0, 7.0])
+                .show(ui, |ui| {
+                    backup_info_row(ui, "备份文件", file_name);
+                    backup_info_row(ui, "备份时间", format_backup_time(preview.created_at));
+                    backup_info_row(
+                        ui,
+                        "程序版本",
+                        format!(
+                            "v{}（备份格式 v{}）",
+                            preview.app_version, preview.format_version
+                        ),
+                    );
+                    backup_info_row(ui, "条目数", format!("{} 条", preview.clips));
+                    backup_info_row(ui, "图片", format!("{} 张", preview.images));
+                    backup_info_row(
+                        ui,
+                        "收藏文件副本",
+                        format!("{} 个", preview.favorite_files),
+                    );
+                    backup_info_row(
+                        ui,
+                        "备份内容",
+                        format!(
+                            "{} 个文件，共 {}",
+                            preview.file_count,
+                            fmt_size(preview.total_bytes)
+                        ),
+                    );
+                    let checksum = if preview.checksum_ok {
+                        theme::body(checksum_text.clone()).color(theme::success())
+                    } else {
+                        theme::body(checksum_text.clone()).color(theme::danger())
+                    };
+                    ui.label(theme::weak("完整性校验"));
+                    ui.add(egui::Label::new(checksum).wrap_mode(egui::TextWrapMode::Wrap));
+                    ui.end_row();
+                });
+            ui.add_space(10.0);
+            ui.add(
+                egui::Label::new(theme::weak(
+                    "恢复方式：合并导入。按内容 hash 去重，已存在的条目会跳过，不会删除现有历史；\
+                     恢复前会再次校验备份，失败时现有数据库与文件不受影响。",
+                ))
+                .wrap_mode(egui::TextWrapMode::Wrap),
+            );
+            ui.add_space(18.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if preview.checksum_ok {
+                        if widgets::button(ui, "开始恢复", widgets::ButtonKind::Primary).clicked() {
+                            decision = Some(true);
+                        }
+                        if widgets::button(ui, "取消", widgets::ButtonKind::Secondary).clicked() {
+                            decision = Some(false);
+                        }
+                    } else if widgets::button(ui, "关闭", widgets::ButtonKind::Secondary).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+        });
+        if decision.is_none() && resp.should_close() {
+            decision = Some(false);
+        }
+        match decision {
+            Some(true) => {
+                actions.push(UiAction::ConfirmRestore {
+                    path: preview.path.clone(),
+                });
+            }
+            Some(false) => {}
+            None => self.backup_preview = Some(preview),
+        }
+    }
+
     /// 请求清空历史（设置页调用；二次确认）。
     pub(crate) fn request_clear(&mut self) {
         self.confirm = Some(Confirm {
@@ -964,6 +1092,24 @@ impl UiState {
     // -----------------------------------------------------------------------
     // 预览支持（assert 用）
     // -----------------------------------------------------------------------
+}
+
+// ---------------------------------------------------------------------------
+// 备份预览辅助
+// ---------------------------------------------------------------------------
+
+fn backup_info_row(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
+    ui.label(theme::weak(label));
+    ui.add(egui::Label::new(theme::body(value)).wrap_mode(egui::TextWrapMode::Wrap));
+    ui.end_row();
+}
+
+fn format_backup_time(ms: i64) -> String {
+    use chrono::TimeZone;
+    match chrono::Local.timestamp_millis_opt(ms).single() {
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => "未知".to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------

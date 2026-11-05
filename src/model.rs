@@ -686,6 +686,70 @@ impl Default for Settings {
 }
 
 // ---------------------------------------------------------------------------
+// 完整备份/恢复（单文件 .cnbak）
+// ---------------------------------------------------------------------------
+
+/// 备份文件内的格式版本，与数据库 schema 版本互相独立。
+pub const BACKUP_FORMAT_VERSION: u32 = 1;
+/// 备份文件扩展名。
+pub const BACKUP_EXTENSION: &str = "cnbak";
+/// 备份文件内的 manifest 文件名。
+pub const BACKUP_MANIFEST: &str = "manifest.json";
+/// 备份文件内的数据库快照文件名。
+pub const BACKUP_DB_ENTRY: &str = "data.db";
+
+/// 检查备份后的摘要，用于恢复前预览。
+#[derive(Clone, Debug, Default)]
+pub struct BackupPreview {
+    pub path: PathBuf,
+    pub format_version: u32,
+    pub app_version: String,
+    pub created_at: i64,
+    pub clips: usize,
+    pub images: usize,
+    pub favorite_files: usize,
+    pub file_count: usize,
+    pub total_bytes: u64,
+    /// 每个文件的大小与 sha256 是否全部通过。
+    pub checksum_ok: bool,
+    pub checksum_errors: usize,
+    /// 第一个校验失败的原因（中文），全部通过时为空。
+    pub checksum_note: String,
+}
+
+/// 创建备份的结果。
+#[derive(Clone, Debug, Default)]
+pub struct BackupReport {
+    pub clips: usize,
+    pub images: usize,
+    pub favorite_files: usize,
+    pub bytes: u64,
+}
+
+/// 从备份合并恢复的结果。
+#[derive(Clone, Debug, Default)]
+pub struct RestoreReport {
+    pub inserted: usize,
+    pub skipped: usize,
+    pub images: usize,
+    pub favorite_files: usize,
+    pub bytes: u64,
+}
+
+/// 备份/恢复任务完成后回传 UI 的事件。
+#[derive(Clone, Debug)]
+pub enum BackupEvent {
+    /// 备份创建完成。
+    Created(BackupReport),
+    /// 备份检查完成（恢复预览）。
+    Inspected(Box<BackupPreview>),
+    /// 合并恢复完成。
+    Restored(RestoreReport),
+    /// 任务失败（中文原因）。
+    Failed(String),
+}
+
+// ---------------------------------------------------------------------------
 // 线程间消息
 // ---------------------------------------------------------------------------
 
@@ -718,6 +782,8 @@ pub enum Event {
     HotkeyStatus { ok: bool, reason: Option<String> },
     /// 剪贴板监听线程捕获到新内容（正常情况下 Sys 发 `Event::Captured`，由 UI 线程转发 `StoreCmd::Upsert`）。
     Captured(ClipInput),
+    /// 完整备份/恢复任务进度与结果（Store 线程串行执行）。
+    Backup(BackupEvent),
 }
 
 /// UI → Store 命令。
@@ -750,6 +816,21 @@ pub enum StoreCmd {
     SaveFavoriteFiles(ClipId),
     RefreshStats,
     ExportJson {
+        path: PathBuf,
+    },
+    /// 创建单文件完整备份（SQLite 快照 + 图片/缩略图 + 收藏文件副本）。
+    /// 结果通过 `Event::Backup(BackupEvent::Created/Failed)` 回传。
+    CreateBackup {
+        path: PathBuf,
+    },
+    /// 检查备份文件（解析 manifest、逐文件校验 sha256）。
+    /// 结果通过 `Event::Backup(BackupEvent::Inspected/Failed)` 回传。
+    InspectBackup {
+        path: PathBuf,
+    },
+    /// 以「合并导入」方式从备份恢复：hash 去重、失败回滚。
+    /// 结果通过 `Event::Backup(BackupEvent::Restored/Failed)` 回传。
+    RestoreBackup {
         path: PathBuf,
     },
     Shutdown,

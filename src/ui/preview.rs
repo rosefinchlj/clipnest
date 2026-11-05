@@ -302,6 +302,9 @@ impl PreviewState {
         for action in actions {
             match action {
                 UiAction::PreviewGlassOpacity(_) => {}
+                UiAction::CreateBackup | UiAction::RestoreBackup | UiAction::ConfirmRestore { .. } => {
+                    self.state.toast("（预览）备份/恢复仅在实际运行中可用");
+                }
                 UiAction::Search {
                     text,
                     filter,
