@@ -757,3 +757,21 @@
   - 新增 `match_ranges_handles_chinese_and_empty_keyword`（中文与空关键字）；
   - 新增 `match_ranges_keeps_utf8_boundaries`（UTF-8 字符边界，避免 LayoutJob 切片 panic）。
 - 截图：`docs/screenshots/search-highlight.png`（候选窗搜索 `ClipNest`，标题/预览命中标红）、`docs/screenshots/manager-search.png`（管理台列表摘要与详情正文标红）。
+
+## 35. v1.9.17（2026-11-05，候选窗 Ctrl+F 聚焦搜索框）
+
+### 用户反馈
+- 「剪切版界面，如果搜索输入框失去焦点后，无法用快捷键 Ctrl+F 快速聚焦。」
+- 「输入框里面也需要有一个 Ctrl+F 的提示符。」
+
+### 实现
+- `src/ui/keys.rs`：`PickerCommand` 新增 `FocusSearch`；`route_picker_keys` 在修饰键分支消费 `Ctrl+F`，因此不受搜索框当前焦点、是否有输入文本影响。
+- `src/ui/picker.rs`：`handle_command` 收到 `FocusSearch` 时设置 `state.search_focus = true`，复用 `widgets::search_box` 已有的 `auto_focus` 路径在同帧请求 `TextEdit` 焦点；`Ctrl+F` 在按键路由阶段被消费，不会落到文本框。
+- 搜索框右侧快捷键键帽由候选窗呼出键提示改为 `Ctrl+F`；空输入时显示键帽，有内容时仍显示清除按钮。
+- 同步更新 `src/ui/pages/about.rs` 快捷键表（「候选窗 / 管理台：聚焦搜索框」）与 README 快捷键表、功能说明。
+
+### 校验
+- `cargo test --release`：**168 passed / 0 failed / 1 ignored**
+  - 新增 `route_ctrl_f_focuses_search_even_without_enter_or_delete`；
+  - 新增 `ctrl_f_refocuses_search_box`。
+- 截图：`docs/screenshots/picker.png`、`docs/screenshots/picker-light.png`（搜索框右侧 `Ctrl+F` 键帽）。

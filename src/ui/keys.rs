@@ -38,6 +38,8 @@ pub enum PickerCommand {
     Delete,
     /// Ctrl+,：打开设置。
     OpenSettings,
+    /// Ctrl+F：聚焦搜索框。
+    FocusSearch,
     /// Esc：隐藏面板。
     Close,
 }
@@ -99,6 +101,9 @@ pub fn route_picker_keys(
         }
         if i.consume_key(Modifiers::CTRL, Key::Comma) {
             out.push(PickerCommand::OpenSettings);
+        }
+        if i.consume_key(Modifiers::CTRL, Key::F) {
+            out.push(PickerCommand::FocusSearch);
         }
 
         // ---- 裸键 ----
@@ -452,6 +457,16 @@ mod tests {
         assert_eq!(
             route_picker_keys(&ctx, true, true, true),
             vec![PickerCommand::TogglePin, PickerCommand::OpenSettings]
+        );
+    }
+
+    #[test]
+    fn route_ctrl_f_focuses_search_even_without_enter_or_delete() {
+        let ctx = egui::Context::default();
+        press(&ctx, Key::F, Modifiers::CTRL);
+        assert_eq!(
+            route_picker_keys(&ctx, false, false, false),
+            vec![PickerCommand::FocusSearch]
         );
     }
 

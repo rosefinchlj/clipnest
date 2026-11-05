@@ -109,7 +109,6 @@ pub(crate) fn show(
     }
 
     // ---- 2) 搜索框（高 40）----
-    let hint = state.settings.hotkey_picker.label();
     let search_rect = Rect::from_min_size(
         Pos2::new(full.left(), search_top),
         Vec2::new(full.width(), theme::SEARCH_HEIGHT),
@@ -119,7 +118,7 @@ pub(crate) fn show(
             ui,
             &mut state.search_text,
             "搜索剪贴板历史…",
-            Some(&hint),
+            Some("Ctrl+F"),
             state.search_focus,
         );
         state.search_focus = false;
@@ -355,6 +354,9 @@ fn handle_command(
         }
         PickerCommand::Delete => state.request_delete_selected(actions),
         PickerCommand::OpenSettings => state.request_manager(ManagerPage::Settings, actions),
+        PickerCommand::FocusSearch => {
+            state.search_focus = true;
+        }
         PickerCommand::Close => {
             if state.preview {
                 state.toast("（预览）Esc：隐藏面板");
@@ -660,6 +662,15 @@ mod tests {
         assert_eq!(s.picker_filter, ClipFilter::Text);
         handle(&mut s, PickerCommand::FilterPrev);
         assert_eq!(s.picker_filter, ClipFilter::All);
+    }
+
+    #[test]
+    fn ctrl_f_refocuses_search_box() {
+        let mut s = make_state();
+        s.search_focus = false;
+        let actions = handle(&mut s, PickerCommand::FocusSearch);
+        assert!(s.search_focus);
+        assert!(actions.is_empty());
     }
 
     #[test]
