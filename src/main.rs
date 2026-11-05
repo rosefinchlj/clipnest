@@ -307,7 +307,8 @@ fn run_native(preview: Option<String>) -> eframe::Result<()> {
             .with_decorations(false)
             .with_taskbar(false)
             .with_always_on_top()
-            .with_resizable(false);
+            // v1.11：候选窗允许拖动边缘缩放，尺寸写回 settings.picker_size。
+            .with_resizable(true);
     } else if is_picker_preview {
         viewport = viewport
             .with_decorations(false)

@@ -3,13 +3,16 @@
 //! 表格列：多选框 / 类型 / 内容摘要 / 来源 / 时间 / 大小 / 收藏（spec §6.4）。
 
 use crate::model::{
-    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, CopyState, TimeRange,
+    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, CopyState, MatchMode,
+    SortOrder, TimeRange,
 };
+use crate::ui::export_dialog;
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, UiAction, UiState};
 use eframe::egui::{
     self, Align2, CornerRadius, FontId, Pos2, Rect, Sense, StrokeKind, UiBuilder, Vec2,
 };
+use std::path::PathBuf;
 
 /// 历史页入口。
 pub(crate) fn show(
@@ -194,11 +197,112 @@ pub(crate) fn page(
         );
     }
 
+    // ---- 关键字模式 / 排序 / 来源 ----
+    let mut left = toggle_rect.right() + 12.0;
+    let mode_rect = Rect::from_min_size(
+        Pos2::new(left, toggle_rect.top()),
+        Vec2::new(96.0, theme::CHIP_HEIGHT),
+    );
+    left = mode_rect.right() + theme::GAP_XS;
+    let sort_rect = Rect::from_min_size(
+        Pos2::new(left, toggle_rect.top()),
+        Vec2::new(112.0, theme::CHIP_HEIGHT),
+    );
+    left = sort_rect.right() + theme::GAP_XS;
+    let source_rect = Rect::from_min_size(
+        Pos2::new(left, toggle_rect.top()),
+        Vec2::new(150.0, theme::CHIP_HEIGHT),
+    );
+    let mode_options: Vec<(MatchMode, &str)> = MatchMode::all()
+        .iter()
+        .map(|mode| (*mode, mode.label()))
+        .collect();
+    if let Some(mode) = widgets::dropdown_at(
+        ui,
+        mode_rect,
+        "history-match-mode",
+        state.match_mode,
+        &mode_options,
+    ) {
+        state.set_match_mode(mode);
+    }
+    let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
+        .iter()
+        .map(|sort| (*sort, sort.label()))
+        .collect();
+    if let Some(sort) =
+        widgets::dropdown_at(ui, sort_rect, "history-sort", state.sort, &sort_options)
+    {
+        state.set_sort(sort);
+    }
+    let source_labels: Vec<String> = std::iter::once("全部来源".to_string())
+        .chain(state.source_apps.iter().cloned())
+        .collect();
+    let source_options: Vec<(usize, &str)> = source_labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| (index, label.as_str()))
+        .collect();
+    let source_index = state
+        .source_app
+        .as_ref()
+        .and_then(|app| {
+            state
+                .source_apps
+                .iter()
+                .position(|candidate| candidate.eq_ignore_ascii_case(app))
+        })
+        .map_or(0, |index| index + 1);
+    if let Some(index) = widgets::dropdown_at(
+        ui,
+        source_rect,
+        "history-source",
+        source_index,
+        &source_options,
+    ) {
+        let source = if index == 0 {
+            None
+        } else {
+            state.source_apps.get(index - 1).cloned()
+        };
+        state.set_source_app(source);
+    }
+
+    // ---- 右侧：结果计数 + 全选当前结果 ----
+    let select_all_rect = Rect::from_min_size(
+        Pos2::new(inner.right() - 104.0, toggle_rect.top()),
+        Vec2::new(104.0, theme::CHIP_HEIGHT),
+    );
+    let count_text = format!("共 {} 条", state.total.max(state.items.len()));
+    painter.text(
+        Pos2::new(select_all_rect.left() - 12.0, select_all_rect.center().y),
+        Align2::RIGHT_CENTER,
+        count_text,
+        FontId::proportional(12.0),
+        theme::text_weak(),
+    );
+    if widgets::button_at(
+        ui,
+        select_all_rect,
+        "全选当前结果",
+        widgets::ButtonKind::Ghost,
+    )
+    .clicked()
+    {
+        state.multi_selected = state.items.iter().map(|item| item.id).collect();
+        if state.multi_selected.is_empty() {
+            state.toast("当前没有可选的记录");
+        } else {
+            let count = state.multi_selected.len();
+            state.toast(format!("已选择 {count} 项"));
+        }
+    }
+
     let mut body_top = toggle_rect.bottom() + 12.0;
     if time_open {
         let time_rect = Rect::from_min_size(
-            Pos2::new(inner.left() + 68.0, toggle_rect.top()),
-            Vec2::new((inner.width() - 68.0).max(120.0), theme::CHIP_HEIGHT),
+            Pos2::new(inner.left(), toggle_rect.bottom() + 8.0),
+            Vec2::new(inner.width(), theme::CHIP_HEIGHT),
         );
         ui.scope_builder(UiBuilder::new().max_rect(time_rect), |ui| {
             if widgets::time_range_chips(ui, &mut state.manager_time_range) {
@@ -219,7 +323,23 @@ pub(crate) fn page(
                 state.schedule_search(true);
             }
         });
-        body_top = time_rect.bottom() + 12.0;
+        // 时间依据：最近使用（last_used_at）/ 复制时间（created_at），写回设置并重查。
+        let basis_rect = Rect::from_min_size(
+            Pos2::new(inner.left(), time_rect.bottom() + 6.0),
+            Vec2::new(inner.width(), theme::CHIP_HEIGHT),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(basis_rect), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::aux("时间依据"));
+                ui.add_space(2.0);
+                let mut basis = state.time_basis();
+                if widgets::time_basis_toggle(ui, &mut basis) {
+                    state.set_time_basis(basis);
+                    actions.push(UiAction::SetTimeFilterBasis(basis));
+                }
+            });
+        });
+        body_top = basis_rect.bottom() + 12.0;
 
         if state.manager_time_range == TimeRange::Custom {
             let start = state
@@ -230,7 +350,7 @@ pub(crate) fn page(
             state.manager_custom_end = Some(end);
             let label = widgets::format_day_range(start, end);
             let date_rect = Rect::from_min_size(
-                Pos2::new(inner.left(), toggle_rect.bottom() + 6.0),
+                Pos2::new(inner.left(), time_rect.bottom() + 6.0),
                 Vec2::new(210.0, theme::CHIP_HEIGHT),
             );
             ui.scope_builder(UiBuilder::new().max_rect(date_rect), |ui| {
@@ -248,7 +368,7 @@ pub(crate) fn page(
     }
 
     // ---- 批量操作条（多选时出现）----
-    if !state.multi_selected.is_empty() && !favorites {
+    if !state.multi_selected.is_empty() {
         let batch_rect = Rect::from_min_size(
             Pos2::new(inner.left(), body_top),
             Vec2::new(inner.width(), 34.0),
@@ -277,25 +397,31 @@ pub(crate) fn page(
             let ids: Vec<ClipId> = state.multi_selected.iter().copied().collect();
             state.request_delete_ids(ids, actions);
         }
-        let pin_w = 88.0;
+        // 收藏页里批量操作就是「取消收藏」，其它页是「收藏」
+        let fav_label = if favorites {
+            "批量取消收藏"
+        } else {
+            "批量收藏"
+        };
+        let fav_w = if favorites { 112.0 } else { 88.0 };
         let pin_rect = Rect::from_min_size(
-            Pos2::new(del_rect.left() - pin_w - 8.0, del_rect.top()),
-            Vec2::new(pin_w, 28.0),
+            Pos2::new(del_rect.left() - fav_w - 8.0, del_rect.top()),
+            Vec2::new(fav_w, 28.0),
         );
-        if widgets::button_at(ui, pin_rect, "批量收藏", widgets::ButtonKind::Secondary).clicked()
-        {
+        if widgets::button_at(ui, pin_rect, fav_label, widgets::ButtonKind::Secondary).clicked() {
             let ids: Vec<ClipId> = state.multi_selected.iter().copied().collect();
             for id in ids {
-                let favorited = state
-                    .items
-                    .iter()
-                    .find(|i| i.id == id)
-                    .map(|i| i.favorited)
-                    .unwrap_or(false);
-                actions.push(UiAction::Favorite {
-                    id,
-                    favorited: !favorited,
-                });
+                let favorited = if favorites {
+                    false
+                } else {
+                    !state
+                        .items
+                        .iter()
+                        .find(|i| i.id == id)
+                        .map(|i| i.favorited)
+                        .unwrap_or(false)
+                };
+                actions.push(UiAction::Favorite { id, favorited });
             }
             state.toast("已更新收藏状态");
         }
@@ -709,6 +835,48 @@ fn table(
                                 ui.close();
                             }
                         }
+                        ui.separator();
+                        // 文件/图片/文本快捷动作（与详情面板一致；文件多选作用于第一个）。
+                        if item.kind == ClipKind::Files {
+                            if let Some(file) = item.files.first() {
+                                let path = PathBuf::from(&file.path);
+                                if widgets::menu_item(ui, "打开文件").clicked() {
+                                    actions.push(UiAction::OpenPath(path.clone()));
+                                    ui.close();
+                                }
+                                if widgets::menu_item(ui, "所在文件夹").clicked() {
+                                    actions.push(UiAction::RevealPath(path));
+                                    ui.close();
+                                }
+                                if widgets::menu_item(ui, "复制路径").clicked() {
+                                    actions.push(UiAction::CopyPath(file.path.clone()));
+                                    ui.close();
+                                }
+                            }
+                        } else if widgets::menu_item(
+                            ui,
+                            if item.kind == ClipKind::Image {
+                                "图片另存为…"
+                            } else {
+                                "文本另存为…"
+                            },
+                        )
+                        .clicked()
+                        {
+                            if let Some(path) = export_dialog::choose_item_save_path(&item) {
+                                match item.kind {
+                                    ClipKind::Image => {
+                                        actions.push(UiAction::SaveImageAs { id: item.id, path })
+                                    }
+                                    ClipKind::Text => {
+                                        actions.push(UiAction::SaveTextAs { id: item.id, path })
+                                    }
+                                    ClipKind::Files => {}
+                                }
+                            }
+                            ui.close();
+                        }
+                        ui.separator();
                         if widgets::menu_item(ui, "删除").clicked() {
                             state.selected = Some(i);
                             state.request_delete_ids(vec![item.id], actions);
@@ -879,6 +1047,20 @@ fn paint_table_row(
 // ---------------------------------------------------------------------------
 
 /// 右侧详情面板：文本全文（只读可复制）/ 图片大图 / 文件清单 + 操作按钮。
+/// 详情面板标题行的富文本格式徽标：条目带 html/rtf 时依次显示 `HTML` / `RTF`。
+///
+/// 没有富文本（旧数据）时返回空列表，布局与旧版本完全一致。
+fn rich_badges(item: &ClipItem) -> Vec<&'static str> {
+    let mut badges = Vec::new();
+    if item.html.is_some() {
+        badges.push("HTML");
+    }
+    if item.rtf.is_some() {
+        badges.push("RTF");
+    }
+    badges
+}
+
 fn detail_panel(
     state: &mut UiState,
     ui: &mut egui::Ui,
@@ -899,14 +1081,31 @@ fn detail_panel(
     );
     let inner = rect.shrink(14.0);
 
-    // 标题 + 类型标签
-    let tag_w = paint::text_width(ui, item.kind.label(), theme::font_aux()) + 16.0;
-    let tag_rect = Rect::from_min_size(inner.min, Vec2::new(tag_w, 20.0));
+    // 标题 + 类型标签 + 富文本格式徽标（HTML/RTF 只在条目带富文本时显示）
+    let mut tag_x = inner.left();
     {
+        let tag_w = paint::text_width(ui, item.kind.label(), theme::font_aux()) + 16.0;
+        let tag_rect =
+            Rect::from_min_size(Pos2::new(tag_x, inner.top()), Vec2::new(tag_w, 20.0));
         let mut child = ui.new_child(UiBuilder::new().max_rect(tag_rect));
         widgets::tag(&mut child, item.kind.label(), theme::kind_color(item.kind));
+        tag_x = tag_rect.right() + 6.0;
     }
-    let title_x = tag_rect.right() + 8.0;
+    for label in rich_badges(&item) {
+        let color = if label == "HTML" {
+            theme::accent()
+        } else {
+            theme::success()
+        };
+        let tag_w = paint::text_width(ui, label, theme::font_aux()) + 16.0;
+        let tag_rect =
+            Rect::from_min_size(Pos2::new(tag_x, inner.top()), Vec2::new(tag_w, 20.0));
+        let mut child = ui.new_child(UiBuilder::new().max_rect(tag_rect));
+        widgets::tag(&mut child, label, color);
+        tag_x = tag_rect.right() + 6.0;
+    }
+    let title_x = tag_x + 2.0;
+    let title_w = (inner.right() - title_x).max(0.0);
     paint::paint_elided_highlighted(
         ui,
         Pos2::new(title_x, inner.top() + 2.0),
@@ -915,7 +1114,7 @@ fn detail_panel(
         theme::text(),
         state.search_text.as_str(),
         theme::danger(),
-        inner.right() - title_x,
+        title_w,
     );
     // 元信息
     let meta = format!(
@@ -1034,6 +1233,52 @@ fn detail_panel(
         extra_h = btn_h + 8.0;
     }
 
+    // 第二行操作（B4）：文件打开/定位/复制路径，图片/文本另存为。
+    let mut second_row: Vec<(&str, u8)> = Vec::new();
+    match item.kind {
+        ClipKind::Files if !item.files.is_empty() => {
+            second_row.push(("打开文件", 0));
+            second_row.push(("所在文件夹", 1));
+            second_row.push(("复制路径", 2));
+        }
+        ClipKind::Image => second_row.push(("图片另存为…", 3)),
+        ClipKind::Text => second_row.push(("文本另存为…", 4)),
+        _ => {}
+    }
+    let mut extra2_h = 0.0;
+    if !second_row.is_empty() {
+        let row_y = btn_y + btn_h + 8.0 + extra_h;
+        let mut x = inner.left();
+        for (label, action) in second_row {
+            let w = paint::text_width(ui, label, theme::font_body()) + 22.0;
+            let rect = Rect::from_min_size(Pos2::new(x, row_y), Vec2::new(w, btn_h));
+            if widgets::button_at(ui, rect, label, widgets::ButtonKind::Secondary).clicked() {
+                match action {
+                    0 | 1 | 2 => {
+                        if let Some(file) = item.files.first() {
+                            match action {
+                                0 => actions.push(UiAction::OpenPath(PathBuf::from(&file.path))),
+                                1 => actions.push(UiAction::RevealPath(PathBuf::from(&file.path))),
+                                _ => actions.push(UiAction::CopyPath(file.path.clone())),
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(path) = export_dialog::choose_item_save_path(&item) {
+                            if action == 3 {
+                                actions.push(UiAction::SaveImageAs { id: item.id, path });
+                            } else {
+                                actions.push(UiAction::SaveTextAs { id: item.id, path });
+                            }
+                        }
+                    }
+                }
+            }
+            x += w + 8.0;
+        }
+        extra2_h = btn_h + 8.0;
+    }
+
     // A3：一键把来源应用加入忽略名单（已有来源且尚未忽略时展示）。
     if let Some(app) = item
         .source_app
@@ -1050,19 +1295,19 @@ fn detail_panel(
             let label = "忽略此来源应用";
             let w = (paint::text_width(ui, label, theme::font_body()) + 22.0).min(inner.width());
             let rect = Rect::from_min_size(
-                Pos2::new(inner.left(), btn_y + btn_h + 8.0 + extra_h),
+                Pos2::new(inner.left(), btn_y + btn_h + 8.0 + extra_h + extra2_h),
                 Vec2::new(w, btn_h),
             );
             if widgets::button_at(ui, rect, label, widgets::ButtonKind::Ghost).clicked() {
                 actions.push(UiAction::IgnoreSourceApp(app.to_string()));
             }
-            extra_h += btn_h + 8.0;
+            extra2_h += btn_h + 8.0;
         }
     }
 
     // 内容区
     let content_rect = Rect::from_min_max(
-        Pos2::new(inner.left(), btn_y + btn_h + 12.0 + extra_h),
+        Pos2::new(inner.left(), btn_y + btn_h + 12.0 + extra_h + extra2_h),
         inner.max,
     );
     ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
@@ -1231,5 +1476,31 @@ mod columns_tests {
         let cols = Columns::new(rect(760.0));
         assert!(cols.show_source);
         assert!(cols.summary_w >= 120.0);
+    }
+
+    #[test]
+    fn rich_badges_only_when_rich_fields_present() {
+        // 旧数据（无 html/rtf）不显示任何格式徽标，布局不变
+        let plain = ClipItem::default();
+        assert!(rich_badges(&plain).is_empty());
+
+        let html = ClipItem {
+            html: Some("<p>x</p>".into()),
+            ..Default::default()
+        };
+        assert_eq!(rich_badges(&html), vec!["HTML"]);
+
+        let rtf = ClipItem {
+            rtf: Some("{\\rtf1 x}".into()),
+            ..Default::default()
+        };
+        assert_eq!(rich_badges(&rtf), vec!["RTF"]);
+
+        let both = ClipItem {
+            html: Some("<p>x</p>".into()),
+            rtf: Some("{\\rtf1 x}".into()),
+            ..Default::default()
+        };
+        assert_eq!(rich_badges(&both), vec!["HTML", "RTF"]);
     }
 }

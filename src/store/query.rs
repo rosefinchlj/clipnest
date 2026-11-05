@@ -1,37 +1,52 @@
 //! 查询侧：分页搜索（FTS5 trigram / LIKE 双路径）、单条读取、统计、粘贴载荷。
 //!
 //! 全部为 [`Db`] 的 `impl` 块，与 [`crate::store::db`] 分离以控制单文件行数。
-//! 搜索实现要点（spec §11）：
-//! - 普通列表按 `last_used_at DESC` 分页；收藏列表内按 `pinned DESC, last_used_at DESC` 分页；
-//! - 文本 ≥3 字符且 FTS 可用 → `clips_fts MATCH '"…"'`（双引号翻倍转义，避免注入）；
-//! - 更短、含路径分隔符或 FTS 关闭 → `LIKE '%'||?||'%' ESCAPE '\'`（转义 `% _ \`）；
-//! - 含 `/` 或 `\` 时额外用另一分隔符再匹配一次，路径分隔符等价（spec §11）。
+//! 搜索实现要点（spec §11 / v1.11 搜索升级）：
+//! - 搜索文本按空白拆成多关键词（双引号内短语不拆），默认 OR（任一命中），可切 AND（全部命中）；
+//! - 每个关键词都 ≥3 字符、不含路径分隔符且 FTS 可用 → `clips_fts MATCH '"词1" AND/OR "词2"'`；
+//! - 更短、含路径分隔符或 FTS 关闭 → 每词一组 `LIKE '%'||?||'%' ESCAPE '\'`（preview/text/source_title），
+//!   组间按匹配模式 AND/OR；含 `/` 或 `\` 时额外用另一分隔符再匹配一次；
+//! - 普通列表按 `last_used_at DESC` 分页；收藏列表内按 `pinned DESC` 优先；
+//!   排序可选 最近/最早/大小/类型/使用次数，末尾都有 `clips.id` 兜底保证分页稳定。
 
 use rusqlite::params_from_iter;
 use rusqlite::types::Value;
+use std::path::Path;
 use std::time::Instant;
 
 use crate::model::{
-    now_ms, ClipFilter, ClipId, ClipItem, ClipKind, FileEntry, PastePayload, SearchPage,
-    SearchQuery, Stats,
+    now_ms, ClipFilter, ClipId, ClipItem, ClipKind, FileEntry, MatchMode, PastePayload,
+    SearchPage, SearchQuery, SortOrder, Stats,
 };
 use crate::store::blob;
 use crate::store::db::Db;
 use crate::store::StoreResult;
 
 /// 条目列（顺序必须与 [`row_to_item`] 一致）。
+///
+/// 富文本 `html/rtf` 追加在末尾（v4），旧库缺列时由 schema 迁移补齐。
 const ITEM_COLUMNS: &str = "clips.id, clips.kind, clips.preview, clips.text, clips.files_json, \
      clips.blob_id, clips.byte_len, clips.width, clips.height, clips.created_at, \
      clips.last_used_at, clips.use_count, clips.favorited, clips.pinned, clips.source_app, \
-     clips.source_title, clips.deleted_at";
+     clips.source_title, clips.deleted_at, clips.html, clips.rtf";
 
 /// 统一排序：最近使用优先、id 兜底保证稳定分页。
 ///
 /// 置顶只在收藏列表内生效；普通列表保持纯时间序，避免收藏把新内容压下去。
-const ORDER_BY: &str = "ORDER BY clips.last_used_at DESC, clips.id DESC";
-/// 收藏列表排序：置顶优先，再按最近使用。
-const FAVORITES_ORDER_BY: &str =
-    "ORDER BY clips.pinned DESC, clips.last_used_at DESC, clips.id DESC";
+fn order_clause(sort: SortOrder, favorites: bool) -> String {
+    let clause = match sort {
+        SortOrder::Recent => "clips.last_used_at DESC, clips.id DESC",
+        SortOrder::Oldest => "clips.last_used_at ASC, clips.id ASC",
+        SortOrder::Largest => "clips.byte_len DESC, clips.id DESC",
+        SortOrder::Type => "clips.kind ASC, clips.last_used_at DESC, clips.id DESC",
+        SortOrder::MostUsed => "clips.use_count DESC, clips.last_used_at DESC, clips.id DESC",
+    };
+    if favorites {
+        format!("ORDER BY clips.pinned DESC, {clause}")
+    } else {
+        format!("ORDER BY {clause}")
+    }
+}
 
 impl Db {
     /// 读取单条（含 files 解析）。
@@ -42,6 +57,18 @@ impl Db {
         );
         let item = self.conn.query_row(&sql, [id], row_to_item).optional()?;
         Ok(item)
+    }
+
+    /// 历史记录中出现过的来源应用（去重、非空、按名称排序），供「来源」下拉使用。
+    pub fn source_apps(&self) -> StoreResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT source_app FROM clips
+             WHERE deleted_at IS NULL AND source_app IS NOT NULL AND source_app <> ''",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut apps = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        apps.sort_by_key(|app| app.to_lowercase());
+        Ok(apps)
     }
 
     /// 分页搜索（返回 total 与耗时，供诊断）。
@@ -68,45 +95,67 @@ impl Db {
             query.custom_day,
             query.custom_end_day,
         ) {
-            conditions.push("clips.last_used_at >= ?".to_string());
+            // 时间列由筛选依据决定：最近使用（last_used_at）或复制时间（created_at）。
+            let column = query.time_basis.column();
+            conditions.push(format!("{column} >= ?"));
             args.push(Value::Integer(start));
             if let Some(end) = end {
-                conditions.push("clips.last_used_at < ?".to_string());
+                conditions.push(format!("{column} < ?"));
                 args.push(Value::Integer(end));
             }
         }
 
-        let text = query.text.trim();
+        // 来源应用筛选：与 `source_app` 精确匹配（库里存小写进程名，下拉项也来自该列）。
+        if let Some(app) = query
+            .source_app
+            .as_deref()
+            .map(str::trim)
+            .filter(|app| !app.is_empty())
+        {
+            conditions.push("clips.source_app = ?".to_string());
+            args.push(Value::Text(app.to_string()));
+        }
+
+        let terms = search_terms(&query.text);
         let mut join_fts = false;
-        if !text.is_empty() {
-            let has_separator = text.contains('/') || text.contains('\\');
-            let use_fts = self.fts_enabled && text.chars().count() >= 3 && !has_separator;
-            if use_fts {
+        if !terms.is_empty() {
+            let joiner = match query.match_mode {
+                MatchMode::All => " AND ",
+                MatchMode::Any => " OR ",
+            };
+            // 每个词都 ≥3 字符、不含路径分隔符且 FTS 可用 → 走 trigram 索引（支持 AND/OR）。
+            let fts_ready = self.fts_enabled
+                && terms
+                    .iter()
+                    .all(|term| term.chars().count() >= 3 && !has_separator(term));
+            if fts_ready {
+                let expression = terms
+                    .iter()
+                    .map(|term| fts_phrase(term))
+                    .collect::<Vec<_>>()
+                    .join(joiner);
                 conditions.push("clips_fts MATCH ?".to_string());
-                args.push(Value::Text(fts_phrase(text)));
+                args.push(Value::Text(expression));
                 join_fts = true;
-            } else if has_separator {
-                // 路径分隔符 / 与 \ 等价：两种写法都查
-                let swapped = swap_path_separators(text);
-                conditions.push(
-                    "(clips.preview LIKE ? ESCAPE '\\' OR clips.text LIKE ? ESCAPE '\\' \
-                      OR clips.preview LIKE ? ESCAPE '\\' OR clips.text LIKE ? ESCAPE '\\')"
-                        .to_string(),
-                );
-                let pattern = like_pattern(text);
-                let pattern_alt = like_pattern(&swapped);
-                args.push(Value::Text(pattern.clone()));
-                args.push(Value::Text(pattern));
-                args.push(Value::Text(pattern_alt.clone()));
-                args.push(Value::Text(pattern_alt));
             } else {
-                conditions.push(
-                    "(clips.preview LIKE ? ESCAPE '\\' OR clips.text LIKE ? ESCAPE '\\')"
-                        .to_string(),
-                );
-                let pattern = like_pattern(text);
-                args.push(Value::Text(pattern.clone()));
-                args.push(Value::Text(pattern));
+                // LIKE 降级：每个关键词一组（preview / text / source_title 组内 OR），
+                // 组间按匹配模式 AND/OR；含路径分隔符时 `/` 与 `\` 两种写法都查。
+                let mut groups: Vec<String> = Vec::with_capacity(terms.len());
+                for term in &terms {
+                    let mut hits: Vec<String> = Vec::new();
+                    for pattern in like_variants(term) {
+                        hits.push(
+                            "(clips.preview LIKE ? ESCAPE '\\' OR clips.text LIKE ? ESCAPE '\\' \
+                              OR clips.source_title LIKE ? ESCAPE '\\')"
+                                .to_string(),
+                        );
+                        args.push(Value::Text(pattern.clone()));
+                        args.push(Value::Text(pattern.clone()));
+                        args.push(Value::Text(pattern));
+                    }
+                    groups.push(format!("({})", hits.join(" OR ")));
+                }
+                conditions.push(format!("({})", groups.join(joiner)));
             }
         }
 
@@ -125,11 +174,9 @@ impl Db {
         let limit = query.limit.clamp(1, 10_000) as i64;
         let offset = query.offset as i64;
         let order_by = if query.trash {
-            "ORDER BY clips.deleted_at DESC, clips.id DESC"
-        } else if query.filter == ClipFilter::Favorites {
-            FAVORITES_ORDER_BY
+            "ORDER BY clips.deleted_at DESC, clips.id DESC".to_string()
         } else {
-            ORDER_BY
+            order_clause(query.sort, query.filter == ClipFilter::Favorites)
         };
         let items_sql = format!(
             "SELECT {ITEM_COLUMNS} FROM {from} WHERE {where_sql} {order_by} LIMIT ? OFFSET ?"
@@ -197,6 +244,8 @@ impl Db {
                 clip_id: item.id,
                 kind: item.kind,
                 text: item.text.clone().or_else(|| Some(item.preview.clone())),
+                html: item.html.clone(),
+                rtf: item.rtf.clone(),
                 png_path: None,
                 files: Vec::new(),
             })),
@@ -224,6 +273,8 @@ impl Db {
                     clip_id: item.id,
                     kind: item.kind,
                     text: None,
+                    html: None,
+                    rtf: None,
                     png_path,
                     files: Vec::new(),
                 }))
@@ -249,6 +300,8 @@ impl Db {
                     clip_id: item.id,
                     kind: item.kind,
                     text: None,
+                    html: None,
+                    rtf: None,
                     png_path: None,
                     files,
                 }))
@@ -269,6 +322,58 @@ impl Db {
             rusqlite::params![now_ms(), id],
         )?;
         Ok(changed > 0)
+    }
+
+    /// 图片另存为：把该条记录的图片 blob 复制到 `dest`。
+    ///
+    /// 返回 `Ok(false)` 表示记录不存在、类型不是图片或 blob 文件缺失（调用方提示即可）。
+    pub fn save_image_as(&self, id: ClipId, dest: &Path) -> StoreResult<bool> {
+        let Some(item) = self.item(id)? else {
+            return Ok(false);
+        };
+        let Some(blob_id) = item.blob_id.as_deref() else {
+            return Ok(false);
+        };
+        let src = self.image_blob_path(blob_id)?;
+        if !src.is_file() {
+            return Ok(false);
+        }
+        std::fs::copy(&src, dest)
+            .map_err(|err| crate::store::StoreError::Msg(format!("保存图片失败：{err}")))?;
+        Ok(true)
+    }
+
+    /// 文本另存为：把该条记录的文本内容以 UTF-8 写入 `dest`。
+    ///
+    /// 返回 `Ok(false)` 表示记录不存在或类型不是文本。
+    pub fn save_text_as(&self, id: ClipId, dest: &Path) -> StoreResult<bool> {
+        let Some(item) = self.item(id)? else {
+            return Ok(false);
+        };
+        if item.kind != ClipKind::Text {
+            return Ok(false);
+        }
+        let text = item.text.unwrap_or(item.preview);
+        std::fs::write(dest, text.as_bytes())
+            .map_err(|err| crate::store::StoreError::Msg(format!("保存文本失败：{err}")))?;
+        Ok(true)
+    }
+
+    /// 图片 blob 的绝对路径：优先 `blobs.rel_path`，缺失时按约定路径回退。
+    fn image_blob_path(&self, blob_id: &str) -> StoreResult<std::path::PathBuf> {
+        use rusqlite::OptionalExtension;
+        let rel: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT rel_path FROM blobs WHERE id = ?1",
+                [blob_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(match rel {
+            Some(rel) => blob::blob_path(&self.data_dir, &rel),
+            None => blob::image_path(&self.data_dir, blob_id),
+        })
     }
 }
 
@@ -303,7 +408,50 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipItem> {
         source_app: row.get(14)?,
         source_title: row.get(15)?,
         deleted_at: row.get(16)?,
+        html: row.get(17)?,
+        rtf: row.get(18)?,
     })
+}
+
+/// 把搜索文本拆成关键词：空白分隔，双引号内的短语不拆（引号本身丢弃）。
+///
+/// 例：`rust "hello world"` → `["rust", "hello world"]`；未闭合的引号按已开启处理，
+/// 余下文本整体作为一个关键词，避免半截输入把词吃掉。
+pub(crate) fn search_terms(text: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for ch in text.chars() {
+        if ch == '"' {
+            quoted = !quoted;
+            continue;
+        }
+        if ch.is_whitespace() && !quoted {
+            if !current.is_empty() {
+                terms.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        terms.push(current);
+    }
+    terms
+}
+
+/// 关键词是否含路径分隔符（此时 FTS 不合适，走 LIKE 双写法）。
+fn has_separator(term: &str) -> bool {
+    term.contains('/') || term.contains('\\')
+}
+
+/// 关键词的 LIKE 模式：含路径分隔符时返回原文与分隔符互换两种。
+fn like_variants(term: &str) -> Vec<String> {
+    if has_separator(term) {
+        vec![like_pattern(term), like_pattern(&swap_path_separators(term))]
+    } else {
+        vec![like_pattern(term)]
+    }
 }
 
 /// FTS5 短语查询：双引号内是精确子串；`"` 用 `""` 转义。

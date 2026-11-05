@@ -1,7 +1,9 @@
 //! 把 Store 的粘贴载荷写回系统剪贴板（只在 Sys 线程调用）。
 //!
 //! 写入格式（spec §12.1 / §12.2）：
-//! - 文本：CF_UNICODETEXT（UTF-16LE，尾部 `\0`）；
+//! - 文本：CF_UNICODETEXT（UTF-16LE，尾部 `\0`）+ 富文本 HTML（注册格式 "HTML Format"，
+//!   CF_HTML 结构、UTF-8 字节偏移、末尾 `\0`）+ RTF（注册格式 "Rich Text Format"）；
+//!   条目没有 html/rtf 时只写 CF_UNICODETEXT，行为与旧版本完全一致；
 //! - 图片：CF_DIB（32bpp BI_RGB、top-down、BGRA，A 固定 255）+ 注册格式 "PNG"（原始 PNG 字节）；
 //! - 文件：CF_HDROP（DROPFILES + 宽字符路径列表，双 `\0` 结尾）；
 //! - 最后（实际放在格式列表首位，保证即使后续格式失败也不会被自身采集）写
@@ -12,7 +14,8 @@
 
 use super::read::{register_format, ClipboardGuard};
 use super::{
-    dib, ClipError, ClipResult, CF_DIB, CF_HDROP, CF_UNICODETEXT, PNG_FORMAT, SELF_MARKER_FORMAT,
+    dib, html, ClipError, ClipResult, CF_DIB, CF_HDROP, CF_UNICODETEXT, PNG_FORMAT,
+    SELF_MARKER_FORMAT,
 };
 use crate::model::{ClipKind, PastePayload};
 use std::path::{Path, PathBuf};
@@ -45,8 +48,17 @@ pub fn write_clipboard(payload: &PastePayload, data_dir: &Path) -> ClipResult<()
     if ok == 0 {
         return Err(last_win32("EmptyClipboard"));
     }
-    for (format, bytes) in &formats {
-        set_clipboard_bytes(*format, bytes)?;
+    for (index, (format, bytes)) in formats.iter().enumerate() {
+        if let Err(err) = set_clipboard_bytes(*format, bytes) {
+            // 富文本是"锦上添花"：CF_UNICODETEXT 写成功即可粘贴，HTML/RTF 失败只降级不报错
+            if payload.kind == ClipKind::Text && index >= 2 {
+                crate::logging::warn(&format!(
+                    "剪贴板富文本格式 {format} 写入失败，已降级为纯文本：{err}"
+                ));
+                continue;
+            }
+            return Err(err);
+        }
     }
     crate::logging::debug(&format!(
         "剪贴板回写完成：kind={:?}，clip_id={}，格式数={}",
@@ -82,6 +94,28 @@ fn build_formats(payload: &PastePayload, data_dir: &Path) -> ClipResult<Vec<(u32
                 return Err(ClipError::Win32("粘贴文本为空".into()));
             }
             formats.push((CF_UNICODETEXT, bytes));
+
+            // 富文本：sanitize 后再回写（数据库里存的是已清洗版本，这里再兜底一次）。
+            // 注册失败或数据无效时静默跳过，纯文本粘贴仍然可用。
+            if let Some(html_text) = payload.html.as_deref().and_then(html::sanitize_html) {
+                let format = register_format(html::HTML_FORMAT);
+                if format != 0 {
+                    formats.push((format, html::build_cf_html(&html_text)));
+                } else {
+                    crate::logging::warn("注册 CF_HTML 格式失败，跳过富文本回写");
+                }
+            }
+            if let Some(rtf_text) = payload.rtf.as_deref().and_then(html::sanitize_rtf) {
+                let format = register_format(html::RTF_FORMAT);
+                if format != 0 {
+                    let mut bytes = rtf_text.into_bytes();
+                    // RTF 也以 NUL 结尾（与 CF_UNICODETEXT 同样的防御性约定）
+                    bytes.push(0);
+                    formats.push((format, bytes));
+                } else {
+                    crate::logging::warn("注册 RTF 格式失败，跳过富文本回写");
+                }
+            }
         }
         ClipKind::Image => {
             let path = resolve_png_path(payload, data_dir)?;
@@ -433,6 +467,8 @@ mod tests {
             clip_id: 7,
             kind: ClipKind::Text,
             text: Some("你好".into()),
+            html: None,
+            rtf: None,
             png_path: None,
             files: Vec::new(),
         };
@@ -455,6 +491,8 @@ mod tests {
             clip_id: 8,
             kind: ClipKind::Files,
             text: None,
+            html: None,
+            rtf: None,
             png_path: None,
             files: vec![FileEntry {
                 name: "a.txt".into(),
@@ -479,5 +517,51 @@ mod tests {
             ..files_payload.clone()
         };
         assert!(build_formats(&bad_files, Path::new(".")).is_err());
+    }
+
+    #[test]
+    fn build_formats_appends_valid_cf_html_and_rtf() {
+        let payload = PastePayload {
+            clip_id: 9,
+            kind: ClipKind::Text,
+            text: Some("加粗文本".into()),
+            html: Some(r#"<b onclick="evil()">加粗文本</b><script>evil()</script>"#.into()),
+            rtf: Some(r"{\rtf1 加粗文本{\object\objdata 0102}}".into()),
+            png_path: None,
+            files: Vec::new(),
+        };
+        let formats = build_formats(&payload, Path::new(".")).expect("构建文本格式");
+        // 标记 + CF_UNICODETEXT + HTML Format + Rich Text Format
+        assert_eq!(formats.len(), 4);
+        assert_eq!(formats[0].0, register_format(SELF_MARKER_FORMAT));
+        assert_eq!(formats[1].0, CF_UNICODETEXT);
+        assert_eq!(formats[2].0, register_format(html::HTML_FORMAT));
+        // 写出的 CF_HTML 必须能被自己的解析器读回（偏移正确、末尾 NUL）
+        let parsed = html::parse_cf_html(&formats[2].1).expect("CF_HTML 可回读");
+        assert!(parsed.contains("加粗文本"), "parsed={parsed}");
+        assert!(!parsed.contains("script"), "脚本已过滤: {parsed}");
+        assert!(!parsed.contains("onclick"), "事件属性已过滤: {parsed}");
+        assert_eq!(formats[3].0, register_format(html::RTF_FORMAT));
+        let rtf = String::from_utf8_lossy(&formats[3].1);
+        assert!(rtf.contains("加粗文本"), "rtf={rtf}");
+        assert!(!rtf.contains("objdata"), "内嵌对象已过滤: {rtf}");
+        assert_eq!(formats[3].1.last().copied(), Some(0));
+    }
+
+    #[test]
+    fn build_formats_without_rich_text_keeps_two_formats() {
+        // 无 html/rtf 时行为与旧版本完全一致：只有标记 + CF_UNICODETEXT
+        let payload = PastePayload {
+            clip_id: 10,
+            kind: ClipKind::Text,
+            text: Some("纯文本".into()),
+            html: None,
+            rtf: None,
+            png_path: None,
+            files: Vec::new(),
+        };
+        let formats = build_formats(&payload, Path::new(".")).expect("构建文本格式");
+        assert_eq!(formats.len(), 2);
+        assert_eq!(formats[1].0, CF_UNICODETEXT);
     }
 }

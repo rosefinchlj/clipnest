@@ -264,13 +264,15 @@ impl Db {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO clips
-               (kind, hash, text, preview, blob_id, files_json, byte_len, width, height,
+               (kind, hash, text, html, rtf, preview, blob_id, files_json, byte_len, width, height,
                 created_at, last_used_at, use_count, favorited, pinned, source_app, source_title)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1, 0, 0, ?11, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, 1, 0, 0, ?13, ?14)",
             params![
                 input.kind.as_i32(),
                 input.hash,
                 input.text,
+                input.html,
+                input.rtf,
                 input.preview,
                 blob_id,
                 files_json,

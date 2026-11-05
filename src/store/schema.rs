@@ -1,17 +1,24 @@
-//! schema v3：建表、索引、FTS5（trigram 分词）、回收站/收藏列与同步触发器。
+//! schema v4：建表、索引、FTS5（trigram 分词）、回收站/收藏/富文本列与同步触发器。
 //!
 //! 设计要点：
-//! - 所有 DDL 都带 `IF NOT EXISTS`，`migrate` 幂等（spec §10.2）；
+//! - 所有 DDL 都带 `IF NOT EXISTS`，`migrate` 幂等（spec §10.2）；老库缺失的列
+//!   （v2 `deleted_at`、v3 `favorited`、v4 `html/rtf`）由 `pragma_table_info` 探测后
+//!   `ALTER TABLE` 补齐，重启任意次都安全；
 //! - FTS5 trigram 并非所有 SQLite 构建都可用：创建失败时整体回滚并按
 //!   `meta.fts_enabled=0` 记降级标记，搜索走 LIKE（spec §11 / CONTRACT §2.2）；
 //! - `clips_fts` 是外部内容表，靠 `clips` 上的三个触发器同步。UPDATE 触发器只跟踪
 //!   `preview/text` 两列：去重时高频更新的 `last_used_at` 不会引发 FTS 重建。
+//!   富文本列不进入全文索引（搜索只用 text/preview）。
 
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::model::{now_ms, SCHEMA_VERSION};
 use crate::store::db::DbOptions;
 use crate::store::{StoreError, StoreResult};
+
+/// 引入 `favorited` 的 schema 版本：只有低于它的老库才执行 pinned→favorited 迁移。
+/// 注意不能写成 `< SCHEMA_VERSION`，否则 v3→v4 升级会再次改写用户的置顶状态。
+const FAVORITE_SCHEMA_VERSION: i64 = 3;
 
 /// 核心表结构（spec §10.2 原文）。
 const CORE_SCHEMA: &str = r#"
@@ -22,6 +29,8 @@ CREATE TABLE IF NOT EXISTS clips (
   kind         INTEGER NOT NULL,
   hash         TEXT    NOT NULL UNIQUE,
   text         TEXT,
+  html         TEXT,
+  rtf          TEXT,
   preview      TEXT    NOT NULL DEFAULT '',
   blob_id      TEXT,
   files_json   TEXT,
@@ -93,7 +102,8 @@ pub fn migrate(conn: &mut Connection, options: DbOptions) -> StoreResult<Migrate
     }
 
     ensure_trash_schema(conn)?;
-    ensure_favorite_schema(conn, current < SCHEMA_VERSION)?;
+    ensure_favorite_schema(conn, current < FAVORITE_SCHEMA_VERSION)?;
+    ensure_rich_schema(conn)?;
     let outcome = ensure_fts(conn, options)?;
 
     if current < SCHEMA_VERSION {
@@ -133,7 +143,8 @@ fn ensure_trash_schema(conn: &Connection) -> StoreResult<()> {
 }
 
 /// v3 收藏列：老库把原来的 pinned 语义迁移为 favorited，并清除旧的自动置顶。
-/// 转换以迁移前版本号为准：仅当版本 < 3 时执行，成功后写入 v3，之后不再影响用户置顶。
+/// 转换以迁移前版本号为准：仅当版本 < [`FAVORITE_SCHEMA_VERSION`] 时执行，
+/// 成功后写入 v3，之后（包括 v3→v4 升级）不再影响用户置顶。
 fn ensure_favorite_schema(conn: &Connection, legacy: bool) -> StoreResult<()> {
     let has_column: bool = conn.query_row(
         "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = 'favorited'",
@@ -158,6 +169,29 @@ fn ensure_favorite_schema(conn: &Connection, legacy: bool) -> StoreResult<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_clips_favorite ON clips(favorited, pinned DESC, last_used_at DESC);",
     )?;
+    Ok(())
+}
+
+/// v4 富文本列：`html` / `rtf`。
+///
+/// 与 v2/v3 一样以"列是否存在"为准（而不是版本号），保证迁移中途崩溃后重启可续。
+fn ensure_rich_schema(conn: &Connection) -> StoreResult<()> {
+    for (column, ddl) in [
+        ("html", "ALTER TABLE clips ADD COLUMN html TEXT"),
+        ("rtf", "ALTER TABLE clips ADD COLUMN rtf TEXT"),
+    ] {
+        let has_column: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = ?1",
+            [column],
+            |row| row.get::<_, i64>(0),
+        )? > 0;
+        if !has_column {
+            conn.execute(ddl, [])?;
+            crate::logging::log(&format!(
+                "Store: schema v4 已为 clips 添加 {column} 列"
+            ));
+        }
+    }
     Ok(())
 }
 

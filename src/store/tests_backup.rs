@@ -28,6 +28,8 @@ fn image_input(png: &[u8], seed: u8) -> ClipInput {
         hash: sha(&format!("image-key-{seed}")),
         preview: format!("图片 {seed}"),
         text: None,
+        html: None,
+        rtf: None,
         image_png: Some(png.to_vec()),
         files: Vec::new(),
         byte_len: png.len() as u64,

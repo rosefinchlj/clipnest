@@ -54,6 +54,8 @@ pub struct ClipNestApp {
     backdrop: Option<&'static str>,
     positioned: bool,
     window_visible: bool,
+    /// 候选窗被用户手动缩放后置位，隐藏时统一落盘（避免拖动过程中反复写 settings.json）。
+    picker_size_dirty: bool,
 
     // ---- 流程状态 ----
     init_error: Option<String>,
@@ -107,6 +109,9 @@ impl ClipNestApp {
             crate::ui::install_fonts(&cc.egui_ctx);
         }
         crate::ui::install_theme(&cc.egui_ctx);
+        // 全局界面缩放（0.8–1.5）：候选窗与管理台都按设置放大/缩小。
+        cc.egui_ctx
+            .set_zoom_factor(crate::model::clamp_ui_scale(settings.ui_scale));
         // 正常模式：窗口在启动时就创建（因此打开面板是"秒开"），但先移到屏幕外。
         // 预览模式：直接显示。
         let window_visible = preview.is_some();
@@ -199,6 +204,7 @@ impl ClipNestApp {
             backdrop: None,
             positioned: false,
             window_visible,
+            picker_size_dirty: false,
             init_error,
             target_hwnd: 0,
             paste_pending: None,
@@ -289,7 +295,8 @@ impl ClipNestApp {
         self.window_visible = true;
         self.unfocused_since = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(false));
+        // 候选窗允许拖动边缘缩放，尺寸变化在隐藏时写回 settings.picker_size。
+        ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
             egui::WindowLevel::AlwaysOnTop,
         ));
@@ -329,6 +336,11 @@ impl ClipNestApp {
         self.unfocused_since = None;
         self.shown_at = None;
         self.focus_due = None;
+        // 拖动边缘缩放过候选窗：隐藏时统一落盘，避免拖动过程反复写 settings.json。
+        if self.picker_size_dirty {
+            self.picker_size_dirty = false;
+            self.persist_settings();
+        }
         self.move_offscreen(ctx);
         if self.target_hwnd != 0
             && self.target_hwnd != self.hwnd.unwrap_or(0)
@@ -337,6 +349,30 @@ impl ClipNestApp {
             crate::window::force_foreground(self.target_hwnd);
         }
         ctx.request_repaint();
+    }
+
+    /// 记录用户拖动边缘缩放后的候选窗尺寸（逻辑像素），隐藏时落盘。
+    fn note_picker_size(&mut self, ctx: &egui::Context) {
+        let Some(rect) = ctx.input(|i| i.viewport().inner_rect) else {
+            return;
+        };
+        let size = [rect.width().round(), rect.height().round()];
+        if (size[0] - self.settings.picker_size[0]).abs() < 1.0
+            && (size[1] - self.settings.picker_size[1]).abs() < 1.0
+        {
+            return;
+        }
+        // 过滤最小化/初始化过程中的异常尺寸，避免把窗口写成 0×0。
+        if size[0] < 360.0 || size[1] < 320.0 || size[0] > 2000.0 || size[1] > 1600.0 {
+            return;
+        }
+        self.settings.picker_size = size;
+        if let Ok(mut shared) = self.settings_shared.lock() {
+            shared.picker_size = size;
+        }
+        let snapshot = self.settings.clone();
+        self.ui.set_settings(&snapshot);
+        self.picker_size_dirty = true;
     }
 
     /// 打开管理台：spawn 独立窗口进程；主窗口（候选窗）保留，不切模式。
@@ -407,6 +443,7 @@ impl ClipNestApp {
                 }
             }
             Event::SearchPage(page) => self.ui.apply_search_page(page),
+            Event::SourceApps(apps) => self.ui.apply_source_apps(apps),
             Event::Stats(stats) => self.ui.apply_stats(stats),
             Event::PastePayload(payload) => {
                 // 先校验再 take：过期载荷（快速换条目/连按 Enter）不能吞掉新请求。
@@ -569,8 +606,12 @@ impl ClipNestApp {
                 text,
                 filter,
                 time_range,
+                time_basis,
                 custom_day,
                 custom_end_day,
+                match_mode,
+                source_app,
+                sort,
                 offset,
                 trash,
                 gen,
@@ -585,13 +626,22 @@ impl ClipNestApp {
                         text,
                         filter,
                         time_range,
+                        time_basis,
                         custom_day,
                         custom_end_day,
+                        match_mode,
+                        source_app,
+                        sort,
                         offset,
                         limit,
                         trash,
                         gen,
                     }));
+                }
+            }
+            UiAction::ListSourceApps => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::ListSourceApps);
                 }
             }
             UiAction::Paste { id, plain } => {
@@ -760,6 +810,40 @@ impl ClipNestApp {
                     .arg(dir.as_os_str())
                     .spawn();
             }
+            UiAction::OpenPath(path) => {
+                if let Err(err) = crate::sys::shell::open_path(&path) {
+                    self.ui.toast(err);
+                }
+            }
+            UiAction::RevealPath(path) => {
+                if let Err(err) = crate::sys::shell::reveal_path(&path) {
+                    self.ui.toast(err);
+                }
+            }
+            UiAction::CopyPath(text) => match crate::sys::shell::copy_text(&text) {
+                Ok(()) => self.ui.toast("路径已复制到剪贴板"),
+                Err(err) => self.ui.toast(format!("复制路径失败：{err}")),
+            },
+            UiAction::SaveImageAs { id, path } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::SaveImageAs { id, path });
+                }
+            }
+            UiAction::SaveTextAs { id, path } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::SaveTextAs { id, path });
+                }
+            }
+            UiAction::SetTimeFilterBasis(basis) => {
+                // 时间依据是全局设置：候选窗里切换后立即落盘，管理台下次打开即沿用。
+                self.settings.time_filter_basis = basis;
+                if let Ok(mut shared) = self.settings_shared.lock() {
+                    shared.time_filter_basis = basis;
+                }
+                let snapshot = self.settings.clone();
+                self.ui.set_settings(&snapshot);
+                self.persist_settings();
+            }
             UiAction::RefreshStats => {
                 if let Some(tx) = &self.store_tx {
                     let _ = tx.send(StoreCmd::RefreshStats);
@@ -775,6 +859,7 @@ impl ClipNestApp {
         let glass_changed = next.glass_opacity != self.settings.glass_opacity;
         let preset_changed = next.selection_preset != self.settings.selection_preset;
         let pause_changed = next.pause_capture != self.settings.pause_capture;
+        let zoom_changed = (next.ui_scale - self.settings.ui_scale).abs() > 0.001;
         // Sys 托盘可绕过 UI 直接修改 pause_capture/autostart（立即生效）；
         // 若发现 shared 与本侧不一致，说明是 Sys 改的，保存时以 Sys 的运行时值为准，避免回滚。
         if let Ok(shared) = self.settings_shared.lock() {
@@ -799,10 +884,14 @@ impl ClipNestApp {
         }
         self.ui.set_settings(&next);
         crate::ui::theme::set_glass_opacity(next.glass_opacity);
-        if theme_changed || glass_changed || preset_changed {
-            crate::ui::theme::set_light(next.theme == ThemeMode::Light);
-            crate::ui::theme::set_selection_preset(next.selection_preset);
-            crate::ui::install_theme(ctx);
+        // 全局缩放：设置页保存后立即生效（0.8–1.5）。
+        ctx.set_zoom_factor(crate::model::clamp_ui_scale(next.ui_scale));
+        if theme_changed || glass_changed || preset_changed || zoom_changed {
+            if theme_changed || glass_changed || preset_changed {
+                crate::ui::theme::set_light(next.theme == ThemeMode::Light);
+                crate::ui::theme::set_selection_preset(next.selection_preset);
+                crate::ui::install_theme(ctx);
+            }
             if let Some(hwnd) = self.hwnd {
                 let _ = crate::window::apply_backdrop(
                     hwnd,
@@ -1162,6 +1251,9 @@ impl eframe::App for ClipNestApp {
 
         self.handle_focus_autohide(ctx);
         self.flush_paste_due(ctx);
+        if self.window_visible {
+            self.note_picker_size(ctx);
+        }
 
         let actions = self.ui.show(ctx, &mut self.thumbs);
         for action in actions {

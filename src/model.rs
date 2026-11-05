@@ -13,7 +13,7 @@ pub const APP_NAME: &str = "ClipNest";
 /// 窗口标题。
 pub const APP_TITLE: &str = "ClipNest · 剪贴匣";
 /// 当前数据库 schema 版本。
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// 回收站保留时长：手动删除后 2 天自动彻底删除。
 pub const TRASH_RETENTION_MS: i64 = 2 * 24 * 60 * 60 * 1000;
@@ -154,6 +154,10 @@ pub struct ClipItem {
     pub kind: ClipKind,
     pub preview: String,
     pub text: Option<String>,
+    /// 富文本 HTML fragment（已 sanitize；旧数据/旧 JSON 为 None）。
+    pub html: Option<String>,
+    /// RTF 原文（已做基本控制字过滤；旧数据/旧 JSON 为 None）。
+    pub rtf: Option<String>,
     pub files: Vec<FileEntry>,
     pub blob_id: Option<String>,
     pub byte_len: u64,
@@ -253,6 +257,10 @@ pub struct ClipInput {
     pub hash: String,
     pub preview: String,
     pub text: Option<String>,
+    /// 富文本 HTML fragment（来自 CF_HTML，已 sanitize）。
+    pub html: Option<String>,
+    /// RTF 原文（来自 "Rich Text Format"，已做基本过滤）。
+    pub rtf: Option<String>,
     /// 图片的 PNG 字节（Store 负责落盘）。
     pub image_png: Option<Vec<u8>>,
     pub files: Vec<FileEntry>,
@@ -270,6 +278,10 @@ pub struct PastePayload {
     pub clip_id: ClipId,
     pub kind: ClipKind,
     pub text: Option<String>,
+    /// 富文本 HTML fragment（回写前会再次 sanitize）。
+    pub html: Option<String>,
+    /// RTF 原文（回写前会再次做基本过滤）。
+    pub rtf: Option<String>,
     /// 图片文件路径（PNG）。
     pub png_path: Option<PathBuf>,
     pub files: Vec<FileEntry>,
@@ -331,7 +343,64 @@ impl ClipFilter {
     }
 }
 
-/// 列表时间范围筛选。按 `last_used_at` 计算。
+/// 多关键词匹配模式。
+///
+/// 搜索文本按空白拆成多个关键词（双引号内的短语不拆）；`Any` 任一命中即可，
+/// `All` 要求每个关键词都命中（AND）。默认 `Any` 保持旧行为。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MatchMode {
+    #[default]
+    Any,
+    All,
+}
+
+impl MatchMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            MatchMode::Any => "任一关键词",
+            MatchMode::All => "全部关键词",
+        }
+    }
+
+    pub fn all() -> [MatchMode; 2] {
+        [MatchMode::Any, MatchMode::All]
+    }
+}
+
+/// 列表排序方式。`Trash` 页固定按删除时间倒序，与此无关。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SortOrder {
+    #[default]
+    Recent,
+    Oldest,
+    Largest,
+    Type,
+    MostUsed,
+}
+
+impl SortOrder {
+    pub fn label(self) -> &'static str {
+        match self {
+            SortOrder::Recent => "最近使用",
+            SortOrder::Oldest => "最早使用",
+            SortOrder::Largest => "最大文件",
+            SortOrder::Type => "类型",
+            SortOrder::MostUsed => "使用最多",
+        }
+    }
+
+    pub fn all() -> [SortOrder; 5] {
+        [
+            SortOrder::Recent,
+            SortOrder::Oldest,
+            SortOrder::Largest,
+            SortOrder::Type,
+            SortOrder::MostUsed,
+        ]
+    }
+}
+
+/// 列表时间范围筛选。按 [`TimeBasis`] 指定的时间列（最近使用 / 复制时间）计算。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum TimeRange {
     #[default]
@@ -409,6 +478,38 @@ impl TimeRange {
     }
 }
 
+/// 时间筛选依据：按「最近使用」或「复制时间」过滤。
+///
+/// 默认按最近使用，与旧版本行为一致；设为「复制时间」时改用 `created_at`。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeBasis {
+    #[default]
+    LastUsed,
+    Captured,
+}
+
+impl TimeBasis {
+    pub fn label(self) -> &'static str {
+        match self {
+            TimeBasis::LastUsed => "最近使用",
+            TimeBasis::Captured => "复制时间",
+        }
+    }
+
+    pub fn all() -> [TimeBasis; 2] {
+        [TimeBasis::LastUsed, TimeBasis::Captured]
+    }
+
+    /// 对应 SQL 时间列（查询时拼接进时间范围条件）。
+    pub fn column(self) -> &'static str {
+        match self {
+            TimeBasis::LastUsed => "clips.last_used_at",
+            TimeBasis::Captured => "clips.created_at",
+        }
+    }
+}
+
 /// 本地时间戳所在日期次日 00:00。
 fn local_next_midnight(day_start: i64) -> Option<i64> {
     use chrono::{Days, Local, TimeZone};
@@ -441,6 +542,14 @@ pub struct SearchQuery {
     pub custom_day: Option<i64>,
     /// `TimeRange::Custom` 结束日的本地 00:00 时间戳；与起始日相同表示单日。
     pub custom_end_day: Option<i64>,
+    /// 时间范围按哪一列计算：最近使用或复制时间。
+    pub time_basis: TimeBasis,
+    /// 多关键词匹配模式（任一 / 全部）。
+    pub match_mode: MatchMode,
+    /// 来源应用筛选（文件/进程名，如 `chrome.exe`）；`None` 表示全部来源。
+    pub source_app: Option<String>,
+    /// 排序方式。
+    pub sort: SortOrder,
     pub offset: usize,
     pub limit: usize,
     /// true 时查询回收站（deleted_at 非空）。
@@ -457,6 +566,10 @@ impl Default for SearchQuery {
             time_range: TimeRange::All,
             custom_day: None,
             custom_end_day: None,
+            time_basis: TimeBasis::LastUsed,
+            match_mode: MatchMode::Any,
+            source_app: None,
+            sort: SortOrder::Recent,
             offset: 0,
             limit: 200,
             trash: false,
@@ -806,6 +919,8 @@ pub struct Settings {
     /// 备用全局快捷键（Win+V 被接管时仍保留）。
     pub hotkey_picker: HotkeyChord,
     pub pause_capture: bool,
+    /// 打开候选窗时保留上次的搜索关键词（默认关闭）。
+    pub keep_search_on_open: bool,
     /// 忽略的应用进程名（小写、含 .exe）。
     ///
     /// 只有 settings.json 完全没有该字段时才注入常见密码管理器；
@@ -827,6 +942,10 @@ pub struct Settings {
 
     pub picker_size: [f32; 2],
     pub manager_size: [f32; 2],
+    /// 界面缩放（0.8–1.5；1.0 为 100%）。启动与保存设置后立即生效。
+    pub ui_scale: f32,
+    /// 时间范围筛选依据：最近使用（默认）或复制时间。
+    pub time_filter_basis: TimeBasis,
     pub hide_on_blur: bool,
 
     pub keep_clipboard_after_paste: bool,
@@ -848,6 +967,7 @@ impl Default for Settings {
             ignore_apps: default_ignore_apps(),
             exit_clear_policy: ExitClearPolicy::Off,
             first_run_done: false,
+            keep_search_on_open: false,
 
             max_items: 5000,
             max_image_bytes: 200 * 1024 * 1024,
@@ -859,6 +979,8 @@ impl Default for Settings {
 
             picker_size: [620.0, 560.0],
             manager_size: [1060.0, 700.0],
+            ui_scale: 1.0,
+            time_filter_basis: TimeBasis::LastUsed,
             hide_on_blur: true,
 
             keep_clipboard_after_paste: true,
@@ -939,6 +1061,28 @@ pub enum BackupEvent {
 // 线程间消息
 // ---------------------------------------------------------------------------
 
+/// 界面缩放下限（80%）。
+pub const UI_SCALE_MIN: f32 = 0.8;
+/// 界面缩放上限（150%）。
+pub const UI_SCALE_MAX: f32 = 1.5;
+/// 界面缩放步长。
+pub const UI_SCALE_STEP: f32 = 0.05;
+
+/// 把界面缩放缓动到合法区间；NaN 回退 100%（无穷大按上下限夹取）。
+pub fn clamp_ui_scale(scale: f32) -> f32 {
+    if scale.is_nan() {
+        return 1.0;
+    }
+    scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+}
+
+/// 候选窗尺寸预设：紧凑 / 标准 / 宽大。
+pub const PICKER_SIZE_PRESETS: [(&str, [f32; 2]); 3] = [
+    ("紧凑", [520.0, 480.0]),
+    ("标准", [620.0, 560.0]),
+    ("宽大", [760.0, 640.0]),
+];
+
 /// 后台 → UI 事件。
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -958,6 +1102,8 @@ pub enum Event {
     PastePayload(PastePayload),
     /// 统计信息刷新。
     Stats(Stats),
+    /// 历史记录中出现的来源应用名（去重、非空、按名称排序）。
+    SourceApps(Vec<String>),
     /// 自动粘贴结果。
     PasteResult { ok: bool, reason: Option<String> },
     /// 轻提示（UI toast）。
@@ -1016,6 +1162,8 @@ pub enum StoreCmd {
     /// 把某条文件的实体复制进数据目录（收藏时调用）。
     SaveFavoriteFiles(ClipId),
     RefreshStats,
+    /// 查询历史记录中出现过的来源应用（供「来源」下拉使用）。
+    ListSourceApps,
     ExportJson {
         path: PathBuf,
     },
@@ -1032,6 +1180,16 @@ pub enum StoreCmd {
     /// 以「合并导入」方式从备份恢复：hash 去重、失败回滚。
     /// 结果通过 `Event::Backup(BackupEvent::Restored/Failed)` 回传。
     RestoreBackup {
+        path: PathBuf,
+    },
+    /// 图片另存为：把该条记录的图片 blob 复制到用户选择的位置。
+    SaveImageAs {
+        id: ClipId,
+        path: PathBuf,
+    },
+    /// 文本另存为：把该条记录的文本内容以 UTF-8 写入用户选择的位置。
+    SaveTextAs {
+        id: ClipId,
         path: PathBuf,
     },
     Shutdown,
@@ -1271,5 +1429,40 @@ mod tests {
         item.width = Some(1920);
         item.height = Some(1080);
         assert_eq!(item.title(), "图片 1920×1080");
+    }
+
+    #[test]
+    fn time_basis_labels_and_columns() {
+        assert_eq!(TimeBasis::default(), TimeBasis::LastUsed);
+        assert_eq!(TimeBasis::LastUsed.label(), "最近使用");
+        assert_eq!(TimeBasis::Captured.label(), "复制时间");
+        assert_eq!(TimeBasis::LastUsed.column(), "clips.last_used_at");
+        assert_eq!(TimeBasis::Captured.column(), "clips.created_at");
+        assert_eq!(TimeBasis::all().len(), 2);
+        assert_eq!(
+            serde_json::to_string(&TimeBasis::Captured).unwrap(),
+            "\"captured\""
+        );
+        assert_eq!(
+            serde_json::from_str::<TimeBasis>("\"last_used\"").unwrap(),
+            TimeBasis::LastUsed
+        );
+    }
+
+    #[test]
+    fn ui_scale_clamped_and_defaults() {
+        assert_eq!(clamp_ui_scale(0.5), UI_SCALE_MIN);
+        assert_eq!(clamp_ui_scale(2.0), UI_SCALE_MAX);
+        assert_eq!(clamp_ui_scale(1.1), 1.1);
+        assert_eq!(clamp_ui_scale(f32::NAN), 1.0);
+        assert_eq!(clamp_ui_scale(f32::INFINITY), UI_SCALE_MAX);
+        let s = Settings::default();
+        assert_eq!(s.ui_scale, 1.0);
+        assert_eq!(s.time_filter_basis, TimeBasis::LastUsed);
+        // 旧版 settings.json 缺少新字段时回退默认值。
+        let old: Settings = serde_json::from_str(r#"{"max_items": 42}"#).unwrap();
+        assert_eq!(old.ui_scale, 1.0);
+        assert_eq!(old.time_filter_basis, TimeBasis::LastUsed);
+        assert_eq!(PICKER_SIZE_PRESETS[1].1, [620.0, 560.0]);
     }
 }

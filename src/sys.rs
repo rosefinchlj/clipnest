@@ -16,6 +16,7 @@ pub mod autostart;
 pub mod hotkey;
 pub mod paste;
 mod state;
+pub mod shell;
 pub mod thread;
 pub mod tray;
 pub mod util;

@@ -2,11 +2,13 @@
 //!
 //! 交互严格对应 spec §6.1 键盘表与 §6.2 列表项规格；所有副作用通过 [`UiAction`] 交给 Lead。
 
-use crate::model::{ClipItem, TimeRange};
+use crate::model::{ClipItem, ClipKind, MatchMode, SortOrder, TimeRange};
+use crate::ui::export_dialog;
 use crate::ui::keys::{self, PickerCommand};
 use crate::ui::thumbs::ThumbCache;
 use crate::ui::{paint, theme, widgets, ManagerPage, UiAction, UiState};
 use eframe::egui::{self, Align2, Pos2, Rect, UiBuilder, Vec2};
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// 渲染候选窗（`ui` 为面板内容区，外层 frame 由 [`UiState::show`] 提供）。
@@ -57,16 +59,21 @@ pub(crate) fn show(
     }
     let search_top = full.top() + DRAG_STRIP;
     let chips_top = search_top + theme::SEARCH_HEIGHT + theme::GAP_S;
+    // 关键字模式 / 排序 / 来源：过滤胶囊下方的一行紧凑控件。
+    let meta_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let time_open = state.picker_time_open;
-    let time_top = chips_top + theme::CHIP_HEIGHT + theme::GAP_XS;
+    let time_top = meta_top + theme::CHIP_HEIGHT + theme::GAP_XS;
+    // 时间筛选展开时：第 1 行时间范围、第 2 行时间依据（最近使用 / 复制时间）、
+    // 指定日期时再追加第 3 行日期范围。
+    let basis_top = time_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let custom = time_open && state.picker_time_range == TimeRange::Custom;
-    let date_top = time_top + theme::CHIP_HEIGHT + theme::GAP_XS;
+    let date_top = basis_top + theme::CHIP_HEIGHT + theme::GAP_XS;
     let list_top = if !time_open {
-        chips_top + theme::CHIP_HEIGHT + theme::GAP_S
+        meta_top + theme::CHIP_HEIGHT + theme::GAP_S
     } else if custom {
         date_top + theme::CHIP_HEIGHT + theme::GAP_S
     } else {
-        time_top + theme::CHIP_HEIGHT + theme::GAP_S
+        basis_top + theme::CHIP_HEIGHT + theme::GAP_S
     };
     let list_bottom = (hint_top - theme::GAP_XS).max(list_top + theme::ROW_HEIGHT);
     let list_rect = Rect::from_min_max(
@@ -102,7 +109,8 @@ pub(crate) fn show(
         let allow_delete = !ime_active && !(state.search_focused && !state.search_text.is_empty());
         // 同上：搜索中按 ←/→ 是移动光标；搜索框为空或未聚焦时切换分类。
         let allow_arrows = !ime_active && !(state.search_focused && !state.search_text.is_empty());
-        let commands = keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows, !ime_active);
+        let commands =
+            keys::route_picker_keys(ui.ctx(), allow_delete, allow_arrows, !ime_active, !ime_active);
         for command in commands {
             handle_command(state, command, list_rect.height(), actions);
         }
@@ -146,11 +154,106 @@ pub(crate) fn show(
         }
     });
 
-    // ---- 3b) 日期筛选开关 + 时间范围 ----
+    // ---- 3a) 关键字模式 / 排序 / 来源（紧凑一行）----
+    let meta_rect = Rect::from_min_size(
+        Pos2::new(full.left(), meta_top),
+        Vec2::new(full.width(), theme::CHIP_HEIGHT),
+    );
     let toggle_rect = Rect::from_min_size(
-        Pos2::new(full.right() - 74.0, chips_top),
+        Pos2::new(full.right() - 74.0, meta_top),
         Vec2::new(64.0, theme::CHIP_HEIGHT),
     );
+    let controls_right = toggle_rect.left() - theme::GAP_S;
+    // 来源下拉：0 = 全部来源，1..=n 对应 source_apps。
+    let source_labels: Vec<String> = std::iter::once("全部来源".to_string())
+        .chain(state.source_apps.iter().cloned())
+        .collect();
+    let source_options: Vec<(usize, &str)> = source_labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| (index, label.as_str()))
+        .collect();
+    let source_index = state
+        .source_app
+        .as_ref()
+        .and_then(|app| {
+            state
+                .source_apps
+                .iter()
+                .position(|candidate| candidate.eq_ignore_ascii_case(app))
+        })
+        .map_or(0, |index| index + 1);
+    let mut next_mode = None;
+    let mut next_sort = None;
+    let mut next_source = None;
+    ui.scope_builder(UiBuilder::new().max_rect(meta_rect), |ui| {
+        let mut left = full.left();
+        let mode_rect = Rect::from_min_size(
+            Pos2::new(left, meta_top),
+            Vec2::new(88.0, theme::CHIP_HEIGHT),
+        );
+        left = mode_rect.right() + theme::GAP_XS;
+        let mode_options: Vec<(MatchMode, &str)> = MatchMode::all()
+            .iter()
+            .map(|mode| (*mode, mode.label()))
+            .collect();
+        if let Some(mode) = widgets::dropdown_at(
+            ui,
+            mode_rect,
+            "picker-match-mode",
+            state.match_mode,
+            &mode_options,
+        ) {
+            next_mode = Some(mode);
+        }
+        let sort_rect = Rect::from_min_size(
+            Pos2::new(left, meta_top),
+            Vec2::new(104.0, theme::CHIP_HEIGHT),
+        );
+        left = sort_rect.right() + theme::GAP_XS;
+        let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
+            .iter()
+            .map(|sort| (*sort, sort.label()))
+            .collect();
+        if let Some(sort) = widgets::dropdown_at(
+            ui,
+            sort_rect,
+            "picker-sort",
+            state.sort,
+            &sort_options,
+        ) {
+            next_sort = Some(sort);
+        }
+        let source_width = (controls_right - left).max(96.0);
+        let source_rect = Rect::from_min_size(
+            Pos2::new(left, meta_top),
+            Vec2::new(source_width, theme::CHIP_HEIGHT),
+        );
+        if let Some(index) = widgets::dropdown_at(
+            ui,
+            source_rect,
+            "picker-source",
+            source_index,
+            &source_options,
+        ) {
+            next_source = Some(if index == 0 {
+                None
+            } else {
+                Some(state.source_apps.get(index - 1).cloned().unwrap_or_default())
+            });
+        }
+    });
+    if let Some(mode) = next_mode {
+        state.set_match_mode(mode);
+    }
+    if let Some(sort) = next_sort {
+        state.set_sort(sort);
+    }
+    if let Some(source) = next_source {
+        state.set_source_app(source);
+    }
+
+    // ---- 3b) 日期筛选开关 + 时间范围 ----
     if widgets::button_at(ui, toggle_rect, "筛选", widgets::ButtonKind::Secondary).clicked() {
         state.picker_time_open = !time_open;
         if !state.picker_time_open {
@@ -209,6 +312,23 @@ pub(crate) fn show(
                 }
                 state.schedule_search(true);
             }
+        });
+
+        // 时间依据：最近使用 / 复制时间（写回设置并立即重查）。
+        let basis_rect = Rect::from_min_size(
+            Pos2::new(full.left(), basis_top),
+            Vec2::new(full.width(), theme::CHIP_HEIGHT),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(basis_rect), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::aux("时间依据"));
+                ui.add_space(2.0);
+                let mut basis = state.time_basis();
+                if widgets::time_basis_toggle(ui, &mut basis) {
+                    state.set_time_basis(basis);
+                    actions.push(UiAction::SetTimeFilterBasis(basis));
+                }
+            });
         });
 
         if custom {
@@ -517,6 +637,44 @@ fn row_context_menu(
         let label = format!("忽略来源应用：{app}");
         if widgets::menu_item(ui, &label).clicked() {
             actions.push(UiAction::IgnoreSourceApp(app.to_string()));
+            ui.close();
+        }
+    }
+    ui.separator();
+    // 文件类条目：打开文件 / 所在文件夹 / 复制路径（多文件时作用于第一个）。
+    if item.kind == ClipKind::Files {
+        if let Some(file) = item.files.first() {
+            let path = PathBuf::from(&file.path);
+            if widgets::menu_item(ui, "打开文件").clicked() {
+                actions.push(UiAction::OpenPath(path.clone()));
+                ui.close();
+            }
+            if widgets::menu_item(ui, "所在文件夹").clicked() {
+                actions.push(UiAction::RevealPath(path));
+                ui.close();
+            }
+            if widgets::menu_item(ui, "复制路径").clicked() {
+                actions.push(UiAction::CopyPath(file.path.clone()));
+                ui.close();
+            }
+        } else {
+            ui.label(theme::aux("（文件路径已失效）"));
+        }
+    } else {
+        // 图片/文本：另存为（系统保存框，取消不做任何事）。
+        let label = if item.kind == ClipKind::Image {
+            "图片另存为…"
+        } else {
+            "文本另存为…"
+        };
+        if widgets::menu_item(ui, label).clicked() {
+            if let Some(path) = export_dialog::choose_item_save_path(item) {
+                match item.kind {
+                    ClipKind::Image => actions.push(UiAction::SaveImageAs { id: item.id, path }),
+                    ClipKind::Text => actions.push(UiAction::SaveTextAs { id: item.id, path }),
+                    ClipKind::Files => {}
+                }
+            }
             ui.close();
         }
     }

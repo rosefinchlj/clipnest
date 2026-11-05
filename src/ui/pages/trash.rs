@@ -100,21 +100,24 @@ pub(crate) fn show(
         return;
     }
 
+    // 虚拟化列表：只绘制可视行；接近底部时按分页继续向 Store 取下一页。
+    let total = state.items.len();
     let mut child = ui.new_child(UiBuilder::new().max_rect(list));
-    egui::ScrollArea::vertical()
+    let out = egui::ScrollArea::vertical()
+        .id_salt("trash_list")
         .auto_shrink([false, false])
-        .show(&mut child, |ui| {
+        .show_rows(&mut child, ROW_HEIGHT, total, |ui, range| {
             ui.set_width(list.width());
-            // 先复制一份列表：行内「恢复/彻底删除」会乐观移除 state.items，
-            // 在遍历过程中直接下标访问会越界。
-            let items = state.items.clone();
-            for (index, item) in items.iter().enumerate() {
+            for index in range {
+                let Some(item) = state.items.get(index).cloned() else {
+                    continue;
+                };
                 let (row_rect, _) = ui.allocate_exact_size(
                     Vec2::new(ui.available_width(), ROW_HEIGHT),
                     Sense::hover(),
                 );
-                paint_row(state, ui, row_rect, item, actions);
-                if index + 1 < items.len() {
+                paint_row(state, ui, row_rect, &item, actions);
+                if index + 1 < total {
                     ui.painter().line_segment(
                         [row_rect.left_bottom(), row_rect.right_bottom()],
                         egui::Stroke::new(1.0_f32, theme::divider().color.gamma_multiply(0.5)),
@@ -122,6 +125,9 @@ pub(crate) fn show(
                 }
             }
         });
+    if out.state.offset.y + list.height() >= out.content_size.y - 240.0 {
+        state.request_more(actions);
+    }
 }
 
 /// 空状态：图标 + 文案。

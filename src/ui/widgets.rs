@@ -3,7 +3,7 @@
 //! 全部按 spec §7 视觉规范自绘（深色卡片 + 细描边 + 圆角 + 强调色），
 //! 不依赖 egui 默认控件外观；图标见 [`crate::ui::paint`]（几何自绘，不用 emoji）。
 
-use crate::model::{ClipFilter, HotkeyChord, TimeRange};
+use crate::model::{ClipFilter, HotkeyChord, TimeBasis, TimeRange};
 use crate::ui::{keys, paint, theme};
 use chrono::{Datelike, Days, Local, NaiveDate, TimeZone};
 use eframe::egui::{
@@ -241,6 +241,51 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool) -> Response {
 }
 
 // ---------------------------------------------------------------------------
+// 下拉选择
+// ---------------------------------------------------------------------------
+
+/// 下拉选择按钮：在固定矩形内绘制，返回被选中的新值（未变化返回 `None`）。
+///
+/// 用于「排序 / 来源」等筛选下拉；弹层用 egui 原生 ComboBox，外观跟随主题。
+/// `id_salt` 必须在同一窗口内唯一（Picker 与管理台各用各的）。
+pub fn dropdown_at<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id_salt: &str,
+    selected: T,
+    options: &[(T, &str)],
+) -> Option<T> {
+    let label = options
+        .iter()
+        .find(|(value, _)| *value == selected)
+        .map(|(_, label)| *label)
+        .unwrap_or_default();
+    let mut value = selected;
+    let mut changed = false;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        egui::ComboBox::from_id_salt(id_salt)
+            .selected_text(label)
+            .width(rect.width())
+            .show_ui(ui, |ui| {
+                for (candidate, option_label) in options {
+                    if ui
+                        .selectable_label(*candidate == selected, *option_label)
+                        .clicked()
+                    {
+                        value = *candidate;
+                        changed = true;
+                    }
+                }
+            });
+    });
+    if changed {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 搜索框
 // ---------------------------------------------------------------------------
 
@@ -414,6 +459,11 @@ pub fn time_range_chips(ui: &mut egui::Ui, current: &mut TimeRange) -> bool {
     chips(ui, current, &TimeRange::all(), |range| range.label())
 }
 
+/// 时间筛选依据切换：最近使用 / 复制时间；返回是否发生变化。
+pub fn time_basis_toggle(ui: &mut egui::Ui, current: &mut TimeBasis) -> bool {
+    chips(ui, current, &TimeBasis::all(), |basis| basis.label())
+}
+
 /// 指定日期范围弹窗的结果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DatePickerAction {
@@ -513,12 +563,26 @@ pub fn date_picker_modal(
     let resp = modal.show(ctx, |ui| {
         ui.set_width(286.0);
         ui.horizontal(|ui| {
+            if ui
+                .add_sized([30.0, 26.0], egui::Button::new("‹‹"))
+                .on_hover_text("上一年")
+                .clicked()
+            {
+                shown = shift_month(shown, -12);
+            }
             if ui.add_sized([30.0, 26.0], egui::Button::new("‹")).clicked() {
                 shown = shift_month(shown, -1);
             }
             ui.add_space(6.0);
             ui.label(theme::title(&format!("{} 年 {} 月", shown.year(), shown.month())));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_sized([30.0, 26.0], egui::Button::new("››"))
+                    .on_hover_text("下一年")
+                    .clicked()
+                {
+                    shown = shift_month(shown, 12);
+                }
                 if ui.add_sized([30.0, 26.0], egui::Button::new("›")).clicked() {
                     shown = shift_month(shown, 1);
                 }

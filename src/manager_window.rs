@@ -88,6 +88,8 @@ impl ManagerApp {
             crate::ui::install_fonts(&cc.egui_ctx);
         }
         crate::ui::install_theme(&cc.egui_ctx);
+        cc.egui_ctx
+            .set_zoom_factor(crate::model::clamp_ui_scale(settings.ui_scale));
 
         let settings_shared = Arc::new(Mutex::new(settings.clone()));
         let (events_tx, events) = mpsc::channel::<Event>();
@@ -171,6 +173,7 @@ impl ManagerApp {
         crate::ui::theme::set_light(next.theme == ThemeMode::Light);
         crate::ui::theme::set_selection_preset(next.selection_preset);
         crate::ui::install_theme(ctx);
+        ctx.set_zoom_factor(crate::model::clamp_ui_scale(next.ui_scale));
         self.ui.set_settings(&next);
         self.persist_settings();
         self.notify_main_settings();
@@ -227,6 +230,7 @@ impl ManagerApp {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::SearchPage(page) => self.ui.apply_search_page(page),
+                Event::SourceApps(apps) => self.ui.apply_source_apps(apps),
                 Event::Stats(stats) => self.ui.apply_stats(stats),
                 Event::ClipsChanged => {
                     self.ui.refresh();
@@ -273,8 +277,12 @@ impl ManagerApp {
                 text,
                 filter,
                 time_range,
+                time_basis,
                 custom_day,
                 custom_end_day,
+                match_mode,
+                source_app,
+                sort,
                 offset,
                 trash,
                 gen,
@@ -284,13 +292,22 @@ impl ManagerApp {
                         text,
                         filter,
                         time_range,
+                        time_basis,
                         custom_day,
                         custom_end_day,
+                        match_mode,
+                        source_app,
+                        sort,
                         offset,
                         limit: 500,
                         trash,
                         gen,
                     }));
+                }
+            }
+            UiAction::ListSourceApps => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::ListSourceApps);
                 }
             }
             UiAction::Paste { id, plain } => {
@@ -451,6 +468,40 @@ impl ManagerApp {
                 let _ = std::process::Command::new("explorer.exe")
                     .arg(crate::config::data_dir().as_os_str())
                     .spawn();
+            }
+            UiAction::OpenPath(path) => {
+                if let Err(err) = crate::sys::shell::open_path(&path) {
+                    self.ui.toast(err);
+                }
+            }
+            UiAction::RevealPath(path) => {
+                if let Err(err) = crate::sys::shell::reveal_path(&path) {
+                    self.ui.toast(err);
+                }
+            }
+            UiAction::CopyPath(text) => match crate::sys::shell::copy_text(&text) {
+                Ok(()) => self.ui.toast("路径已复制到剪贴板"),
+                Err(err) => self.ui.toast(format!("复制路径失败：{err}")),
+            },
+            UiAction::SaveImageAs { id, path } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::SaveImageAs { id, path });
+                }
+            }
+            UiAction::SaveTextAs { id, path } => {
+                if let Some(tx) = &self.store_tx {
+                    let _ = tx.send(StoreCmd::SaveTextAs { id, path });
+                }
+            }
+            UiAction::SetTimeFilterBasis(basis) => {
+                self.settings.time_filter_basis = basis;
+                if let Ok(mut shared) = self.settings_shared.lock() {
+                    shared.time_filter_basis = basis;
+                }
+                let snapshot = self.settings.clone();
+                self.ui.set_settings(&snapshot);
+                self.persist_settings();
+                self.notify_main_settings();
             }
             UiAction::RefreshStats => {
                 if let Some(tx) = &self.store_tx {

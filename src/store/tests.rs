@@ -55,6 +55,8 @@ pub(crate) fn text_input_at(text: &str, captured_at: i64) -> ClipInput {
         hash: sha(text),
         preview: text.chars().take(200).collect(),
         text: Some(text.to_string()),
+        html: None,
+        rtf: None,
         image_png: None,
         files: Vec::new(),
         byte_len: text.len() as u64,
@@ -90,6 +92,8 @@ pub(crate) fn files_input(paths: &[&Path], captured_at: i64) -> ClipInput {
             .collect::<Vec<_>>()
             .join("、"),
         text: None,
+        html: None,
+        rtf: None,
         image_png: None,
         files,
         byte_len: 0,
@@ -135,6 +139,8 @@ pub(crate) fn image_input(png: Vec<u8>, captured_at: i64) -> ClipInput {
         hash: sha(&format!("image:{}", blob::sha256_hex(&png))),
         preview: format!("图片 {width}×{height}"),
         text: None,
+        html: None,
+        rtf: None,
         image_png: Some(png),
         files: Vec::new(),
         byte_len,
@@ -191,12 +197,13 @@ pub(crate) fn search_query(
         text: text.to_string(),
         filter,
         time_range: crate::model::TimeRange::All,
+        time_basis: crate::model::TimeBasis::LastUsed,
         custom_day: None,
         custom_end_day: None,
         offset,
         limit,
-        trash: false,
         gen,
+        ..SearchQuery::default()
     }
 }
 
@@ -436,6 +443,74 @@ fn search_filters() {
         .unwrap();
     assert_eq!(page.total, 0);
 }
+
+#[test]
+fn time_basis_switches_between_used_and_captured() {
+    let (_dir, db) = open_db("time-basis");
+    let now = now_ms();
+    let old = now - 40 * 86_400_000;
+    let UpsertOutcome::Inserted(used_now_id) = db.upsert(&text_input_at("旧复制但最近用过", old)).unwrap()
+    else {
+        panic!("应插入旧记录");
+    };
+    let UpsertOutcome::Inserted(captured_now_id) = db
+        .upsert(&text_input_at("刚复制但很久没用", now))
+        .unwrap()
+    else {
+        panic!("应插入新记录");
+    };
+    db.conn
+        .execute(
+            "UPDATE clips SET last_used_at = ?1 WHERE id = ?2",
+            params![now, used_now_id],
+        )
+        .unwrap();
+    db.conn
+        .execute(
+            "UPDATE clips SET last_used_at = ?1 WHERE id = ?2",
+            params![old, captured_now_id],
+        )
+        .unwrap();
+
+    let mut query = search_query("", ClipFilter::All, 0, 10, 1);
+    query.time_range = TimeRange::Last7Days;
+
+    // 「最近使用」：命中 40 天前复制、刚刚用过的记录。
+    query.time_basis = TimeBasis::LastUsed;
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, used_now_id);
+
+    // 「复制时间」：命中刚复制、很久没用的记录。
+    query.time_basis = TimeBasis::Captured;
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, captured_now_id);
+
+    // 时间范围为 All 时两种依据都返回全部。
+    query.time_range = TimeRange::All;
+    assert_eq!(db.search(&query).unwrap().total, 2);
+    query.time_basis = TimeBasis::LastUsed;
+    assert_eq!(db.search(&query).unwrap().total, 2);
+}
+
+#[test]
+fn save_text_as_writes_utf8_file() {
+    let (dir, db) = open_db("save-text-as");
+    let UpsertOutcome::Inserted(id) = db.upsert(&text_input("另存为文本内容")).unwrap() else {
+        panic!("应插入文本记录");
+    };
+    let dest = dir.join("exported.txt");
+    assert!(db.save_text_as(id, &dest).unwrap(), "保存应成功");
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        "另存为文本内容",
+        "文件内容应为原文本"
+    );
+    // 不存在的记录 → 返回 false（UI toast 提示已被清理），不 panic。
+    assert!(!db.save_text_as(id + 999, &dir.join("missing.txt")).unwrap());
+}
+
 
 #[test]
 fn time_range_filters_by_last_used() {
@@ -894,12 +969,14 @@ fn trash_soft_delete_search_restore_and_purge() {
             text: String::new(),
             filter: ClipFilter::All,
             time_range: crate::model::TimeRange::All,
+            time_basis: crate::model::TimeBasis::LastUsed,
             custom_day: None,
             custom_end_day: None,
             offset: 0,
             limit: 10,
             trash: true,
             gen: 1,
+            ..SearchQuery::default()
         })
         .unwrap();
     assert_eq!(page.total, 1);
@@ -1037,3 +1114,309 @@ fn favorite_file_copy_reports_state_and_can_be_retried() {
     assert!(item.files.iter().all(|f| f.stored));
 }
 
+#[test]
+fn rich_text_fields_roundtrip_through_store() {
+    let (_dir, db) = open_db("rich-fields");
+    let mut input = text_input("富文本正文");
+    input.html = Some("<p><b>富文本正文</b></p>".to_string());
+    input.rtf = Some("{\\rtf1 富文本正文}".to_string());
+
+    let id = db.upsert(&input).unwrap().id();
+    let item = db.item(id).unwrap().expect("条目应存在");
+    assert_eq!(item.text.as_deref(), Some("富文本正文"));
+    assert_eq!(item.html.as_deref(), Some("<p><b>富文本正文</b></p>"));
+    assert_eq!(item.rtf.as_deref(), Some("{\\rtf1 富文本正文}"));
+
+    let payload = db.paste_payload(id).unwrap().expect("粘贴载荷应存在");
+    assert_eq!(payload.text.as_deref(), Some("富文本正文"));
+    assert_eq!(payload.html.as_deref(), Some("<p><b>富文本正文</b></p>"));
+    assert_eq!(payload.rtf.as_deref(), Some("{\\rtf1 富文本正文}"));
+}
+
+#[test]
+fn plain_text_item_reads_back_without_rich_fields() {
+    let (_dir, db) = open_db("rich-none");
+    let id = db.upsert(&text_input("纯文本")).unwrap().id();
+
+    let item = db.item(id).unwrap().expect("条目应存在");
+    assert_eq!(item.text.as_deref(), Some("纯文本"));
+    assert!(item.html.is_none(), "无富文本时 html 应为 None");
+    assert!(item.rtf.is_none(), "无富文本时 rtf 应为 None");
+
+    let payload = db.paste_payload(id).unwrap().expect("粘贴载荷应存在");
+    assert_eq!(payload.text.as_deref(), Some("纯文本"));
+    assert!(payload.html.is_none());
+    assert!(payload.rtf.is_none());
+}
+
+#[test]
+fn schema_v3_migrates_rich_text_columns() {
+    let dir = temp_dir("schema-v3-rich");
+    let path = dir.join("data.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE clips (
+           id INTEGER PRIMARY KEY, kind INTEGER NOT NULL, hash TEXT NOT NULL UNIQUE,
+           text TEXT, preview TEXT NOT NULL DEFAULT '', blob_id TEXT, files_json TEXT,
+           byte_len INTEGER NOT NULL DEFAULT 0, width INTEGER, height INTEGER,
+           created_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL,
+           use_count INTEGER NOT NULL DEFAULT 1,
+           favorited INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0,
+           source_app TEXT, source_title TEXT, deleted_at INTEGER
+         );
+         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO meta(key, value) VALUES ('schema_version', '3');
+         INSERT INTO clips(kind, hash, text, preview, created_at, last_used_at, pinned)
+         VALUES (0, 'legacy-rich', '旧文本', '旧文本', 1, 1, 1);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = Db::open_in_dir(&dir, DbOptions::default()).unwrap();
+    assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+    for column in ["html", "rtf"] {
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = ?1",
+                params![column],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "v3 旧库应自动补齐 {column} 列");
+    }
+
+    let old_id: i64 = db
+        .conn
+        .query_row("SELECT id FROM clips WHERE hash = 'legacy-rich'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let item = db.item(old_id).unwrap().expect("旧条目应保留");
+    assert_eq!(item.text.as_deref(), Some("旧文本"));
+    assert!(item.html.is_none(), "旧数据 html 应为 NULL");
+    assert!(item.rtf.is_none(), "旧数据 rtf 应为 NULL");
+    assert!(item.pinned, "v3→v4 不应再改写用户置顶");
+    assert!(!item.favorited, "v3→v4 不应把置顶迁移成收藏");
+    drop(db);
+
+    // restart-safe：再次打开不应报错、也不应重复加列或重复迁移
+    let db2 = Db::open_in_dir(&dir, DbOptions::default()).unwrap();
+    assert_eq!(db2.schema_version().unwrap(), SCHEMA_VERSION);
+    let pinned: i64 = db2
+        .conn
+        .query_row(
+            "SELECT pinned FROM clips WHERE hash = 'legacy-rich'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pinned, 1, "重复打开后置顶状态应保持");
+}
+
+// ---------------------------------------------------------------------------
+// B2/B3：多关键词 / 来源筛选 / 排序 / 回收站分页
+// ---------------------------------------------------------------------------
+
+fn bulk_query(text: &str) -> SearchQuery {
+    SearchQuery {
+        text: text.to_string(),
+        limit: 100,
+        ..SearchQuery::default()
+    }
+}
+
+#[test]
+fn multi_keyword_any_and_all_on_fts_path() {
+    let (_dir, db) = open_db("multi-keyword");
+    let both = db.upsert(&text_input("alpha beta 同时出现")).unwrap().id();
+    let alpha = db.upsert(&text_input("alpha 单独出现")).unwrap().id();
+    let beta = db.upsert(&text_input("beta 单独出现")).unwrap().id();
+
+    let any = db.search(&bulk_query("alpha beta")).unwrap();
+    assert_eq!(any.total, 3, "默认 OR：任一关键词命中即可");
+    let ids: Vec<ClipId> = any.items.iter().map(|item| item.id).collect();
+    assert!(ids.contains(&both) && ids.contains(&alpha) && ids.contains(&beta));
+
+    let mut all_query = bulk_query("alpha beta");
+    all_query.match_mode = MatchMode::All;
+    let all = db.search(&all_query).unwrap();
+    assert_eq!(all.total, 1, "AND：要求两个关键词都命中");
+    assert_eq!(all.items[0].id, both);
+}
+
+#[test]
+fn multi_keyword_like_path_and_quoted_phrase() {
+    let (_dir, db) = open_db_like("multi-keyword-like");
+    db.upsert(&text_input("alpha beta 连在一起")).unwrap();
+    db.upsert(&text_input("alpha 中间夹了别的 beta")).unwrap();
+    db.upsert(&text_input("alpha 单独出现")).unwrap();
+
+    // 逐词 AND：每个词都要在 text/preview/source_title 里命中
+    let mut all_query = bulk_query("alpha beta");
+    all_query.match_mode = MatchMode::All;
+    let all = db.search(&all_query).unwrap();
+    assert_eq!(all.total, 2, "非相邻的两个关键词也应 AND 命中");
+
+    // 引号短语不拆：只有相邻出现的整段命中
+    let quoted = db.search(&bulk_query("\"alpha beta\"")).unwrap();
+    assert_eq!(quoted.total, 1);
+    assert!(quoted.items[0].text.as_deref().unwrap().contains("连在一起"));
+}
+
+#[test]
+fn source_app_filter_and_distinct_list() {
+    let (_dir, db) = open_db("source-filter");
+    let mut chrome = text_input_at("网页内容", 1_000);
+    chrome.source_app = Some("chrome.exe".to_string());
+    let mut code = text_input_at("代码内容", 2_000);
+    code.source_app = Some("Code.exe".to_string());
+    let mut notepad = text_input_at("纯文本", 3_000);
+    notepad.source_app = Some("notepad.exe".to_string());
+    let chrome_id = db.upsert(&chrome).unwrap().id();
+    db.upsert(&code).unwrap();
+    db.upsert(&notepad).unwrap();
+
+    let mut query = bulk_query("");
+    query.source_app = Some("chrome.exe".to_string());
+    let page = db.search(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, chrome_id);
+
+    let mut query = bulk_query("");
+    query.source_app = Some("Code.exe".to_string());
+    assert_eq!(db.search(&query).unwrap().total, 1);
+    // 不带来源 = 不过滤
+    assert_eq!(db.search(&bulk_query("")).unwrap().total, 3);
+
+    // distinct 来源列表：不含已删除记录，按应用名（小写）排序
+    let mut old = text_input_at("旧来源", 4_000);
+    old.source_app = Some("old.exe".to_string());
+    let old_id = db.upsert(&old).unwrap().id();
+    db.soft_delete(&[old_id]).unwrap();
+    assert_eq!(
+        db.source_apps().unwrap(),
+        vec![
+            "chrome.exe".to_string(),
+            "Code.exe".to_string(),
+            "notepad.exe".to_string()
+        ]
+    );
+}
+
+#[test]
+fn sort_orders_match_sql() {
+    let (_dir, db) = open_db("sort-orders");
+    let a = db.upsert(&text_input_at("a", 1_000)).unwrap().id();
+    let b = db.upsert(&text_input_at("b", 2_000)).unwrap().id();
+    let c = db.upsert(&text_input_at("c", 3_000)).unwrap().id();
+    let d = db.upsert(&image_input(tiny_png(21), 9_000)).unwrap().id();
+    // 直接改字段，构造可区分的 last_used_at / byte_len / use_count
+    for (id, byte_len, use_count, last_used_at) in [
+        (a, 10_i64, 5_i64, 3_000_i64),
+        (b, 200, 2, 2_000),
+        (c, 1_000, 9, 1_000),
+        (d, 1, 1, 9_000),
+    ] {
+        db.conn
+            .execute(
+                "UPDATE clips SET byte_len=?1, use_count=?2, last_used_at=?3 WHERE id=?4",
+                params![byte_len, use_count, last_used_at, id],
+            )
+            .unwrap();
+    }
+
+    let expect = |sort: SortOrder| -> Vec<ClipId> {
+        let mut query = bulk_query("");
+        query.sort = sort;
+        db.search(&query)
+            .unwrap()
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect()
+    };
+    assert_eq!(expect(SortOrder::Recent), vec![d, a, b, c]);
+    assert_eq!(expect(SortOrder::Oldest), vec![c, b, a, d]);
+    assert_eq!(expect(SortOrder::Largest), vec![c, b, a, d]);
+    assert_eq!(expect(SortOrder::MostUsed), vec![c, a, b, d]);
+    // 类型排序：文本在前、图片在后；同类型内仍按最近使用
+    assert_eq!(expect(SortOrder::Type), vec![a, b, c, d]);
+
+    // 收藏页：置顶项永远优先，再按所选排序
+    assert!(db.set_favorited(a, true).unwrap());
+    assert!(db.set_pinned(a, true).unwrap());
+    assert!(db.set_favorited(b, true).unwrap());
+    let mut favorites = bulk_query("");
+    favorites.filter = ClipFilter::Favorites;
+    favorites.sort = SortOrder::Largest;
+    let ids: Vec<ClipId> = db
+        .search(&favorites)
+        .unwrap()
+        .items
+        .iter()
+        .map(|item| item.id)
+        .collect();
+    assert_eq!(ids, vec![a, b], "置顶优先，其次才是最大文件");
+}
+
+#[test]
+fn trash_pagination_covers_all_rows_without_duplicates() {
+    let (_dir, db) = open_db("trash-paging");
+    let ids: Vec<ClipId> = (0..6)
+        .map(|index| {
+            db.upsert(&text_input_at(&format!("回收站条目{index}"), 1_000 + index * 100))
+                .unwrap()
+                .id()
+        })
+        .collect();
+    assert_eq!(db.soft_delete(&ids[..5]).unwrap(), 5);
+
+    let mut seen = Vec::new();
+    let mut offset = 0;
+    loop {
+        let query = SearchQuery {
+            text: String::new(),
+            limit: 2,
+            offset,
+            trash: true,
+            ..SearchQuery::default()
+        };
+        let page = db.search(&query).unwrap();
+        assert_eq!(page.total, 5, "翻页过程中 total 保持稳定");
+        if page.items.is_empty() {
+            break;
+        }
+        seen.extend(page.items.iter().map(|item| item.id));
+        offset += page.items.len();
+    }
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), 5, "分页覆盖全部回收站记录且无重复");
+}
+
+#[test]
+fn like_search_matches_source_title_and_file_paths() {
+    let (_dir, db) = open_db_like("source-title-like");
+    let mut note = text_input_at("会议纪要正文", 1_000);
+    note.source_title = Some("季度规划.docx".to_string());
+    let note_id = db.upsert(&note).unwrap().id();
+    let mut other = text_input_at("别的内容", 2_000);
+    other.source_title = Some("无关文档.txt".to_string());
+    db.upsert(&other).unwrap();
+
+    let page = db.search(&bulk_query("季度规划")).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, note_id);
+
+    // 带路径分隔符的文件名走 LIKE 路径，仍可搜到
+    let mut file = text_input_at("附件", 3_000);
+    file.preview = "预算表.xlsx".to_string();
+    file.files = vec![FileEntry::from_path(Path::new(
+        "C:\\Users\\demo\\Documents\\预算表.xlsx",
+    ))];
+    let file_id = db.upsert(&file).unwrap().id();
+    let page = db.search(&bulk_query("预算表")).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, file_id);
+}
