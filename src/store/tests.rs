@@ -55,6 +55,8 @@ pub(crate) fn text_input_at(text: &str, captured_at: i64) -> ClipInput {
         hash: sha(text),
         preview: text.chars().take(200).collect(),
         text: Some(text.to_string()),
+        html: None,
+        rtf: None,
         image_png: None,
         files: Vec::new(),
         byte_len: text.len() as u64,
@@ -90,6 +92,8 @@ pub(crate) fn files_input(paths: &[&Path], captured_at: i64) -> ClipInput {
             .collect::<Vec<_>>()
             .join("、"),
         text: None,
+        html: None,
+        rtf: None,
         image_png: None,
         files,
         byte_len: 0,
@@ -135,6 +139,8 @@ pub(crate) fn image_input(png: Vec<u8>, captured_at: i64) -> ClipInput {
         hash: sha(&format!("image:{}", blob::sha256_hex(&png))),
         preview: format!("图片 {width}×{height}"),
         text: None,
+        html: None,
+        rtf: None,
         image_png: Some(png),
         files: Vec::new(),
         byte_len,
@@ -947,4 +953,104 @@ fn expired_trash_is_purged_after_two_days() {
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn rich_text_fields_roundtrip_through_store() {
+    let (_dir, db) = open_db("rich-fields");
+    let mut input = text_input("富文本正文");
+    input.html = Some("<p><b>富文本正文</b></p>".to_string());
+    input.rtf = Some("{\\rtf1 富文本正文}".to_string());
+
+    let id = db.upsert(&input).unwrap().id();
+    let item = db.item(id).unwrap().expect("条目应存在");
+    assert_eq!(item.text.as_deref(), Some("富文本正文"));
+    assert_eq!(item.html.as_deref(), Some("<p><b>富文本正文</b></p>"));
+    assert_eq!(item.rtf.as_deref(), Some("{\\rtf1 富文本正文}"));
+
+    let payload = db.paste_payload(id).unwrap().expect("粘贴载荷应存在");
+    assert_eq!(payload.text.as_deref(), Some("富文本正文"));
+    assert_eq!(payload.html.as_deref(), Some("<p><b>富文本正文</b></p>"));
+    assert_eq!(payload.rtf.as_deref(), Some("{\\rtf1 富文本正文}"));
+}
+
+#[test]
+fn plain_text_item_reads_back_without_rich_fields() {
+    let (_dir, db) = open_db("rich-none");
+    let id = db.upsert(&text_input("纯文本")).unwrap().id();
+
+    let item = db.item(id).unwrap().expect("条目应存在");
+    assert_eq!(item.text.as_deref(), Some("纯文本"));
+    assert!(item.html.is_none(), "无富文本时 html 应为 None");
+    assert!(item.rtf.is_none(), "无富文本时 rtf 应为 None");
+
+    let payload = db.paste_payload(id).unwrap().expect("粘贴载荷应存在");
+    assert_eq!(payload.text.as_deref(), Some("纯文本"));
+    assert!(payload.html.is_none());
+    assert!(payload.rtf.is_none());
+}
+
+#[test]
+fn schema_v3_migrates_rich_text_columns() {
+    let dir = temp_dir("schema-v3-rich");
+    let path = dir.join("data.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE clips (
+           id INTEGER PRIMARY KEY, kind INTEGER NOT NULL, hash TEXT NOT NULL UNIQUE,
+           text TEXT, preview TEXT NOT NULL DEFAULT '', blob_id TEXT, files_json TEXT,
+           byte_len INTEGER NOT NULL DEFAULT 0, width INTEGER, height INTEGER,
+           created_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL,
+           use_count INTEGER NOT NULL DEFAULT 1,
+           favorited INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0,
+           source_app TEXT, source_title TEXT, deleted_at INTEGER
+         );
+         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO meta(key, value) VALUES ('schema_version', '3');
+         INSERT INTO clips(kind, hash, text, preview, created_at, last_used_at, pinned)
+         VALUES (0, 'legacy-rich', '旧文本', '旧文本', 1, 1, 1);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = Db::open_in_dir(&dir, DbOptions::default()).unwrap();
+    assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+    for column in ["html", "rtf"] {
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = ?1",
+                params![column],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "v3 旧库应自动补齐 {column} 列");
+    }
+
+    let old_id: i64 = db
+        .conn
+        .query_row("SELECT id FROM clips WHERE hash = 'legacy-rich'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let item = db.item(old_id).unwrap().expect("旧条目应保留");
+    assert_eq!(item.text.as_deref(), Some("旧文本"));
+    assert!(item.html.is_none(), "旧数据 html 应为 NULL");
+    assert!(item.rtf.is_none(), "旧数据 rtf 应为 NULL");
+    assert!(item.pinned, "v3→v4 不应再改写用户置顶");
+    assert!(!item.favorited, "v3→v4 不应把置顶迁移成收藏");
+    drop(db);
+
+    // restart-safe：再次打开不应报错、也不应重复加列或重复迁移
+    let db2 = Db::open_in_dir(&dir, DbOptions::default()).unwrap();
+    assert_eq!(db2.schema_version().unwrap(), SCHEMA_VERSION);
+    let pinned: i64 = db2
+        .conn
+        .query_row(
+            "SELECT pinned FROM clips WHERE hash = 'legacy-rich'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pinned, 1, "重复打开后置顶状态应保持");
 }

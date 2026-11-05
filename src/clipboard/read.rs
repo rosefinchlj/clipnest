@@ -7,6 +7,7 @@
 //! - `GetClipboardData` 返回的句柄归剪贴板所有，**只 Lock/Unlock 不 Free**；
 //! - `GlobalLock` 成功后必定 `GlobalUnlock`，且所有切片长度都经 `GlobalSize` 校验。
 
+use super::html;
 use super::{
     ClipError, ClipResult, RawClipboard, CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT, PNG_FORMAT,
     SELF_MARKER_FORMAT, VIEWER_IGNORE_FORMAT,
@@ -34,6 +35,10 @@ const MAX_TEXT_READ_UNITS: usize = MAX_TEXT_READ_BYTES / 2;
 
 /// PNG 注册格式的读取上限（约 40MP 的 PNG 也能容纳，防异常巨块）。
 pub(super) const MAX_PNG_BYTES: usize = 128 * 1024 * 1024;
+/// CF_HTML 读取上限：normalize 阶段还会 sanitize 并按 2MB 截断，这里防异常巨块。
+const MAX_HTML_READ_BYTES: usize = 4 * 1024 * 1024;
+/// RTF 读取上限（同上）。
+const MAX_RTF_READ_BYTES: usize = 4 * 1024 * 1024;
 /// CF_DIB/CF_DIBV5 的读取上限：40MP × 32bpp ≈ 160MB，留出头/行对齐余量。
 pub(super) const MAX_DIB_BYTES: usize = 200 * 1024 * 1024;
 /// 单次最多读取的文件数（normalize 再按设置截断到默认 100）。
@@ -93,7 +98,14 @@ pub fn read_clipboard() -> ClipResult<RawClipboard> {
     // 3) 文本（UNICODETEXT）
     raw.text = read_text();
 
-    // 4) 图片：仅在文件/非空文本都不存在时才值得读（优先级低于二者）
+    // 4) 富文本（CF_HTML / RTF）：文件优先，存在文件列表时不再读富文本。
+    //    读取/解析失败都静默降级为纯文本，不影响文本/图片/文件采集。
+    if raw.files.is_empty() {
+        raw.html = read_cf_html();
+        raw.rtf = read_rtf();
+    }
+
+    // 5) 图片：仅在文件/非空文本都不存在时才值得读（优先级低于二者）
     let text_takes_priority = raw
         .text
         .as_deref()
@@ -159,6 +171,40 @@ pub(super) fn read_text() -> Option<String> {
     // 读取阶段再去一次尾部 \0（理论上已按 NUL 截断，这里是让 RawClipboard 契约自洽）
     let text = text.trim_end_matches('\0').to_string();
     Some(text)
+}
+
+/// 读取注册格式 "HTML Format"（CF_HTML）并解析出 fragment。
+///
+/// 解析失败（header 损坏 / 非 UTF-8 / 片段为空）时返回 `None`，调用方照常使用纯文本。
+pub(super) fn read_cf_html() -> Option<String> {
+    let format = register_format(html::HTML_FORMAT);
+    if !is_available(format) {
+        return None;
+    }
+    let bytes = read_clipboard_bytes(format, MAX_HTML_READ_BYTES)?;
+    match html::parse_cf_html(&bytes) {
+        Some(fragment) => Some(fragment),
+        None => {
+            crate::logging::debug("CF_HTML 解析失败，已降级为纯文本");
+            None
+        }
+    }
+}
+
+/// 读取注册格式 "Rich Text Format" 的 RTF 原文（ASCII/ANSI 为常见情况，按 lossy 处理）。
+pub(super) fn read_rtf() -> Option<String> {
+    let format = register_format(html::RTF_FORMAT);
+    if !is_available(format) {
+        return None;
+    }
+    let bytes = read_clipboard_bytes(format, MAX_RTF_READ_BYTES)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_end_matches('\0');
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
 }
 
 /// 读取 CF_HDROP 文件列表（宽字符路径，支持多个文件）。

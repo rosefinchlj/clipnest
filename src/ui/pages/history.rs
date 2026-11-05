@@ -866,6 +866,20 @@ fn paint_table_row(
 // ---------------------------------------------------------------------------
 
 /// 右侧详情面板：文本全文（只读可复制）/ 图片大图 / 文件清单 + 操作按钮。
+/// 详情面板标题行的富文本格式徽标：条目带 html/rtf 时依次显示 `HTML` / `RTF`。
+///
+/// 没有富文本（旧数据）时返回空列表，布局与旧版本完全一致。
+fn rich_badges(item: &ClipItem) -> Vec<&'static str> {
+    let mut badges = Vec::new();
+    if item.html.is_some() {
+        badges.push("HTML");
+    }
+    if item.rtf.is_some() {
+        badges.push("RTF");
+    }
+    badges
+}
+
 fn detail_panel(
     state: &mut UiState,
     ui: &mut egui::Ui,
@@ -886,14 +900,31 @@ fn detail_panel(
     );
     let inner = rect.shrink(14.0);
 
-    // 标题 + 类型标签
-    let tag_w = paint::text_width(ui, item.kind.label(), theme::font_aux()) + 16.0;
-    let tag_rect = Rect::from_min_size(inner.min, Vec2::new(tag_w, 20.0));
+    // 标题 + 类型标签 + 富文本格式徽标（HTML/RTF 只在条目带富文本时显示）
+    let mut tag_x = inner.left();
     {
+        let tag_w = paint::text_width(ui, item.kind.label(), theme::font_aux()) + 16.0;
+        let tag_rect =
+            Rect::from_min_size(Pos2::new(tag_x, inner.top()), Vec2::new(tag_w, 20.0));
         let mut child = ui.new_child(UiBuilder::new().max_rect(tag_rect));
         widgets::tag(&mut child, item.kind.label(), theme::kind_color(item.kind));
+        tag_x = tag_rect.right() + 6.0;
     }
-    let title_x = tag_rect.right() + 8.0;
+    for label in rich_badges(&item) {
+        let color = if label == "HTML" {
+            theme::accent()
+        } else {
+            theme::success()
+        };
+        let tag_w = paint::text_width(ui, label, theme::font_aux()) + 16.0;
+        let tag_rect =
+            Rect::from_min_size(Pos2::new(tag_x, inner.top()), Vec2::new(tag_w, 20.0));
+        let mut child = ui.new_child(UiBuilder::new().max_rect(tag_rect));
+        widgets::tag(&mut child, label, color);
+        tag_x = tag_rect.right() + 6.0;
+    }
+    let title_x = tag_x + 2.0;
+    let title_w = (inner.right() - title_x).max(0.0);
     paint::paint_elided_highlighted(
         ui,
         Pos2::new(title_x, inner.top() + 2.0),
@@ -902,7 +933,7 @@ fn detail_panel(
         theme::text(),
         state.search_text.as_str(),
         theme::danger(),
-        inner.right() - title_x,
+        title_w,
     );
     // 元信息
     let meta = format!(
@@ -1156,5 +1187,31 @@ mod columns_tests {
         let cols = Columns::new(rect(760.0));
         assert!(cols.show_source);
         assert!(cols.summary_w >= 120.0);
+    }
+
+    #[test]
+    fn rich_badges_only_when_rich_fields_present() {
+        // 旧数据（无 html/rtf）不显示任何格式徽标，布局不变
+        let plain = ClipItem::default();
+        assert!(rich_badges(&plain).is_empty());
+
+        let html = ClipItem {
+            html: Some("<p>x</p>".into()),
+            ..Default::default()
+        };
+        assert_eq!(rich_badges(&html), vec!["HTML"]);
+
+        let rtf = ClipItem {
+            rtf: Some("{\\rtf1 x}".into()),
+            ..Default::default()
+        };
+        assert_eq!(rich_badges(&rtf), vec!["RTF"]);
+
+        let both = ClipItem {
+            html: Some("<p>x</p>".into()),
+            rtf: Some("{\\rtf1 x}".into()),
+            ..Default::default()
+        };
+        assert_eq!(rich_badges(&both), vec!["HTML", "RTF"]);
     }
 }

@@ -20,10 +20,12 @@ use crate::store::db::Db;
 use crate::store::StoreResult;
 
 /// 条目列（顺序必须与 [`row_to_item`] 一致）。
+///
+/// 富文本 `html/rtf` 追加在末尾（v4），旧库缺列时由 schema 迁移补齐。
 const ITEM_COLUMNS: &str = "clips.id, clips.kind, clips.preview, clips.text, clips.files_json, \
      clips.blob_id, clips.byte_len, clips.width, clips.height, clips.created_at, \
      clips.last_used_at, clips.use_count, clips.favorited, clips.pinned, clips.source_app, \
-     clips.source_title, clips.deleted_at";
+     clips.source_title, clips.deleted_at, clips.html, clips.rtf";
 
 /// 统一排序：最近使用优先、id 兜底保证稳定分页。
 ///
@@ -197,6 +199,8 @@ impl Db {
                 clip_id: item.id,
                 kind: item.kind,
                 text: item.text.clone().or_else(|| Some(item.preview.clone())),
+                html: item.html.clone(),
+                rtf: item.rtf.clone(),
                 png_path: None,
                 files: Vec::new(),
             })),
@@ -224,6 +228,8 @@ impl Db {
                     clip_id: item.id,
                     kind: item.kind,
                     text: None,
+                    html: None,
+                    rtf: None,
                     png_path,
                     files: Vec::new(),
                 }))
@@ -249,6 +255,8 @@ impl Db {
                     clip_id: item.id,
                     kind: item.kind,
                     text: None,
+                    html: None,
+                    rtf: None,
                     png_path: None,
                     files,
                 }))
@@ -303,6 +311,8 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipItem> {
         source_app: row.get(14)?,
         source_title: row.get(15)?,
         deleted_at: row.get(16)?,
+        html: row.get(17)?,
+        rtf: row.get(18)?,
     })
 }
 

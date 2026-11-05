@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 mod dib;
+mod html;
 mod read;
 mod write;
 
@@ -53,6 +54,10 @@ pub(crate) const PREVIEW_BYTES: usize = 8 * 1024;
 pub struct RawClipboard {
     /// CF_UNICODETEXT 文本（已去掉尾部 `\0`，保留内部换行）。
     pub text: Option<String>,
+    /// CF_HTML 解析出的 HTML fragment（未 sanitize，normalize 时统一清洗）。
+    pub html: Option<String>,
+    /// 注册格式 "Rich Text Format" 的 RTF 原文（未清洗）。
+    pub rtf: Option<String>,
     /// 已是 PNG 编码的图片（注册格式 "PNG"），或由 DIB 转码前的占位（读取阶段只存原始字节）。
     pub png: Option<Vec<u8>>,
     /// 原始 CF_DIB/CF_DIBV5 字节（仅在无 PNG 时保留，由 normalize 转码）。
@@ -156,9 +161,15 @@ pub fn normalize(raw: RawClipboard, limits: &CaptureLimits) -> Option<ClipInput>
         }
     }
 
-    // 2) 非空文本（纯空白文本视作"无文本"，继续尝试图片）
-    if let Some(text) = raw.text.as_deref() {
-        if let Some(input) = normalize_text(text, limits) {
+    // 2) 非空文本（纯空白文本视作"无文本"，继续尝试图片）；
+    //    富文本（CF_HTML / RTF）与文本同属文本类：纯文本为空时从 HTML 提取回退。
+    if raw.text.is_some() || raw.html.is_some() || raw.rtf.is_some() {
+        if let Some(input) = normalize_text_rich(
+            raw.text.as_deref(),
+            raw.html.as_deref(),
+            raw.rtf.as_deref(),
+            limits,
+        ) {
             return Some(input);
         }
     }
@@ -211,6 +222,8 @@ fn normalize_files(raw_files: &[PathBuf], limits: &CaptureLimits) -> Option<Clip
         hash: hash_files(files.iter().map(|f| f.path.as_str())),
         preview: preview_text(&preview_src),
         text: None,
+        html: None,
+        rtf: None,
         image_png: None,
         files,
         byte_len,
@@ -222,16 +235,38 @@ fn normalize_files(raw_files: &[PathBuf], limits: &CaptureLimits) -> Option<Clip
     })
 }
 
-/// 文本归一化：去尾部 `\0`、忽略纯空白、按上限截断、计算 hash/preview。
-fn normalize_text(text: &str, limits: &CaptureLimits) -> Option<ClipInput> {
+/// 文本（含富文本）归一化：去尾部 `\0`、忽略纯空白、按上限截断、计算 hash/preview。
+///
+/// 富文本规则（B1）：
+/// - HTML 先 sanitize（脚本/事件/外链过滤）再存储；RTF 只做基本控制字过滤；
+/// - 纯文本为空（例如从网页复制了带格式图片说明）时，从 HTML 提取纯文本作为
+///   `text`/preview 回退；两者都为空时返回 `None`，让图片分支继续；
+/// - 没有任何 html/rtf 时行为与原先完全一致。
+fn normalize_text_rich(
+    text: Option<&str>,
+    html: Option<&str>,
+    rtf: Option<&str>,
+    limits: &CaptureLimits,
+) -> Option<ClipInput> {
     // 读取阶段已去尾部 \0；这里再兜底一次（测试/其它调用方可能直接构造 RawClipboard）
-    let text = text.trim_end_matches('\0');
-    if text.trim().is_empty() {
+    let text = text.unwrap_or_default().trim_end_matches('\0');
+    let sanitized_html = html.and_then(html::sanitize_html);
+    let sanitized_rtf = rtf.and_then(html::sanitize_rtf);
+    // 纯文本为空时从 HTML 提取回退文本（标签结构在 text 里没有意义）
+    let body = if !text.trim().is_empty() {
+        text.to_string()
+    } else {
+        sanitized_html
+            .as_deref()
+            .map(html::plain_text_from_html)
+            .unwrap_or_default()
+    };
+    if body.trim().is_empty() {
         return None;
     }
-    let original_len = text.len();
-    let (text, truncated) = truncate_text(text, limits.max_text_bytes);
-    if text.trim().is_empty() {
+    let original_len = body.len();
+    let (body, truncated) = truncate_text(&body, limits.max_text_bytes);
+    if body.trim().is_empty() {
         // 上限过小，截断后没有有效内容
         return None;
     }
@@ -242,12 +277,14 @@ fn normalize_text(text: &str, limits: &CaptureLimits) -> Option<ClipInput> {
             limits.max_text_bytes, original_len
         ));
     }
-    let byte_len = text.len() as u64;
+    let byte_len = body.len() as u64;
     Some(ClipInput {
         kind: ClipKind::Text,
-        hash: hash_text(&text),
-        preview: preview_text(&text),
-        text: Some(text),
+        hash: hash_text(&body),
+        preview: preview_text(&body),
+        text: Some(body),
+        html: sanitized_html,
+        rtf: sanitized_rtf,
         image_png: None,
         files: Vec::new(),
         byte_len,
@@ -308,6 +345,8 @@ fn image_input(png: Vec<u8>, width: u32, height: u32) -> ClipInput {
             crate::model::fmt_size(byte_len)
         ),
         text: None,
+        html: None,
+        rtf: None,
         image_png: Some(png),
         files: Vec::new(),
         byte_len,
@@ -674,6 +713,8 @@ mod tests {
             hash: String::new(),
             preview: String::new(),
             text: Some(String::new()),
+            html: None,
+            rtf: None,
             image_png: None,
             files: Vec::new(),
             byte_len: 0,
@@ -690,6 +731,61 @@ mod tests {
         let text = "a".repeat(PREVIEW_BYTES * 2);
         let input = normalize(raw_text(&text), &CaptureLimits::defaults()).unwrap();
         assert_eq!(input.preview.len(), PREVIEW_BYTES);
+    }
+
+    #[test]
+    fn normalize_rich_text_sanitizes_html_and_keeps_rtf() {
+        let raw = RawClipboard {
+            text: Some("纯文本".into()),
+            html: Some(r#"<p onclick="evil()">纯文本<script>evil()</script></p>"#.into()),
+            rtf: Some(r"{\rtf1 纯文本{\object\objdata 0102}}".into()),
+            ..Default::default()
+        };
+        let input = normalize(raw, &CaptureLimits::defaults()).expect("应有结果");
+        assert_eq!(input.kind, ClipKind::Text);
+        assert_eq!(input.text.as_deref(), Some("纯文本"));
+        let html = input.html.expect("应保留 HTML");
+        assert!(html.contains("<p>纯文本</p>"), "html={html}");
+        assert!(!html.contains("script") && !html.contains("onclick"));
+        let rtf = input.rtf.expect("应保留 RTF");
+        assert!(!rtf.contains("objdata"), "rtf={rtf}");
+        assert!(rtf.contains("纯文本"));
+    }
+
+    #[test]
+    fn normalize_html_only_falls_back_to_plain_text() {
+        let raw = RawClipboard {
+            text: Some(" \r\n".into()),
+            html: Some("<p>来自网页</p><div>第二段</div>".into()),
+            ..Default::default()
+        };
+        let input = normalize(raw, &CaptureLimits::defaults()).expect("应从 HTML 提取文本");
+        assert_eq!(input.kind, ClipKind::Text);
+        let text = input.text.expect("text 回退");
+        assert!(text.contains("来自网页") && text.contains("第二段"), "text={text}");
+        assert_eq!(input.preview, preview_text(&text));
+        assert!(input.html.is_some());
+    }
+
+    #[test]
+    fn normalize_without_rich_text_is_unchanged() {
+        let input = normalize(raw_text("旧行为"), &CaptureLimits::defaults()).unwrap();
+        assert!(input.html.is_none());
+        assert!(input.rtf.is_none());
+        assert_eq!(input.byte_len, "旧行为".len() as u64);
+    }
+
+    #[test]
+    fn normalize_script_only_html_falls_through_to_image() {
+        let png = sample_png(2, 2);
+        let raw = RawClipboard {
+            html: Some("<script>evil()</script>".into()),
+            png: Some(png),
+            ..Default::default()
+        };
+        let input = normalize(raw, &CaptureLimits::defaults()).expect("应回退到图片");
+        assert_eq!(input.kind, ClipKind::Image);
+        assert!(input.html.is_none());
     }
 
     #[test]

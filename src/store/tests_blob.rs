@@ -350,6 +350,97 @@ fn export_import_roundtrip() {
     assert!(export::import_json(&db2, &bad).is_err());
 }
 
+#[test]
+fn export_import_preserves_rich_text_fields() {
+    let (dir, db) = open_db("export-rich-src");
+    let mut input = text_input("富文本导出");
+    input.html = Some("<p><b>富文本导出</b></p>".to_string());
+    input.rtf = Some("{\\rtf1 富文本导出}".to_string());
+    db.upsert(&input).unwrap();
+
+    let export_path = dir.join("rich.json");
+    let report = export::export_json(&db, &export_path).unwrap();
+    assert_eq!(report.clips, 1);
+    let doc = export::read_export(&export_path).unwrap();
+    assert_eq!(doc.clips[0].html.as_deref(), Some("<p><b>富文本导出</b></p>"));
+    assert_eq!(doc.clips[0].rtf.as_deref(), Some("{\\rtf1 富文本导出}"));
+
+    let (_dir2, db2) = open_db("export-rich-dst");
+    let imported = export::import_json(&db2, &export_path).unwrap();
+    assert_eq!(imported.inserted, 1);
+    assert_eq!(imported.skipped, 0);
+    let page = db2
+        .search(&SearchQuery {
+            text: "富文本导出".to_string(),
+            filter: ClipFilter::All,
+            time_range: crate::model::TimeRange::All,
+            custom_day: None,
+            custom_end_day: None,
+            offset: 0,
+            limit: 10,
+            trash: false,
+            gen: 1,
+        })
+        .unwrap();
+    assert_eq!(page.total, 1);
+    let item = &page.items[0];
+    assert_eq!(item.text.as_deref(), Some("富文本导出"));
+    assert_eq!(item.html.as_deref(), Some("<p><b>富文本导出</b></p>"));
+    assert_eq!(item.rtf.as_deref(), Some("{\\rtf1 富文本导出}"));
+    let payload = db2.paste_payload(item.id).unwrap().expect("粘贴载荷应存在");
+    assert_eq!(payload.html.as_deref(), Some("<p><b>富文本导出</b></p>"));
+    assert_eq!(payload.rtf.as_deref(), Some("{\\rtf1 富文本导出}"));
+
+    // 二次导入幂等
+    let imported_again = export::import_json(&db2, &export_path).unwrap();
+    assert_eq!(imported_again.inserted, 0);
+    assert_eq!(imported_again.touched, 1);
+}
+
+#[test]
+fn import_legacy_json_without_rich_fields() {
+    let (dir, db) = open_db("import-legacy-json");
+    let legacy = dir.join("legacy.json");
+    // v2 旧导出格式：没有 html / rtf 字段
+    std::fs::write(
+        &legacy,
+        r#"{
+          "version": 2,
+          "exported_at": 1730000000000,
+          "clips": [
+            { "kind": 0, "hash": "legacy-hash", "preview": "旧格式文本",
+              "text": "旧格式文本", "byte_len": 15, "created_at": 1730000000000,
+              "last_used_at": 1730000000000, "use_count": 1 }
+          ]
+        }"#
+        .as_bytes(),
+    )
+    .unwrap();
+
+    let imported = export::import_json(&db, &legacy).unwrap();
+    assert_eq!(imported.inserted, 1);
+    assert_eq!(imported.skipped, 0);
+    let id = db
+        .search(&SearchQuery {
+            text: "旧格式".to_string(),
+            filter: ClipFilter::All,
+            time_range: crate::model::TimeRange::All,
+            custom_day: None,
+            custom_end_day: None,
+            offset: 0,
+            limit: 10,
+            trash: false,
+            gen: 1,
+        })
+        .unwrap()
+        .items[0]
+        .id;
+    let item = db.item(id).unwrap().expect("导入条目应存在");
+    assert_eq!(item.text.as_deref(), Some("旧格式文本"));
+    assert!(item.html.is_none(), "旧导出文件缺失 html 应为 None");
+    assert!(item.rtf.is_none(), "旧导出文件缺失 rtf 应为 None");
+}
+
 // ---------------------------------------------------------------------------
 // 损坏库恢复
 // ---------------------------------------------------------------------------
