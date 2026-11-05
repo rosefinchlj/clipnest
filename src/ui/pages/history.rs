@@ -1046,8 +1046,6 @@ fn detail_panel(
                             .desired_width(f32::INFINITY)
                             .desired_rows(16),
                     );
-                    ui.add_space(6.0);
-                    ui.label(theme::weak("只读预览 · 可选中复制"));
                 }
                 ClipKind::Image => {
                     let tex = item.blob_id.as_deref().and_then(|id| thumbs.get(id));

@@ -705,3 +705,18 @@
   - `time_range_filters_by_last_used` 增加日期范围命中、起止倒置自动交换断言；
   - `entering_picker_or_manager_resets_time_range` 增加结束日期与筛选展开状态清理断言。
 - 截图：`docs/screenshots/picker.png`（默认收起）、`docs/screenshots/picker-date.png`（范围日历）、`docs/screenshots/manager-history.png`、`docs/screenshots/manager-date.png`。
+
+---
+
+## 32. v1.9.14（2026-11-05，详情面板提示清理）
+
+### 用户反馈
+- 管理台详情面板底部的「只读预览 · 可选中复制」一行字让整体 UI 不协调。
+
+### 修复
+- 删除 `src/ui/pages/history.rs::detail_panel` 中文本详情内容区下方的该提示，详情区只保留正文与滚动。
+- 不改变只读预览/选中复制行为。
+
+### 校验
+- `cargo test --release`：**163 passed / 0 failed / 1 ignored**。
+- 截图：`docs/screenshots/manager-history.png` 更新为无底部提示的详情面板。
