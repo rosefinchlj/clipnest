@@ -2,3 +2,12 @@
 # 静态链接 MSVC CRT：发布的单个 exe 不依赖 VCRUNTIME140.dll / VC++ 运行库，
 # 其他 Windows 10/11 x64 机器下载后双击即可启动。
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# 本机开发构建的 OpenSSL / SQLCipher 环境。
+# 静态 OpenSSL 与本仓库同级：<repo>\..\openssl-static。
+# 如果目录不同，修改 OPENSSL_DIR 或删除本段后按 README 手动设置环境变量。
+[env]
+OPENSSL_DIR = { value = "../openssl-static", relative = true }
+OPENSSL_STATIC = "1"
+OPENSSL_NO_VENDOR = "1"
+OPENSSL_LIBS = "libssl:libcrypto"

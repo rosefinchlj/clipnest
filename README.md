@@ -178,7 +178,7 @@ cargo build --release
 
 仓库根目录也提供 `tools\build-release.ps1`（构建 + 打图标一步完成）。
 
-> 数据库加密使用 SQLCipher（`rusqlite` 的 `bundled-sqlcipher-vendored-openssl`）。本机发布构建使用静态 OpenSSL 3.0.16，需在构建前设置：`OPENSSL_DIR`（OpenSSL 静态安装目录）、`OPENSSL_STATIC=1`、`OPENSSL_NO_VENDOR=1`、`OPENSSL_LIBS=libssl:libcrypto`。
+> 数据库加密使用 SQLCipher（`rusqlite` 的 `bundled-sqlcipher-vendored-openssl`）。本机发布构建使用静态 OpenSSL 3.0.16，需在构建前设置：`OPENSSL_DIR`（OpenSSL 静态安装目录）、`OPENSSL_STATIC=1`、`OPENSSL_NO_VENDOR=1`、`OPENSSL_LIBS=libssl:libcrypto`。本仓库的 `.cargo\config.toml` 已按“仓库同级 `..\openssl-static`”配置好这些变量；若静态库在别处，修改该文件或按上面的变量手动设置。
 
 启动后：**托盘图标**常驻；按实际生效的快捷键（默认 `Ctrl+``，设置里可改）呼出候选窗；
 选中后自动粘贴回原窗口。右键托盘图标可打开管理台/设置/暂停/退出。
