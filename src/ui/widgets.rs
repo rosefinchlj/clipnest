@@ -38,6 +38,8 @@ pub enum ButtonKind {
     Primary,
     /// 次按钮：卡片底 + 描边。
     Secondary,
+    /// 已生效的筛选按钮：强调色描边/文字，直接显示当前条件。
+    FilterActive,
     /// 危险按钮：红色描边/文字。
     Danger,
     /// 幽灵按钮：透明底，悬停 6% 白。
@@ -87,6 +89,15 @@ pub fn button_at(ui: &mut egui::Ui, rect: Rect, text: &str, kind: ButtonKind) ->
             },
             theme::divider(),
             theme::text(),
+        ),
+        ButtonKind::FilterActive => (
+            lerp_color(
+                theme::accent_soft(),
+                theme::accent_fill(),
+                hov_t.max(if pressed { 1.0 } else { 0.0 }),
+            ),
+            Stroke::new(1.0_f32, theme::accent()),
+            theme::accent(),
         ),
         ButtonKind::Danger => (
             lerp_color(

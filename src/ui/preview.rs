@@ -200,6 +200,17 @@ impl PreviewState {
                     state.toast(text);
                 }
             }
+            if let Ok(range) = std::env::var("CLIPNEST_PREVIEW_TIME") {
+                state.picker_time_range = match range.as_str() {
+                    "today" => crate::model::TimeRange::Today,
+                    "7" => crate::model::TimeRange::Last7Days,
+                    "30" => crate::model::TimeRange::Last30Days,
+                    "90" => crate::model::TimeRange::Last90Days,
+                    _ => crate::model::TimeRange::All,
+                };
+                state.picker_time_open = false;
+                state.pending = None;
+            }
             if std::env::var_os("CLIPNEST_PREVIEW_DATE").is_some() {
                 let day = crate::ui::widgets::today_start_ms();
                 state.picker_time_range = crate::model::TimeRange::Custom;

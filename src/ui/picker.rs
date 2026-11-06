@@ -11,6 +11,15 @@ use eframe::egui::{self, Align2, Pos2, Rect, UiBuilder, Vec2};
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// 折叠状态下的筛选按钮文案：已选时间条件时直接显示，避免只留一个含义不明的圆点。
+fn filter_button_label(time_range: TimeRange, expanded: bool) -> String {
+    if expanded || time_range == TimeRange::All {
+        "筛选".to_string()
+    } else {
+        format!("筛选 · {}", time_range.label())
+    }
+}
+
 /// 渲染候选窗（`ui` 为面板内容区，外层 frame 由 [`UiState::show`] 提供）。
 pub(crate) fn show(
     state: &mut UiState,
@@ -168,9 +177,18 @@ pub(crate) fn show(
         Pos2::new(full.left(), meta_top),
         Vec2::new(full.width(), theme::CHIP_HEIGHT),
     );
+    // 筛选按钮在折叠时直接显示当前生效的时间条件（如「筛选 · 近7天」），
+    // 比只有一个色点更明确；点击仍展开/收起时间筛选行。
+    let filter_active = !time_open && state.picker_time_range != TimeRange::All;
+    let filter_label = filter_button_label(state.picker_time_range, time_open);
+    let filter_width = if filter_active {
+        paint::text_width(ui, filter_label.as_str(), theme::font_body()) + 44.0
+    } else {
+        64.0
+    };
     let toggle_rect = Rect::from_min_size(
-        Pos2::new(full.right() - 74.0, meta_top),
-        Vec2::new(64.0, theme::CHIP_HEIGHT),
+        Pos2::new(full.right() - 10.0 - filter_width, meta_top),
+        Vec2::new(filter_width, theme::CHIP_HEIGHT),
     );
     let mut next_mode = None;
     let mut next_sort = None;
@@ -223,14 +241,37 @@ pub(crate) fn show(
         state.set_sort(sort);
     }
     // ---- 3b) 日期筛选开关 + 时间范围 ----
-    if widgets::button_at(ui, toggle_rect, "筛选", widgets::ButtonKind::Secondary).clicked() {
+    let filter_kind = if filter_active {
+        widgets::ButtonKind::FilterActive
+    } else {
+        widgets::ButtonKind::Secondary
+    };
+    let filter_resp = widgets::button_at(ui, toggle_rect, &filter_label, filter_kind);
+    let filter_clicked = filter_resp.clicked();
+    let filter_hint = if filter_active {
+        format!(
+            "时间筛选已生效：{}。点击展开调整",
+            state.picker_time_range.label()
+        )
+    } else {
+        "按时间范围筛选".to_string()
+    };
+    filter_resp.on_hover_text(filter_hint);
+    if filter_clicked {
         state.picker_time_open = !time_open;
         if !state.picker_time_open {
             state.date_picker_open = false;
         }
     }
     let chevron = Pos2::new(toggle_rect.right() - 12.0, toggle_rect.center().y);
-    let stroke = egui::Stroke::new(1.4_f32, theme::text_secondary());
+    let stroke = egui::Stroke::new(
+        1.4_f32,
+        if filter_active {
+            theme::accent()
+        } else {
+            theme::text_secondary()
+        },
+    );
     if time_open {
         ui.painter().line_segment(
             [Pos2::new(chevron.x - 4.0, chevron.y + 2.0), chevron],
@@ -1025,6 +1066,14 @@ mod tests {
             ..Default::default()
         };
         assert!(!preview_eligible(&files));
+    }
+
+    #[test]
+    fn filter_button_reflects_active_time_range() {
+        assert_eq!(filter_button_label(TimeRange::All, false), "筛选");
+        assert_eq!(filter_button_label(TimeRange::Last7Days, false), "筛选 · 近7天");
+        assert_eq!(filter_button_label(TimeRange::Custom, false), "筛选 · 指定日期");
+        assert_eq!(filter_button_label(TimeRange::Last7Days, true), "筛选");
     }
 
     #[test]

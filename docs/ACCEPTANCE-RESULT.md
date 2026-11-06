@@ -1061,3 +1061,25 @@
 - `src/ui/tests.rs` 新增 `preview_toggle_resets_dismissed_and_setting`、`enter_picker_restores_preview_after_escape_dismissal`。
 - `cargo test --release`：**244 passed / 0 failed / 1 ignored**。
 - `--ui-preview picker` 截图确认底部「预览开」按钮与「共 1,234 条」、齿轮不重叠，预览卡显示正常。
+
+## 49. v1.13.4（2026-11-06，时间筛选折叠时显示当前条件）
+
+### 用户反馈
+- 搜索时如果单独选了时间筛选，折叠后看不出筛选是否生效；希望有标识，或者自动展开，体验更好。
+
+### 方案取舍
+- 不自动展开：自动展开会让列表区域跳动、长期占用高度，用户想专注列表时反而碍事。
+- 不只放一个小色点：v1.13.0 已移除筛选按钮上的蓝点，因为含义不明确（容易被当成未读/新内容标记）。
+- 采用**按钮直接显示条件 + 强调色**：折叠时文案变成「筛选 · 近7天」「筛选 · 指定日期」等，点击仍展开时间筛选行；既清楚又不占额外空间。
+
+### 实现
+- `src/ui/picker.rs`：新增 `filter_button_label()`，折叠且 `picker_time_range != All` 时生成「筛选 · {范围}」；按钮宽度按文字实测宽度 + 44px 动态计算，右对齐，避免挤压排序下拉。
+- `src/ui/widgets.rs`：新增 `ButtonKind::FilterActive`（强调色描边/文字、悬停加深）；折叠且筛选生效时使用，展开后恢复普通次按钮样式。
+- 鼠标悬停提示当前范围（「时间筛选已生效：近7天。点击展开调整」）。
+- `src/ui/preview.rs`：新增 `CLIPNEST_PREVIEW_TIME`（`today` / `7` / `30` / `90`）供截图验证。
+
+### 校验
+- `src/ui/picker.rs` 新增 `filter_button_reflects_active_time_range`。
+- `cargo test --release`：**245 passed / 0 failed / 1 ignored**。
+- `--ui-preview picker` + `CLIPNEST_PREVIEW_TIME=7` 截图 `docs/screenshots/picker-time-filter.png`：按钮显示「筛选 · 近7天」，强调色描边，右侧不越界。
+- release 构建 + 9 尺寸图标 patch：exe 13,285,888B，SHA-256 `0782F0BC82BDED21348C0E7CAEBB3FD0DD4A50C87B2DD6542A34D18A4DF3A92F`；`--selftest` 15 项 PASS。
