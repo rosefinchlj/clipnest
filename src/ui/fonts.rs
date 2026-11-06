@@ -1,8 +1,7 @@
 //! 中文字体安装：把系统中文字体注入 egui，避免中文显示为方块。
 //!
-//! 依次尝试 `Deng.ttf` → `simhei.ttf` → `msyh.ttc`(索引 0) → `simsun.ttc`(索引 0)，
-//! 任何一步失败都只是跳过，**绝不 panic**；字体同时注入 Proportional 与 Monospace
-//! 族末尾，让拉丁字符继续使用 egui 自带字体、中文自动回退到系统中文字体。
+//! 依次尝试 `msyh.ttc`(索引 0，Microsoft YaHei UI) → `Deng.ttf` → `simhei.ttf` → `simsun.ttc`，
+//! 任何一步失败都只是跳过，**绝不 panic**；西文优先使用 `segoeui.ttf`，中文回退到系统中文字体。
 //!
 //! ## 内存优化（关键）
 //!
@@ -23,11 +22,12 @@ use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// 候选字体：(文件名, ttc 内索引)，按优先级从高到低（spec §7.2）。
+/// 候选中文字体：(文件名, ttc 内索引)，按优先级从高到低。
+/// 微软雅黑 UI 字形更饱满、屏幕可读性优于等线，作为首选。
 const CANDIDATES: &[(&str, u32)] = &[
+    ("msyh.ttc", 0),
     ("Deng.ttf", 0),
     ("simhei.ttf", 0),
-    ("msyh.ttc", 0),
     ("simsun.ttc", 0),
 ];
 
@@ -60,14 +60,37 @@ fn install_font(ctx: &egui::Context, name: String, mut data: egui::FontData, ind
     // ttc 需要指定 face 索引
     data.index = index;
 
-    // 字体放 Proportional/Monospace 族末尾：拉丁字形仍由 egui 默认字体渲染。
+    // 西文优先使用 Windows 原生的 Segoe UI（字形更实、屏幕可读性好）；
+    // 中文回退到微软雅黑。两者都缺失时继续用 egui 自带字体。
+    let ui_font = load_named("segoeui.ttf", 0);
+    let ui_name = ui_font.as_ref().map(|font| font.name.clone());
+
     fonts.font_data.insert(name.clone(), Arc::new(data));
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push(name.clone());
+    if let Some(ui) = ui_font {
+        fonts.font_data.insert(ui.name.clone(), Arc::new(ui.data));
     }
 
+    if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        if let Some(ui_name) = &ui_name {
+            list.insert(0, ui_name.clone());
+        }
+        // 中文字体始终排在比例字体族的前部：西文字体缺字时回退到这里。
+        list.insert(usize::from(ui_name.is_some()), name.clone());
+    }
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push(name.clone());
+
     ctx.set_fonts(fonts);
-    crate::logging::log(&format!("已加载中文字体：{name}（ttc 索引 {index}，内存映射零拷贝）"));
+    let ui_note = ui_name
+        .as_deref()
+        .map(|value| format!("，西文 {value}"))
+        .unwrap_or_default();
+    crate::logging::log(&format!(
+        "已加载中文字体：{name}（ttc 索引 {index}，内存映射零拷贝）{ui_note}"
+    ));
 }
 
 /// 便于单测的注入入口：用调用方提供的字体字节（owned 路径）。
@@ -76,33 +99,37 @@ fn install_owned_bytes(ctx: &egui::Context, name: String, bytes: Vec<u8>, index:
     install_font(ctx, name, egui::FontData::from_owned(bytes), index);
 }
 
-/// 按优先级找第一个可用字体：优先 mmap 零拷贝，失败回退 `fs::read`。
+/// 按优先级找第一个可用中文字体。
 fn load_first_available() -> Option<LoadedFont> {
-    let font_dir = font_dir();
-    for (file, index) in CANDIDATES {
-        let path = font_dir.join(file);
-        // 系统字体文件较大；小于 1KB 视为损坏/占位文件直接跳过。
-        if let Some(bytes) = map_readonly(&path) {
-            if bytes.len() > 1024 {
-                return Some(LoadedFont {
-                    name: (*file).to_owned(),
-                    data: egui::FontData::from_static(bytes),
-                    index: *index,
-                });
-            }
+    CANDIDATES
+        .iter()
+        .find_map(|(file, index)| load_named(file, *index))
+}
+
+/// 加载指定字体文件，优先 mmap 零拷贝，失败回退 `fs::read`。
+fn load_named(file: &str, index: u32) -> Option<LoadedFont> {
+    let path = font_dir().join(file);
+    // 系统字体文件较大；小于 1KB 视为损坏/占位文件直接跳过。
+    if let Some(bytes) = map_readonly(&path) {
+        if bytes.len() > 1024 {
+            return Some(LoadedFont {
+                name: file.to_owned(),
+                data: egui::FontData::from_static(bytes),
+                index,
+            });
         }
-        if let Ok(bytes) = std::fs::read(&path) {
-            if bytes.len() > 1024 {
-                crate::logging::warn(&format!(
-                    "字体内存映射失败，回退为读取到内存（会多占一份）：{}",
-                    path.display()
-                ));
-                return Some(LoadedFont {
-                    name: (*file).to_owned(),
-                    data: egui::FontData::from_owned(bytes),
-                    index: *index,
-                });
-            }
+    }
+    if let Ok(bytes) = std::fs::read(&path) {
+        if bytes.len() > 1024 {
+            crate::logging::warn(&format!(
+                "字体内存映射失败，回退为读取到内存（会多占一份）：{}",
+                path.display()
+            ));
+            return Some(LoadedFont {
+                name: file.to_owned(),
+                data: egui::FontData::from_owned(bytes),
+                index,
+            });
         }
     }
     None
@@ -189,11 +216,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn candidate_order_matches_spec() {
-        // spec §7.2：Deng → simhei → msyh → simsun
+    fn candidate_order_prefers_yahei() {
+        // 微软雅黑优先，等线作为缺字体时的回退
         let names: Vec<&str> = CANDIDATES.iter().map(|(f, _)| *f).collect();
-        assert_eq!(names, vec!["Deng.ttf", "simhei.ttf", "msyh.ttc", "simsun.ttc"]);
-        // ttc 候选索引均为 0（取常规体）
+        assert_eq!(names, vec!["msyh.ttc", "Deng.ttf", "simhei.ttf", "simsun.ttc"]);
+        // ttc 候选索引均为 0（msyh 索引 0 为 Microsoft YaHei UI）
         assert!(CANDIDATES.iter().all(|(_, idx)| *idx == 0));
     }
 

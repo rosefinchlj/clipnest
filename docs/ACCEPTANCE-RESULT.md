@@ -1179,3 +1179,22 @@
 - `cargo test --release`：**249 passed / 0 failed / 1 ignored**。
 - `--ui-preview manager` + `CLIPNEST_PREVIEW_TIME=7` 截图 `docs/screenshots/manager-filter.png`：管理台显示「筛选 · 近7天」强调色按钮，无蓝点；关键词/排序/来源与候选窗同宽同间距。
 - release 构建 + 9 尺寸图标 patch：exe 13,298,176B，SHA-256 `31DC9590ACBA4EA8EDF995E119768418EAB3F3FF082E68E9702217A9AD0F0A91`；`--selftest` 15 项 PASS。
+
+## 54. v1.13.9（2026-11-06，中文字体改为微软雅黑）
+
+### 用户反馈
+- 用户 m19464：「UI字体是微软雅黑吗？怎么看起来不够黑，不是很清晰的样子。」
+- 实际启动日志：`已加载中文字体：Deng.ttf`，即中文使用 **等线（DengXian）**，不是微软雅黑；西文仍使用 egui 自带的 Ubuntu-Light。等线字形偏细，叠加浅色/半透明背景后看起来发灰、不够清晰。
+
+### 修复
+- `src/ui/fonts.rs`：
+  - 候选中文字体改为 `msyh.ttc`（索引 0，**Microsoft YaHei UI**）→ `Deng.ttf` → `simhei.ttf` → `simsun.ttc`，保证没有雅黑时仍可回退，不出现方块。
+  - 新增西文字体加载：`segoeui.ttf`（Windows 原生 Segoe UI）优先，中文缺字时回退到 `msyh.ttc`。
+  - Proportional 族顺序为 `[segoeui.ttf, msyh.ttc, egui 默认字体]`；Monospace 族保留 egui 等宽字体，中文追加到末尾。
+  - 仍使用只读 mmap 零拷贝，不增加私有内存；字体缺失只跳过、不 panic。
+- `candidate_order_matches_spec` 改为 `candidate_order_prefers_yahei`，断言雅黑优先且 ttc 索引为 0。
+
+### 校验
+- `cargo test --release`：**249 passed / 0 failed / 1 ignored**。
+- `--ui-preview manager` 截图 `docs/screenshots/manager-filter.png`：中文为微软雅黑、西文为 Segoe UI，字形明显比等线饱满；列表/按钮/下拉均未出现截断或错位。
+- release 构建 + 9 尺寸图标 patch：exe 13,299,712B，SHA-256 `0776FE81216C2E2F77D01015FECA8791CF93C7EDCE354F3952B4A8A243341C4F`；`--selftest` 15 项 PASS。
