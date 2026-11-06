@@ -251,6 +251,8 @@ pub struct UiState {
     picker_preview_at: Option<Instant>,
     /// 用户按 Esc / 点「预览」关闭后，当前条目暂不显示预览；切到别的条目后自动恢复。
     picker_preview_dismissed: Option<ClipId>,
+    /// 是否由空格手动打开了当前条目的预览（设置关闭时也允许临时查看）。
+    picker_preview_manual: bool,
     /// 选中预览用高分辨率图片缓存（只读原图，避免 96px 缩略图放大后发糊）。
     preview_thumbs: ThumbCache,
     stats: Stats,
@@ -349,6 +351,7 @@ impl UiState {
             picker_preview_id: None,
             picker_preview_at: None,
             picker_preview_dismissed: None,
+            picker_preview_manual: false,
             preview_thumbs: ThumbCache::new_preview(ctx),
             stats: Stats::default(),
             search_text: String::new(),
@@ -487,6 +490,7 @@ impl UiState {
     pub fn set_preview_on_select(&mut self, enabled: bool) {
         self.settings.preview_on_select = enabled;
         self.picker_preview_dismissed = None;
+        self.picker_preview_manual = false;
         self.picker_preview_id = None;
         self.picker_preview_at = None;
     }
@@ -652,6 +656,7 @@ impl UiState {
         self.picker_appear_at = Some(Instant::now());
         // 重新打开候选窗时恢复预览（上次按 Esc 只关闭当次，不写设置）。
         self.picker_preview_dismissed = None;
+        self.picker_preview_manual = false;
         self.picker_preview_id = None;
         self.picker_preview_at = None;
         self.search_focus = true;

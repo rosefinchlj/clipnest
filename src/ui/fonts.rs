@@ -1,7 +1,8 @@
 //! 中文字体安装：把系统中文字体注入 egui，避免中文显示为方块。
 //!
 //! 依次尝试 `msyh.ttc`(索引 0，Microsoft YaHei UI) → `Deng.ttf` → `simhei.ttf` → `simsun.ttc`，
-//! 任何一步失败都只是跳过，**绝不 panic**；西文优先使用 `segoeui.ttf`，中文回退到系统中文字体。
+//! 任何一步失败都只是跳过，**绝不 panic**；字体注入 Proportional/Monospace 族末尾，
+//! 让拉丁字符继续使用 egui 自带字体、中文自动回退到系统中文字体。
 //!
 //! ## 内存优化（关键）
 //!
@@ -60,37 +61,14 @@ fn install_font(ctx: &egui::Context, name: String, mut data: egui::FontData, ind
     // ttc 需要指定 face 索引
     data.index = index;
 
-    // 西文优先使用 Windows 原生的 Segoe UI（字形更实、屏幕可读性好）；
-    // 中文回退到微软雅黑。两者都缺失时继续用 egui 自带字体。
-    let ui_font = load_named("segoeui.ttf", 0);
-    let ui_name = ui_font.as_ref().map(|font| font.name.clone());
-
+    // 字体放 Proportional/Monospace 族末尾：拉丁字形仍由 egui 默认字体渲染。
     fonts.font_data.insert(name.clone(), Arc::new(data));
-    if let Some(ui) = ui_font {
-        fonts.font_data.insert(ui.name.clone(), Arc::new(ui.data));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push(name.clone());
     }
-
-    if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-        if let Some(ui_name) = &ui_name {
-            list.insert(0, ui_name.clone());
-        }
-        // 中文字体始终排在比例字体族的前部：西文字体缺字时回退到这里。
-        list.insert(usize::from(ui_name.is_some()), name.clone());
-    }
-    fonts
-        .families
-        .entry(egui::FontFamily::Monospace)
-        .or_default()
-        .push(name.clone());
 
     ctx.set_fonts(fonts);
-    let ui_note = ui_name
-        .as_deref()
-        .map(|value| format!("，西文 {value}"))
-        .unwrap_or_default();
-    crate::logging::log(&format!(
-        "已加载中文字体：{name}（ttc 索引 {index}，内存映射零拷贝）{ui_note}"
-    ));
+    crate::logging::log(&format!("已加载中文字体：{name}（ttc 索引 {index}，内存映射零拷贝）"));
 }
 
 /// 便于单测的注入入口：用调用方提供的字体字节（owned 路径）。

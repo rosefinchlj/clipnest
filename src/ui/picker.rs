@@ -109,12 +109,15 @@ pub(crate) fn show(
         let allow_delete = !ime_active && !(state.search_focused && !state.search_text.is_empty());
         // 同上：搜索中按 ←/→ 是移动光标；搜索框为空或未聚焦时切换分类。
         let allow_arrows = !ime_active && !(state.search_focused && !state.search_text.is_empty());
-        let commands = keys::route_picker_keys(
+        // 空格负责预览，但搜索框聚焦且已有内容时必须留给输入框分词。
+        let allow_space = !ime_active && (!state.search_focused || state.search_text.is_empty());
+        let commands = keys::route_picker_keys_ext(
             ui.ctx(),
             allow_delete,
             allow_arrows,
             !ime_active,
             !ime_active,
+            allow_space,
         );
         for command in commands {
             handle_command(state, command, list_rect.height(), actions);
@@ -413,6 +416,7 @@ fn handle_command(
         PickerCommand::FocusSearch => {
             state.search_focus = true;
         }
+        PickerCommand::TogglePreview => toggle_preview(state),
         PickerCommand::Close => {
             if state.preview {
                 state.toast("（预览）Esc：隐藏面板");
@@ -423,13 +427,14 @@ fn handle_command(
                     .selected
                     .and_then(|idx| state.items.get(idx))
                     .filter(|item| {
-                        state.settings.preview_on_select
+                        (state.settings.preview_on_select || state.picker_preview_manual)
                             && preview_eligible(item)
                             && state.picker_preview_dismissed != Some(item.id)
                     })
                     .map(|item| item.id);
                 if let Some(id) = can_dismiss_preview {
                     state.picker_preview_dismissed = Some(id);
+                    state.picker_preview_manual = false;
                     state.picker_preview_id = None;
                     state.picker_preview_at = None;
                     state.toast("预览已关闭，Esc 再按隐藏面板");
@@ -665,6 +670,38 @@ fn preview_eligible(item: &ClipItem) -> bool {
     }
 }
 
+/// 空格键：打开/关闭当前选中条目的预览。
+///
+/// 与自动预览共用 `picker_preview_id/at` 和 `picker_preview_dismissed`；
+/// `picker_preview_manual` 表示本次是手动查看（允许在设置关闭时临时预览）。
+fn toggle_preview(state: &mut UiState) {
+    let Some(item) = state
+        .selected
+        .and_then(|idx| state.items.get(idx))
+        .cloned()
+    else {
+        return;
+    };
+    if !preview_eligible(&item) {
+        state.toast("当前条目没有可预览内容");
+        return;
+    }
+    let id = item.id;
+    let open = state.picker_preview_id == Some(id) && state.picker_preview_dismissed != Some(id);
+    if open {
+        state.picker_preview_dismissed = Some(id);
+        state.picker_preview_manual = false;
+        state.picker_preview_id = None;
+        state.picker_preview_at = None;
+        state.toast("预览已关闭");
+    } else {
+        state.picker_preview_dismissed = None;
+        state.picker_preview_manual = true;
+        state.picker_preview_id = Some(id);
+        state.picker_preview_at = Some(Instant::now());
+    }
+}
+
 /// 选中行的浮动预览卡片：图片显示大图，长文本显示可滚动全文。
 ///
 /// 卡片最后绘制（`Order::Foreground`），用淡入 + 上浮 6px 的 180ms 动画，
@@ -689,12 +726,18 @@ fn paint_selection_preview(
         state.picker_preview_at = None;
         return;
     };
-    if !state.settings.preview_on_select || !preview_eligible(&item) {
+    if !preview_eligible(&item) {
         state.picker_preview_id = None;
         state.picker_preview_at = None;
         return;
     }
-    // 用户按 Esc / 点「预览关」后，只隐藏当前条目；换一行会重新出现。
+    // 设置关闭时仍允许空格手动查看。
+    if !state.settings.preview_on_select && !state.picker_preview_manual {
+        state.picker_preview_id = None;
+        state.picker_preview_at = None;
+        return;
+    }
+    // 用户按 Esc / 空格 / 点「预览关」后，只隐藏当前条目；换一行会重新出现。
     if state.picker_preview_dismissed == Some(item.id) {
         state.picker_preview_id = None;
         state.picker_preview_at = None;
@@ -704,6 +747,13 @@ fn paint_selection_preview(
         state.picker_preview_dismissed = None;
         state.picker_preview_id = Some(item.id);
         state.picker_preview_at = Some(Instant::now());
+        // 自动预览关闭时，空格打开的是“当前行”的临时预览；换行后不再沿用手动状态。
+        if !state.settings.preview_on_select {
+            state.picker_preview_manual = false;
+            state.picker_preview_id = None;
+            state.picker_preview_at = None;
+            return;
+        }
     }
     let Some(opened) = state.picker_preview_at else {
         return;
@@ -924,6 +974,26 @@ mod tests {
         let mut actions = Vec::new();
         handle_command(state, command, theme::ROW_HEIGHT * 6.0, &mut actions);
         actions
+    }
+
+    #[test]
+    fn space_toggles_manual_preview_even_when_auto_preview_off() {
+        let mut state = make_state();
+        fill(&mut state, 1);
+        state.items[0].text = Some("长".repeat(80));
+        state.selected = Some(0);
+        state.settings.preview_on_select = false;
+
+        toggle_preview(&mut state);
+        assert!(state.picker_preview_manual);
+        assert_eq!(state.picker_preview_id, Some(0));
+        assert_eq!(state.picker_preview_dismissed, None);
+
+        // 再按一次空格关闭当前预览，并让自动预览也保持关闭。
+        toggle_preview(&mut state);
+        assert!(!state.picker_preview_manual);
+        assert_eq!(state.picker_preview_id, None);
+        assert_eq!(state.picker_preview_dismissed, Some(0));
     }
 
     #[test]

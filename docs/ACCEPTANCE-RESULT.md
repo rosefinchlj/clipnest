@@ -1198,3 +1198,23 @@
 - `cargo test --release`：**249 passed / 0 failed / 1 ignored**。
 - `--ui-preview manager` 截图 `docs/screenshots/manager-filter.png`：中文为微软雅黑、西文为 Segoe UI，字形明显比等线饱满；列表/按钮/下拉均未出现截断或错位。
 - release 构建 + 9 尺寸图标 patch：exe 13,299,712B，SHA-256 `0776FE81216C2E2F77D01015FECA8791CF93C7EDCE354F3952B4A8A243341C4F`；`--selftest` 15 项 PASS。
+
+## 55. v1.13.10（2026-11-06，西文回退 + 空格预览开关）
+
+### 用户反馈
+- 用户 m19565：「1. 字母还是用 egui 自带的 Ubuntu-Light试试吧。目前的看着有点发虚。 2. 关于预览，新增一个快捷键，空格触发，再次空格可以关闭预览窗口」。
+
+### 修改
+- `src/ui/fonts.rs`：撤销 Segoe UI 西文优先，比例字体恢复「egui 自带 Ubuntu-Light 在前、微软雅黑 UI 在末尾回退」；中文仍为 `msyh.ttc` 索引 0，缺失时按等线 → 黑体 → 宋体回退。`load_named` 保留为共用加载入口。
+- `src/ui/keys.rs`：`PickerCommand` 新增 `TogglePreview`；`route_picker_keys_ext(..., allow_space)` 在允许时消费裸 `Space`；原 `route_picker_keys` 包装为 `allow_space=true`，保持既有测试兼容；`PICKER_HINT` 改为「↑↓ 选择 · Enter 粘贴 · 空格 预览 · ←→ 切分类」。
+- `src/ui.rs`：`UiState` 新增 `picker_preview_manual`；`set_preview_on_select` 与 `enter_picker` 重置该标记；切换选中条目时在预览绘制中复位。
+- `src/ui/picker.rs`：
+  - 搜索框聚焦且已有文本时 `allow_space=false`，空格留给分词输入；搜索框为空或未聚焦时空格用于预览。
+  - `toggle_preview`：打开时设置 `picker_preview_manual`、清除 dismissed、写入 `picker_preview_id/at`；再次按空格关闭当前预览并记录 dismissed。
+  - 自动预览关闭时仍允许空格临时查看；切换条目后回到自动策略。`Esc` 先关预览的逻辑兼容手动预览。
+
+### 校验
+- 新增 `route_space_toggles_preview_only_when_allowed`、`space_toggles_manual_preview_even_when_auto_preview_off`。
+- `cargo test --release`：**251 passed / 0 failed / 1 ignored**。
+- `--ui-preview picker` 确认底部提示条显示「空格 预览」且不挤压「共 N 条 / 预览开 / 齿轮」；字体日志为 `已加载中文字体：msyh.ttc`，西文恢复 Ubuntu-Light。
+- release 构建、9 尺寸图标 patch 与 `--selftest` 结果见发布记录。

@@ -42,6 +42,8 @@ pub enum PickerCommand {
     FocusSearch,
     /// Esc：隐藏面板。
     Close,
+    /// Space：打开/关闭选中条目的预览（搜索框不接收空格时）。
+    TogglePreview,
 }
 
 /// Manager 语义命令（spec 附录 B 管理台快捷键）。
@@ -72,6 +74,28 @@ pub fn route_picker_keys(
     allow_arrows: bool,
     allow_enter: bool,
     allow_escape: bool,
+) -> Vec<PickerCommand> {
+    route_picker_keys_ext(
+        ctx,
+        allow_delete,
+        allow_arrows,
+        allow_enter,
+        allow_escape,
+        true,
+    )
+}
+
+/// 同 [`route_picker_keys`]，额外控制空格是否作为「预览开关」。
+///
+/// 搜索框聚焦且已有文本时，空格必须留给输入框分词，不能抢占；候选窗
+/// 传入 `allow_space=false` 即可。
+pub fn route_picker_keys_ext(
+    ctx: &egui::Context,
+    allow_delete: bool,
+    allow_arrows: bool,
+    allow_enter: bool,
+    allow_escape: bool,
+    allow_space: bool,
 ) -> Vec<PickerCommand> {
     let mut out = Vec::new();
     ctx.input_mut(|i| {
@@ -127,6 +151,9 @@ pub fn route_picker_keys(
             if i.consume_key(Modifiers::NONE, Key::ArrowRight) {
                 out.push(PickerCommand::FilterNext);
             }
+        }
+        if allow_space && i.consume_key(Modifiers::NONE, Key::Space) {
+            out.push(PickerCommand::TogglePreview);
         }
         if allow_escape && i.consume_key(Modifiers::NONE, Key::Escape) {
             out.push(PickerCommand::Close);
@@ -350,7 +377,7 @@ pub fn fmt_count(n: usize) -> String {
 }
 
 /// Picker 底部提示文案（spec §7.3）。
-pub const PICKER_HINT: &str = "↑↓ 选择 · Enter 粘贴 · Ctrl+1…9 快选 · ←→ 切分类";
+pub const PICKER_HINT: &str = "↑↓ 选择 · Enter 粘贴 · 空格 预览 · ←→ 切分类";
 
 /// Manager 历史页提示文案。
 pub const MANAGER_HINT: &str =
@@ -422,6 +449,21 @@ mod tests {
             route_picker_keys(&ctx, true, true, true, true),
             vec![PickerCommand::QuickPaste(0), PickerCommand::QuickPaste(8)]
         );
+    }
+
+    #[test]
+    fn route_space_toggles_preview_only_when_allowed() {
+        let ctx = egui::Context::default();
+        press(&ctx, Key::Space, Modifiers::NONE);
+        assert_eq!(
+            route_picker_keys_ext(&ctx, true, true, true, true, true),
+            vec![PickerCommand::TogglePreview]
+        );
+
+        // 搜索框有文本时 allow_space=false：空格留给输入框分词。
+        let ctx = egui::Context::default();
+        press(&ctx, Key::Space, Modifiers::NONE);
+        assert!(route_picker_keys_ext(&ctx, true, true, true, true, false).is_empty());
     }
 
     #[test]
