@@ -1236,3 +1236,19 @@
 - `cargo test --release`：**252 passed / 0 failed / 1 ignored**。
 - `--ui-preview manager` 截图 `docs/screenshots/manager-filter.png`（页脚 v1.13.11）：西文为 Segoe UI Semibold、中文微软雅黑 UI，URL/路径不再发虚。
 - release exe 12,919,808B，SHA-256 `3155D104D424D634E789EC902AAF8DC633D70E188545BF656E3DD35414B2BF84`；`--selftest` 15 项 PASS。
+
+## 57. v1.13.12（2026-11-06，许可协议改为禁止商用）
+
+### 用户要求
+- 用户 m19876：「修改开源协议： 禁止商用 提交到GitHub」。
+
+### 修改
+- `LICENSE`：由 MIT 全文替换为 **PolyForm Noncommercial License 1.0.0** 全文，保留 `Required Notice: Copyright (c) 2026 rosefinchlj`。
+- `Cargo.toml`：`license = "PolyForm-Noncommercial-1.0.0"`。
+- `README.md`：许可 badge、FAQ、对比表与「许可」章节同步改为「源码公开、禁止商用」；说明个人学习/非商业使用与修改仍免费，商业授权需另行联系作者。
+- `src/ui/pages/about.rs`：关于页版本行与「隐私与许可」说明同步为 PolyForm Noncommercial，并明确禁止商业使用。
+
+### 校验
+- `cargo test --release`：**252 passed / 0 failed / 1 ignored**。
+- release 构建：exe 12,920,320B，SHA-256 `FF4D72FFAAA93678D39D60D3DECF0E612C0AA65851F6EC144F82D4013E745676`；`--selftest` 15 项 PASS。
+- 注意：PolyForm Noncommercial 不是 OSI 定义的开源许可，而是「源码公开、仅限非商业使用」的许可；README 中已避免再写「完全免费开源、可商用」。

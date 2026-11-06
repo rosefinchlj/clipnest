@@ -67,7 +67,7 @@ fn brand_card(ui: &mut egui::Ui) {
             ui.vertical(|ui| {
                 ui.label(theme::title(APP_TITLE));
                 ui.label(theme::aux(format!(
-                    "版本 v{} · MIT License · Windows 10 1809+ / Windows 11",
+                    "版本 v{} · PolyForm Noncommercial 1.0.0 · Windows 10 1809+ / Windows 11",
                     env!("CARGO_PKG_VERSION")
                 )));
             });
@@ -166,7 +166,7 @@ fn privacy_card(ui: &mut egui::Ui) {
             "· 全本地运行：无 HTTP 客户端、无遥测、无账号体系，数据只存在本机 %APPDATA%\\ClipNest。\n\
              · 密码管理器等敏感内容可通过「Clipboard Viewer Ignore」格式自动跳过，也可配置忽略名单。\n\
              · 日志不记录剪贴板内容全文，只记录类型/大小/来源。\n\
-             · 本项目使用 MIT License 开源许可。",
+             · 本项目源码公开，采用 PolyForm Noncommercial 1.0.0 许可：禁止商业使用，个人学习与非商业分发请保留许可声明；商业授权需另行联系作者。",
         ));
     });
 }

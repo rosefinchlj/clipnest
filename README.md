@@ -1,6 +1,6 @@
 # ClipNest · 剪贴匣
 
-[![release](https://img.shields.io/github/v/release/rosefinchlj/clipnest?sort=semver)](https://github.com/rosefinchlj/clipnest/releases) [![license](https://img.shields.io/github/license/rosefinchlj/clipnest)](LICENSE)
+[![release](https://img.shields.io/github/v/release/rosefinchlj/clipnest?sort=semver)](https://github.com/rosefinchlj/clipnest/releases) [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 
 > Windows 磨砂玻璃剪贴板管理器（深色 / 浅色）。Rust + eframe/egui 实现：托盘常驻、全局快捷键呼出候选窗、文本/图片/文件历史持久化、收藏与容量治理、选中即自动粘贴回原窗口。
 
@@ -83,9 +83,9 @@ ClipNest 是第三方的 Windows 剪贴板历史管理器。Windows 11 自带的
 重启/清理后容易丢，也不支持文件；ClipNest 默认保存 **5000 条**（可调、可无限）到本地 SQLite，
 支持中文 FTS5 搜索、文本/图片/文件三类内容、收藏、回收站和容量治理，重启不丢。
 
-### 免费吗？开源协议是什么？
+### 免费吗？许可协议是什么？
 
-完全免费开源，**MIT 许可**，可商用、可修改；exe 从 [Releases](https://github.com/rosefinchlj/clipnest/releases) 直接下载。
+完全免费用于**非商业用途**；源码公开，采用 **PolyForm Noncommercial 1.0.0** 许可：可个人使用、学习、修改与非商业分发，**禁止商用**。商业使用需另行取得作者授权；exe 从 [Releases](https://github.com/rosefinchlj/clipnest/releases) 直接下载。
 
 ### 支持哪些 Windows 版本？需要安装吗？
 
@@ -109,9 +109,9 @@ Windows 10 1809+ 与 Windows 11（x64）。**免安装绿色单文件 exe**，�
 | 中文子串搜索 | ✓（FTS5 trigram） | ✗ | 部分支持 | ✓ |
 | 图片 / 文件历史 | ✓ / ✓ | 图片 ✓ / 文件 ✗ | 图片 ✓ | ✓ |
 | 深/浅色 + 磨砂玻璃界面 | ✓ | — | — | 皮肤可换 |
-| 开源协议 | MIT | 闭源 | GPL | GPL |
+| 源码许可 | PolyForm Noncommercial（禁止商用） | 闭源 | GPL | GPL |
 
-差异点主要是：**单文件免安装、内存与体积小、界面克制、中文搜索友好**，代码全部开源可读（也是 Rust 学习项目）。
+差异点主要是：**单文件免安装、内存与体积小、界面克制、中文搜索友好**，源码公开可读（也是 Rust 学习项目）。
 
 ### 占用多少内存？会开机自启吗？
 
@@ -253,6 +253,7 @@ clipnest.exe（单进程常驻）
 
 ## 更新记录
 
+- **v1.13.12**：许可协议从 MIT 改为 **PolyForm Noncommercial 1.0.0**，明确**禁止商业使用**；个人学习、非商业使用、修改与非商业分发仍免费，商业授权需另行联系作者。README、Cargo 元数据与关于页同步更新。
 - **v1.13.11**：西文改用 Windows 资源管理器同款 **Segoe UI**：优先 `Segoe UI Semibold`、缺失时回退常规体，中文继续使用微软雅黑 UI。半粗体用于补偿 egui 灰度抗锯齿在小字号下的发虚感；如果觉得偏重，可再切回常规 `segoeui.ttf`。
 - **v1.13.10**：候选窗新增 **空格预览开关**：选中图片或长文本后按 `空格` 打开预览，再按一次关闭；搜索框已有文字时空格仍留给分词输入。根据实机观感，西文字体从 Segoe UI 改回 egui 自带的 **Ubuntu-Light**，中文继续使用微软雅黑 UI，避免小字号下发虚。
 - **v1.13.9**：中文字体从等线（Deng.ttf）改为 **微软雅黑 UI**（msyh.ttc 索引 0），西文优先使用 Windows 原生 **Segoe UI**；解决界面字形偏细、发灰、不够清晰的问题。微软雅黑缺失时仍按等线 → 黑体 → 宋体回退，不会出现方块。
@@ -336,4 +337,4 @@ clipnest.exe（单进程常驻）
 
 ## 许可
 
-MIT，见 [LICENSE](LICENSE)。
+**PolyForm Noncommercial License 1.0.0**，禁止商业使用；可个人使用、学习、修改与非商业分发，商业授权需另行联系作者。完整条款见 [LICENSE](LICENSE)。
