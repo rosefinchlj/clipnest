@@ -58,6 +58,8 @@ pub const QUIT_MAGIC: usize = 0x434C_4E51;
 pub const SETTINGS_MAGIC: usize = 0x434C_4E54;
 /// 临时暂停控制（子进程 → 主进程）：lpData 指向 `TempPause` 的 UTF-8 JSON。
 pub const TEMP_PAUSE_MAGIC: usize = 0x434C_4E50;
+/// 数据库加密开关请求（管理台 → 主进程）：lpData 为一个 u8（0/1）。
+pub const ENCRYPTION_MAGIC: usize = 0x434C_4E45;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -190,6 +192,12 @@ fn dispatch_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Opt
                     }
                     Err(err) => logging::warn(&format!("临时暂停数据解析失败：{err}")),
                 }
+            } else if cds.dwData == ENCRYPTION_MAGIC && cds.cbData == 1 {
+                let enabled = unsafe { *(cds.lpData as *const u8) } != 0;
+                logging::log(&format!(
+                    "收到管理台子进程的数据库加密请求（WM_COPYDATA）：enabled={enabled}"
+                ));
+                with_state(hwnd, |state| state.request_encryption_switch(enabled));
             }
             Some(1) // TRUE：消息已处理
         }
@@ -508,6 +516,26 @@ pub fn send_temp_pause_update(pause: TempPause) -> bool {
         dwData: TEMP_PAUSE_MAGIC,
         cbData: bytes.len() as u32,
         lpData: bytes.as_ptr() as *mut _,
+    };
+    let ok = unsafe {
+        SendMessageW(hwnd as HWND, WM_COPYDATA, 0, &cds as *const COPYDATASTRUCT as isize)
+    };
+    ok != 0
+}
+
+/// 把数据库加密请求推送给主进程（管理台子进程用）。
+///
+/// 主进程收到后会先关闭自己的 Store、完成文件转换、重建 Store，再重新打开设置页。
+pub fn send_encryption_request(enabled: bool) -> bool {
+    let hwnd = find_existing_instance();
+    if hwnd == 0 || unsafe { IsWindow(hwnd as HWND) } == 0 {
+        return false;
+    }
+    let byte = [u8::from(enabled)];
+    let cds = COPYDATASTRUCT {
+        dwData: ENCRYPTION_MAGIC,
+        cbData: byte.len() as u32,
+        lpData: byte.as_ptr() as *mut _,
     };
     let ok = unsafe {
         SendMessageW(hwnd as HWND, WM_COPYDATA, 0, &cds as *const COPYDATASTRUCT as isize)

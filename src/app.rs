@@ -44,6 +44,8 @@ pub struct ClipNestApp {
     store_tx: Option<Sender<StoreCmd>>,
     sys_tx: Option<Sender<SysCmd>>,
     events: Receiver<Event>,
+    /// 重建 Store 时复用同一个事件通道。
+    events_tx: Sender<Event>,
 
     // ---- UI ----
     ui: UiState,
@@ -196,6 +198,7 @@ impl ClipNestApp {
             store_tx,
             sys_tx,
             events,
+            events_tx,
             ui,
             thumbs,
             hwnd: None,
@@ -419,6 +422,94 @@ impl ClipNestApp {
         }
     }
 
+    /// 管理台请求切换加密：主进程先关闭 Store，转换文件后再重建 Store。
+    ///
+    /// 管理台是独立进程，Windows 下只要它还持有 `data.db` 句柄，替换文件就会
+    /// 失败；调用方（管理台）在发请求后立即关闭窗口，这里再用有限重试等它释放。
+    fn handle_encryption_request(
+        &mut self,
+        ctx: &egui::Context,
+        enabled: bool,
+        reopen_manager: bool,
+    ) {
+        if self.preview.is_some() {
+            return;
+        }
+        crate::logging::log(&format!("主进程收到加密切换请求：enabled={enabled}"));
+        self.ui.toast("正在切换数据库加密…");
+        ctx.request_repaint();
+
+        // 必须先释放主进程自己的 SQLite 连接，才能替换 data.db 文件。
+        self.store = None;
+        self.store_tx = None;
+
+        // 管理台发完请求后才开始关闭窗口；等它真正消失，减少文件句柄竞争。
+        let manager_title = format!("{} · 管理", crate::model::APP_TITLE);
+        for _ in 0..20 {
+            if crate::window::find_window_by_title_prefix(&manager_title).is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let result = crate::store::switch_database_encryption(enabled);
+        if result.is_ok() {
+            self.settings.encrypt_db = enabled;
+            if let Ok(mut shared) = self.settings_shared.lock() {
+                *shared = self.settings.clone();
+            }
+            self.persist_settings();
+            self.ui.set_encryption_enabled(enabled);
+        }
+
+        match StoreHandle::spawn(
+            self.events_tx.clone(),
+            self.settings_shared.clone(),
+            ctx.clone(),
+        ) {
+            Ok(handle) => {
+                self.store_tx = Some(handle.cmd_tx());
+                self.store = Some(handle);
+            }
+            Err(err) => {
+                crate::logging::error(&format!("加密切换后重建 Store 失败：{err}"));
+                self.init_error = Some(format!(
+                    "数据库已处理，但重新打开失败：{err}\n\n请重启 ClipNest；数据目录：{}",
+                    crate::config::data_dir().display()
+                ));
+            }
+        }
+
+        match &result {
+            Ok(_) => {
+                let text = if enabled {
+                    "已加密本地数据库（当前 Windows 用户密钥）"
+                } else {
+                    "已关闭数据库加密"
+                };
+                crate::logging::log(text);
+                self.ui.toast(text);
+            }
+            Err(err) => {
+                crate::logging::error(&format!("数据库加密切换失败（已恢复原库）：{err}"));
+                self.ui
+                    .toast(format!("数据库加密切换失败，已恢复原数据库：{err}"));
+                crate::sys::util::message_box(
+                    "ClipNest 数据库加密",
+                    &format!(
+                        "切换数据库加密失败，原数据库已恢复。\n\n{err}\n\n可以稍后重试；如仍失败，请退出管理台/主程序后再试。"
+                    ),
+                    true,
+                );
+            }
+        }
+
+        if reopen_manager && self.store.is_some() {
+            self.open_manager_process(ctx, ManagerPage::Settings, self.target_hwnd);
+        }
+        ctx.request_repaint();
+    }
+
     fn handle_event(&mut self, ctx: &egui::Context, event: Event) {
         match event {
             Event::PickerRequested { target_hwnd } => {
@@ -559,26 +650,8 @@ impl ClipNestApp {
                 self.ui.set_temp_pause(pause);
                 ctx.request_repaint();
             }
-            Event::EncryptionChanged { enabled, error } => {
-                match error {
-                    None => {
-                        self.settings.encrypt_db = enabled;
-                        self.ui.set_encryption_enabled(enabled);
-                        self.persist_settings();
-                        self.ui.toast(if enabled {
-                            "已加密本地数据库（当前 Windows 用户密钥）"
-                        } else {
-                            "已关闭数据库加密"
-                        });
-                    }
-                    Some(reason) => {
-                        self.settings.encrypt_db = !enabled;
-                        self.ui.set_encryption_enabled(!enabled);
-                        self.persist_settings();
-                        self.ui.toast(format!("数据库加密切换失败：{reason}"));
-                    }
-                }
-                ctx.request_repaint();
+            Event::EncryptionRequested { enabled } => {
+                self.handle_encryption_request(ctx, enabled, true);
             }
             Event::FileCopyState { clip_id, state } => {
                 self.ui.apply_file_copy_state(clip_id, state);
@@ -798,14 +871,7 @@ impl ClipNestApp {
                 });
             }
             UiAction::SetDbEncryption(enabled) => {
-                self.settings.encrypt_db = enabled;
-                self.persist_settings();
-                if let Some(tx) = &self.store_tx {
-                    let _ = tx.send(StoreCmd::SetEncryption { enabled });
-                    self.ui.toast("正在切换数据库加密…");
-                } else {
-                    self.ui.toast("Store 未就绪，无法切换加密");
-                }
+                self.handle_encryption_request(ctx, enabled, false);
             }
             UiAction::ExportJson => {
                 let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");

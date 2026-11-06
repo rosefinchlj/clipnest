@@ -36,6 +36,39 @@ use std::thread::JoinHandle;
 
 use db::{Db, DbOptions, UpsertOutcome};
 
+/// 在主进程 Store 已关闭、其它进程也释放数据库后，切换整库加密。
+///
+/// 管理台是独立进程且会打开同一个 SQLite；Windows 上只要还有其它进程持有
+/// `data.db` 句柄，替换文件就会 `os error 5（拒绝访问）`。这里做有限重试，
+/// 给管理台进程留出退出/释放句柄的时间。
+pub fn switch_database_encryption(enabled: bool) -> StoreResult<bool> {
+    let dir = crate::config::data_dir();
+    let mut last_error = None;
+    for attempt in 0..20 {
+        let db = Db::open_in_dir(&dir, DbOptions::from_env(&dir));
+        let mut db = match db {
+            Ok(db) => db,
+            Err(err) => return Err(err),
+        };
+        match db.set_encryption(enabled) {
+            Ok(changed) => return Ok(changed),
+            Err(err) => {
+                let text = err.to_string();
+                let retryable = text.contains("拒绝访问")
+                    || text.contains("os error 5")
+                    || text.contains("另一个程序");
+                last_error = Some(err);
+                if !retryable || attempt == 19 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| StoreError::Msg("数据库加密切换失败（原因未知）".to_string())))
+}
+
 /// 存储线程句柄：持有命令通道；`Drop` 时发送 `Shutdown` 并等待线程退出。
 pub struct StoreHandle {
     tx: Sender<StoreCmd>,
@@ -486,37 +519,6 @@ impl Store {
                     Ok(true) => self.toast(format!("已保存文本到 {}", path.display())),
                     Ok(false) => self.toast("文本内容不存在或已被清理".to_string()),
                     Err(err) => self.toast(format!("保存文本失败：{err}")),
-                }
-                Ok(false)
-            }
-            StoreCmd::SetEncryption { enabled } => {
-                match self.db.set_encryption(enabled) {
-                    Ok(changed) => {
-                        *stats_due = true;
-                        self.emit(Event::EncryptionChanged {
-                            enabled,
-                            error: None,
-                        });
-                        self.toast(if enabled {
-                            "数据库已加密（Windows 当前用户密钥，下次启动自动解锁）".to_string()
-                        } else {
-                            "数据库加密已关闭".to_string()
-                        });
-                        if changed {
-                            crate::logging::log(&format!(
-                                "Store: 数据库加密{}",
-                                if enabled { "已开启" } else { "已关闭" }
-                            ));
-                        }
-                    }
-                    Err(err) => {
-                        crate::logging::error(&format!("切换数据库加密失败：{err}"));
-                        self.emit(Event::EncryptionChanged {
-                            enabled: !enabled,
-                            error: Some(format!("{err}")),
-                        });
-                        self.toast(format!("切换加密失败：{err}"));
-                    }
                 }
                 Ok(false)
             }

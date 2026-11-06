@@ -1487,6 +1487,29 @@ fn database_encryption_roundtrip_and_disable() {
 }
 
 #[test]
+fn encryption_switch_failure_restores_original_database() {
+    let (dir, mut db) = open_db("db-encryption-rollback");
+    db.upsert(&text_input_at("加密切换失败后仍可用", now_ms()))
+        .unwrap();
+
+    // 用同名目录制造“备份路径不可用”，让替换阶段失败；验证原库会被放回，
+    // 且连接重新打开（不是留在 open_in_memory 的空库）。
+    std::fs::create_dir_all(dir.join("data.encrypt.bak")).unwrap();
+    let err = db.set_encryption(true).unwrap_err();
+    assert!(
+        err.to_string().contains("备份原数据库失败"),
+        "错误应说明备份失败：{err}"
+    );
+    assert!(!crate::db_crypto::key_exists(&dir));
+    assert!(!dir.join("data.encrypt.tmp").exists());
+    assert_eq!(db.counts().unwrap().total, 1);
+    assert!(!crate::db_crypto::is_encrypted_file(
+        &dir.join(super::db::DB_FILE)
+    ));
+    std::fs::remove_dir_all(dir.join("data.encrypt.bak")).unwrap();
+}
+
+#[test]
 fn database_encryption_auto_unlocks_from_env_key() {
     let (dir, mut db) = open_db("db-encryption-auto-key");
     db.upsert(&text_input_at("自动解锁测试", now_ms())).unwrap();

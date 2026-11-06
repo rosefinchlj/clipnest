@@ -207,6 +207,9 @@ impl Db {
     /// SQLCipher 不支持直接对明文库 `PRAGMA rekey`，也不支持把密文库
     /// 直接 rekey 成明文；两个方向都通过 `sqlcipher_export()` 导出到临时库，
     /// 校验后再原子替换主库。返回是否真的发生了变化。
+    ///
+    /// 替换过程中任何一步失败都会把原库放回并重新打开连接，避免 Store 停留在
+    /// 空的内存连接上（否则后续所有查询都会 `no such table`）。
     pub fn set_encryption(&mut self, enabled: bool) -> StoreResult<bool> {
         if self.key_hex.is_some() == enabled {
             return Ok(false);
@@ -214,12 +217,17 @@ impl Db {
         let temp = self
             .db_path
             .with_extension(if enabled { "encrypt.tmp" } else { "plain.tmp" });
+        let backup = self
+            .db_path
+            .with_extension(if enabled { "encrypt.bak" } else { "plain.bak" });
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(sibling_path(&temp, suffix));
         }
+        let _ = std::fs::remove_file(&backup);
         self.conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
 
+        let old_key = self.key_hex.clone();
         let new_key = if enabled {
             let key = crate::db_crypto::generate_key_hex()
                 .map_err(|err| StoreError::Msg(format!("生成数据库密钥失败：{err}")))?;
@@ -230,8 +238,7 @@ impl Db {
             None
         };
 
-        let export_result = self.export_to(&temp, new_key.as_deref());
-        if let Err(err) = export_result {
+        if let Err(err) = self.export_to(&temp, new_key.as_deref()) {
             if enabled {
                 let _ = crate::db_crypto::delete_key(&self.data_dir);
             }
@@ -239,26 +246,91 @@ impl Db {
             return Err(err);
         }
 
-        // 关闭旧连接，替换主库文件后重新打开。
+        // 先关闭旧连接；只有确认旧库已完整移到备份位置后，才动主文件名。
         let old = std::mem::replace(&mut self.conn, Connection::open_in_memory()?);
         drop(old);
-        for suffix in ["", "-wal", "-shm"] {
+        for suffix in ["-wal", "-shm"] {
             let _ = std::fs::remove_file(sibling_path(&self.db_path, suffix));
         }
-        std::fs::rename(&temp, &self.db_path)?;
-        if !enabled {
-            let _ = crate::db_crypto::delete_key(&self.data_dir);
+
+        if let Err(err) = std::fs::rename(&self.db_path, &backup) {
+            // 旧库没能移走，主文件名仍指向原库；清理临时文件与密钥后重开。
+            let _ = std::fs::remove_file(&temp);
+            if enabled {
+                let _ = crate::db_crypto::delete_key(&self.data_dir);
+            }
+            let reopen = self.reopen_after_failed_switch(old_key);
+            return Err(switch_error(
+                format!("备份原数据库失败：{err}"),
+                reopen.err(),
+            ));
         }
-        let path = self.db_path.clone();
-        let reopened = Db::open(
-            &path,
+
+        if let Err(err) = std::fs::rename(&temp, &self.db_path) {
+            let restore = std::fs::rename(&backup, &self.db_path);
+            if enabled {
+                let _ = crate::db_crypto::delete_key(&self.data_dir);
+            }
+            let reopen = self.reopen_after_failed_switch(old_key);
+            let detail = match restore {
+                Ok(()) => String::new(),
+                Err(restore_err) => format!("，恢复原库也失败：{restore_err}"),
+            };
+            return Err(switch_error(
+                format!("替换主数据库失败：{err}{detail}"),
+                reopen.err(),
+            ));
+        }
+
+        match Self::open(
+            &self.db_path,
             DbOptions {
                 disable_fts: false,
-                key_hex: new_key,
+                key_hex: new_key.clone(),
+            },
+        ) {
+            Ok(reopened) => {
+                *self = reopened;
+                if !enabled {
+                    let _ = crate::db_crypto::delete_key(&self.data_dir);
+                }
+                let _ = std::fs::remove_file(&backup);
+                Ok(true)
+            }
+            Err(err) => {
+                // 新库打不开：删除它，把旧库放回并重新打开。
+                let _ = std::fs::remove_file(&self.db_path);
+                for suffix in ["-wal", "-shm"] {
+                    let _ = std::fs::remove_file(sibling_path(&self.db_path, suffix));
+                }
+                let restore = std::fs::rename(&backup, &self.db_path);
+                if enabled {
+                    let _ = crate::db_crypto::delete_key(&self.data_dir);
+                }
+                let reopen = self.reopen_after_failed_switch(old_key);
+                let detail = match restore {
+                    Ok(()) => String::new(),
+                    Err(restore_err) => format!("，恢复原库也失败：{restore_err}"),
+                };
+                Err(switch_error(
+                    format!("打开新数据库失败：{err}{detail}"),
+                    reopen.err(),
+                ))
+            }
+        }
+    }
+
+    /// 加密切换失败后重新打开原库；若原库也打不开，把错误交给调用方拼接。
+    fn reopen_after_failed_switch(&mut self, old_key: Option<String>) -> StoreResult<()> {
+        let reopened = Self::open(
+            &self.db_path,
+            DbOptions {
+                disable_fts: false,
+                key_hex: old_key,
             },
         )?;
         *self = reopened;
-        Ok(true)
+        Ok(())
     }
 
     fn export_to(&self, dest: &Path, key_hex: Option<&str>) -> StoreResult<()> {
@@ -958,6 +1030,14 @@ pub(crate) fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
     let mut raw = path.as_os_str().to_os_string();
     raw.push(suffix);
     PathBuf::from(raw)
+}
+
+/// 把加密切换的主错误与「恢复连接失败」的错误拼在一起，避免丢失任何一个。
+fn switch_error(primary: String, reopen: Option<StoreError>) -> StoreError {
+    match reopen {
+        Some(err) => StoreError::Msg(format!("{primary}；重新打开原数据库也失败：{err}")),
+        None => StoreError::Msg(primary),
+    }
 }
 
 /// 日志里只出现 hash 前 8 位（不泄露内容）。

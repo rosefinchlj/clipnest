@@ -1083,3 +1083,28 @@
 - `cargo test --release`：**245 passed / 0 failed / 1 ignored**。
 - `--ui-preview picker` + `CLIPNEST_PREVIEW_TIME=7` 截图 `docs/screenshots/picker-time-filter.png`：按钮显示「筛选 · 近7天」，强调色描边，右侧不越界。
 - release 构建 + 9 尺寸图标 patch：exe 13,285,888B，SHA-256 `0782F0BC82BDED21348C0E7CAEBB3FD0DD4A50C87B2DD6542A34D18A4DF3A92F`；`--selftest` 15 项 PASS。
+
+## 50. v1.13.5（2026-11-06，加密切换失败导致导出/完整备份不可用）
+
+### 用户反馈
+- 「我刚试了导出和完整备份，这两功能，不能用。生成的文件是个快捷方式。」用户给出 `%APPDATA%\Microsoft\Windows\Recent\clipnest-backup-20261106-090419.cnbak.lnk`；Recent 里两个快捷方式分别指向 `C:\Users\jun.liu\Downloads\clipnest-backup-20261106-090406.cnbak` / `...-090419.cnbak`，目标均不存在。
+
+### 根因
+- 08:51 在管理台勾选数据库加密。管理台是独立进程，自己打开着 `data.db`；`Db::set_encryption` 先替换连接为内存库，再删除/重命名主库文件，Windows 因管理台仍持有句柄返回 `os error 5（拒绝访问）`。
+- 错误路径直接返回，`self.conn` 已指向空内存库，Store 后续所有查询都报 `no such table: clips / blobs`；09:04 的导出与完整备份因此在写文件前失败。
+- Recent 的 `.lnk` 是 Windows 保存对话框自动创建的「最近使用」记录，不是程序输出；真实 `.cnbak` 没有生成。
+- 磁盘上的原库仍在；`ClipNest.recover-20261106` 副本经 Python sqlite3 校验：clips=32（文本 21 / 图片 8 / 文件 3），meta schema_version=4、clip_count=28。
+
+### 修复
+- `src/store/db.rs::set_encryption`：替换前保留 `data.encrypt.bak` / `plain.bak`；先 checkpoint、关旧连接、rename 原库、rename 临时库、打开新库；任一步失败调用 `reopen_after_failed_switch(old_key)` 恢复原库，绝不让 Store 停留在内存连接；成功才删备份，开/关都清理临时文件。
+- `src/store.rs::switch_database_encryption`：对 `拒绝访问` / `os error 5` / `另一个程序` 做 20 次 ×150ms 重试，等待管理台释放句柄。
+- 加密切换改为主进程协调：管理台 `UiAction::SetDbEncryption` 通过 `WM_COPYDATA`（`ENCRYPTION_MAGIC=0x434C_4E45`）发请求后自行关闭；主进程收到 `Event::EncryptionRequested`，丢弃 Store、等待管理台窗口消失、转换、重建 Store，再重开设置页。
+- 新增 `Event::EncryptionRequested`、`send_encryption_request()`、`handle_encryption_request()`；失败时 message box + toast，不静默。
+
+### 校验
+- 新增 `encryption_switch_failure_restores_original_database`：制造替换失败后断言原库仍可打开、条目仍在、`db.key`/临时文件已清理。
+- `cargo test --release`：**246 passed / 0 failed / 1 ignored**。
+- 临时数据目录实测：32 条 copied 数据；IPC 开启加密 → 日志「已加密本地数据库」，`db.key` 生成；管理台退出后 IPC 关闭 → 日志「已关闭数据库加密」；Python 复读 `clips=32`，双向转换数据保留。
+- UI 实测：管理台「导出」选择 `target\ui-export-test.json`，写出 47,492B；设置 → 数据 →「完整备份…」选择 `target\ui-backup-test.cnbak`，日志「完整备份完成：28 条，图片 8」，文件 1,172,332B。均不再只留 `.lnk`。
+- 用户真实数据目录未改动；`%APPDATA%\ClipNest` 保持原样，恢复副本在 `%APPDATA%\ClipNest.recover-20261106`。
+- release 构建 + 9 尺寸图标 patch：exe 13,302,784B，SHA-256 `F222A66D6FBD0A828F74D96FE4BF6D94154DDDCE9F93540960C1BC44787A7FC9`；`--selftest` 15 项 PASS；app v1.13.5 启动后读取真实 `data.db`（32 条，明文）。

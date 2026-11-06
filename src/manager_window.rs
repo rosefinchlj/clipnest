@@ -269,26 +269,6 @@ impl ManagerApp {
                     }
                 }
                 Event::Toast(message) => self.ui.toast(message),
-                Event::EncryptionChanged { enabled, error } => match error {
-                    None => {
-                        self.settings.encrypt_db = enabled;
-                        self.ui.set_encryption_enabled(enabled);
-                        self.persist_settings();
-                        self.notify_main_settings();
-                        self.ui.toast(if enabled {
-                            "已加密本地数据库（当前 Windows 用户密钥）"
-                        } else {
-                            "已关闭数据库加密"
-                        });
-                    }
-                    Some(reason) => {
-                        self.settings.encrypt_db = !enabled;
-                        self.ui.set_encryption_enabled(!enabled);
-                        self.persist_settings();
-                        self.notify_main_settings();
-                        self.ui.toast(format!("数据库加密切换失败：{reason}"));
-                    }
-                },
                 Event::Backup(event) => match event {
                     BackupEvent::Created(report) => self.ui.toast(format!(
                         "已创建完整备份：{} 条 / {} 张图片 / {} 个文件副本，共 {}",
@@ -500,14 +480,15 @@ impl ManagerApp {
                 });
             }
             UiAction::SetDbEncryption(enabled) => {
-                self.settings.encrypt_db = enabled;
-                self.persist_settings();
-                if let Some(tx) = &self.store_tx {
-                    let _ = tx.send(StoreCmd::SetEncryption { enabled });
-                    self.ui.toast("正在切换数据库加密…");
-                } else {
-                    self.ui.toast("Store 未就绪，无法切换加密");
+                // 本进程也持有 data.db；不能在这里直接替换文件。请求主进程先
+                // 关闭 Store、完成转换，再重开设置页。
+                if !crate::sys::thread::send_encryption_request(enabled) {
+                    self.ui.toast("主程序未运行，无法切换数据库加密");
+                    return;
                 }
+                self.ui
+                    .toast("正在切换数据库加密，设置窗口会重新打开…");
+                self.request_close(ctx);
             }
             UiAction::ExportJson => {
                 let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");

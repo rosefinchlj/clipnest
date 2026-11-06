@@ -1171,11 +1171,9 @@ pub enum Event {
     Captured(ClipInput),
     /// 完整备份/恢复任务进度与结果（Store 线程串行执行）。
     Backup(BackupEvent),
-    /// 数据库加密开关结果（B6）。
-    EncryptionChanged {
-        enabled: bool,
-        error: Option<String>,
-    },
+    /// 管理台请求主进程切换数据库加密（主进程负责先关闭自己的 Store，
+    /// 避免多进程同时持有 `data.db` 时替换文件失败）。
+    EncryptionRequested { enabled: bool },
 }
 
 /// UI → Store 命令。
@@ -1244,10 +1242,6 @@ pub enum StoreCmd {
     SaveTextAs {
         id: ClipId,
         path: PathBuf,
-    },
-    /// 开启/关闭整库加密（B6）。结果通过 `Event::EncryptionChanged` 回传。
-    SetEncryption {
-        enabled: bool,
     },
     Shutdown,
 }

@@ -229,6 +229,11 @@ impl SysState {
         self.emit(Event::QuitRequested);
     }
 
+    /// 管理台通过 WM_COPYDATA 请求切换数据库加密；实际转换由主进程执行。
+    pub(crate) fn request_encryption_switch(&mut self, enabled: bool) {
+        self.emit(Event::EncryptionRequested { enabled });
+    }
+
     pub(crate) fn on_hotkey(&mut self, id: i32) {
         match id {
             HOTKEY_ID_PICKER => self.request_picker("备用快捷键"),
