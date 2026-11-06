@@ -1218,3 +1218,21 @@
 - `cargo test --release`：**251 passed / 0 failed / 1 ignored**。
 - `--ui-preview picker` 确认底部提示条显示「空格 预览」且不挤压「共 N 条 / 预览开 / 齿轮」；字体日志为 `已加载中文字体：msyh.ttc`，西文恢复 Ubuntu-Light。
 - release 构建、9 尺寸图标 patch 与 `--selftest` 结果见发布记录。
+
+## 56. v1.13.11（2026-11-06，西文改用 Windows Segoe UI）
+
+### 用户反馈
+- 用户 m19812/m19813 发 Windows 资源管理器字体截图并问：「能否用window显示的这种字体。」
+
+### 修改
+- `src/ui/fonts.rs`：
+  - 新增 `LATIN_CANDIDATES = ["seguisb.ttf", "segoeui.ttf"]`：优先 Windows 资源管理器同款 **Segoe UI Semibold**，缺失时回退 Segoe UI 常规体。
+  - `install_font` 把西文字体插入 Proportional 族首位，`msyh.ttc`（微软雅黑 UI）紧随其后负责中文回退；Monospace 仍保留 egui 等宽字体并追加中文回退。
+  - 半粗体用于补偿 egui 灰度抗锯齿在小字号下比 Windows ClearType 偏细的问题；仍是 mmap 零拷贝，缺字体不 panic。
+- 日志新增西文字体提示：`已加载中文字体：msyh.ttc（ttc 索引 0，内存映射零拷贝），西文 seguisb.ttf`。
+
+### 校验
+- 新增 `latin_candidates_prefer_windows_ui_font`。
+- `cargo test --release`：**252 passed / 0 failed / 1 ignored**。
+- `--ui-preview manager` 截图 `docs/screenshots/manager-filter.png`（页脚 v1.13.11）：西文为 Segoe UI Semibold、中文微软雅黑 UI，URL/路径不再发虚。
+- release exe 12,919,808B，SHA-256 `3155D104D424D634E789EC902AAF8DC633D70E188545BF656E3DD35414B2BF84`；`--selftest` 15 项 PASS。

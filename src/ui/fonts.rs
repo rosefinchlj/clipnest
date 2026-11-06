@@ -54,6 +54,10 @@ struct LoadedFont {
     index: u32,
 }
 
+/// Windows 资源管理器使用 Segoe UI；优先半粗体补偿 egui 灰度抗锯齿，
+/// 没有 Segoe UI Semibold 时退回常规体。
+const LATIN_CANDIDATES: &[&str] = &["seguisb.ttf", "segoeui.ttf"];
+
 /// 安装指定字体数据（mmap 或回退路径共用）。
 fn install_font(ctx: &egui::Context, name: String, mut data: egui::FontData, index: u32) {
     let mut fonts = egui::FontDefinitions::default();
@@ -61,14 +65,38 @@ fn install_font(ctx: &egui::Context, name: String, mut data: egui::FontData, ind
     // ttc 需要指定 face 索引
     data.index = index;
 
-    // 字体放 Proportional/Monospace 族末尾：拉丁字形仍由 egui 默认字体渲染。
+    // 西文优先使用 Windows 的 Segoe UI；中文回退到微软雅黑。两者都缺失时
+    // 继续用 egui 自带字体。
+    let latin_font = LATIN_CANDIDATES
+        .iter()
+        .find_map(|file| load_named(file, 0));
+    let latin_name = latin_font.as_ref().map(|font| font.name.clone());
+
     fonts.font_data.insert(name.clone(), Arc::new(data));
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push(name.clone());
+    if let Some(latin) = latin_font {
+        fonts.font_data.insert(latin.name.clone(), Arc::new(latin.data));
     }
 
+    if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        if let Some(latin_name) = &latin_name {
+            list.insert(0, latin_name.clone());
+        }
+        list.insert(usize::from(latin_name.is_some()), name.clone());
+    }
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push(name.clone());
+
     ctx.set_fonts(fonts);
-    crate::logging::log(&format!("已加载中文字体：{name}（ttc 索引 {index}，内存映射零拷贝）"));
+    let latin_note = latin_name
+        .as_deref()
+        .map(|value| format!("，西文 {value}"))
+        .unwrap_or_default();
+    crate::logging::log(&format!(
+        "已加载中文字体：{name}（ttc 索引 {index}，内存映射零拷贝）{latin_note}"
+    ));
 }
 
 /// 便于单测的注入入口：用调用方提供的字体字节（owned 路径）。
@@ -200,6 +228,12 @@ mod tests {
         assert_eq!(names, vec!["msyh.ttc", "Deng.ttf", "simhei.ttf", "simsun.ttc"]);
         // ttc 候选索引均为 0（msyh 索引 0 为 Microsoft YaHei UI）
         assert!(CANDIDATES.iter().all(|(_, idx)| *idx == 0));
+    }
+
+    #[test]
+    fn latin_candidates_prefer_windows_ui_font() {
+        // Windows 资源管理器同款 Segoe UI；优先半粗体补偿灰度抗锯齿。
+        assert_eq!(LATIN_CANDIDATES, &["seguisb.ttf", "segoeui.ttf"]);
     }
 
     #[test]
