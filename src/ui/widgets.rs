@@ -3,7 +3,7 @@
 //! 全部按 spec §7 视觉规范自绘（深色卡片 + 细描边 + 圆角 + 强调色），
 //! 不依赖 egui 默认控件外观；图标见 [`crate::ui::paint`]（几何自绘，不用 emoji）。
 
-use crate::model::{ClipFilter, HotkeyChord, TimeBasis, TimeRange};
+use crate::model::{ClipFilter, HotkeyChord, MatchMode, SortOrder, TimeBasis, TimeRange};
 use crate::ui::{keys, paint, theme};
 use chrono::{Datelike, Days, Local, NaiveDate, TimeZone};
 use eframe::egui::{
@@ -294,6 +294,184 @@ pub fn dropdown_at<T: Copy + PartialEq>(
     } else {
         None
     }
+}
+
+// ---------------------------------------------------------------------------
+// 筛选行（候选窗与管理台共用）
+// ---------------------------------------------------------------------------
+
+/// 折叠状态下的筛选按钮文案：已选时间条件时直接显示，避免只留一个含义不明的圆点。
+pub(crate) fn time_filter_label(time_range: TimeRange, expanded: bool) -> String {
+    if expanded || time_range == TimeRange::All {
+        "筛选".to_string()
+    } else {
+        format!("筛选 · {}", time_range.label())
+    }
+}
+
+/// 筛选按钮宽度：无生效条件时固定 64；有生效条件时按文案加内边距，避免文字被截断。
+pub(crate) fn time_filter_width(ui: &egui::Ui, time_range: TimeRange, expanded: bool) -> f32 {
+    if expanded || time_range == TimeRange::All {
+        64.0
+    } else {
+        paint::text_width(ui, time_filter_label(time_range, expanded).as_str(), theme::font_body())
+            + 44.0
+    }
+}
+
+/// 绘制「筛选」按钮（含展开箭头与当前条件提示），返回是否被点击。
+///
+/// 候选窗和管理台共用这一段，保证折叠时都显示「筛选 · 近7天」、都用强调色，
+/// 不再一个显示蓝点、一个只显示「筛选」。
+pub(crate) fn time_filter_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    time_range: TimeRange,
+    expanded: bool,
+) -> bool {
+    let active = !expanded && time_range != TimeRange::All;
+    let kind = if active {
+        ButtonKind::FilterActive
+    } else {
+        ButtonKind::Secondary
+    };
+    let label = time_filter_label(time_range, expanded);
+    let resp = button_at(ui, rect, &label, kind);
+    let hint = if active {
+        format!("时间筛选已生效：{}。点击展开调整", time_range.label())
+    } else {
+        "按时间范围筛选".to_string()
+    };
+    let clicked = resp.clicked();
+    resp.on_hover_text(hint);
+
+    let chevron = Pos2::new(rect.right() - 12.0, rect.center().y);
+    let stroke = egui::Stroke::new(
+        1.4_f32,
+        if active {
+            theme::accent()
+        } else {
+            theme::text_secondary()
+        },
+    );
+    if expanded {
+        ui.painter().line_segment(
+            [Pos2::new(chevron.x - 4.0, chevron.y + 2.0), chevron],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [chevron, Pos2::new(chevron.x + 4.0, chevron.y + 2.0)],
+            stroke,
+        );
+    } else {
+        ui.painter().line_segment(
+            [Pos2::new(chevron.x - 4.0, chevron.y - 2.0), chevron],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [chevron, Pos2::new(chevron.x + 4.0, chevron.y - 2.0)],
+            stroke,
+        );
+    }
+    clicked
+}
+
+/// 筛选行中「关键词模式 / 排序 / 可选来源」的返回值。
+#[derive(Default)]
+pub(crate) struct FilterMetaResult {
+    pub match_mode: Option<MatchMode>,
+    pub sort: Option<SortOrder>,
+    /// `Some(None)` 表示用户切回「全部来源」；`None` 表示没有来源下拉或未变化。
+    pub source: Option<Option<String>>,
+}
+
+/// 绘制「任一关键词 / 最近使用 / 全部来源」下拉行。
+///
+/// 宽度与间距统一为 104 / 104 / 150，gap 12；候选窗不传 `source`，管理台传入
+/// 来源列表。这样两个界面的下拉视觉、悬停说明和命中逻辑来自同一份实现。
+pub(crate) fn filter_meta_row(
+    ui: &mut egui::Ui,
+    start: Pos2,
+    id_prefix: &str,
+    match_mode: MatchMode,
+    sort: SortOrder,
+    source: Option<(&Option<String>, &[String])>,
+) -> FilterMetaResult {
+    let mut out = FilterMetaResult::default();
+
+    let mode_rect = Rect::from_min_size(start, Vec2::new(104.0, theme::CHIP_HEIGHT));
+    let mode_options: Vec<(MatchMode, &str)> = MatchMode::all()
+        .iter()
+        .map(|mode| (*mode, mode.label()))
+        .collect();
+    if let Some(mode) = dropdown_at(
+        ui,
+        mode_rect,
+        &format!("{id_prefix}-match-mode"),
+        match_mode,
+        &mode_options,
+    ) {
+        out.match_mode = Some(mode);
+    }
+    ui.interact(
+        mode_rect,
+        egui::Id::new(format!("{id_prefix}-match-mode-hint")),
+        Sense::hover(),
+    )
+    .on_hover_text(match_mode.hint());
+
+    let sort_rect = Rect::from_min_size(
+        Pos2::new(mode_rect.right() + 12.0, start.y),
+        Vec2::new(104.0, theme::CHIP_HEIGHT),
+    );
+    let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
+        .iter()
+        .map(|sort| (*sort, sort.label()))
+        .collect();
+    if let Some(sort) = dropdown_at(
+        ui,
+        sort_rect,
+        &format!("{id_prefix}-sort"),
+        sort,
+        &sort_options,
+    ) {
+        out.sort = Some(sort);
+    }
+    if let Some((selected, apps)) = source {
+        let source_rect = Rect::from_min_size(
+            Pos2::new(sort_rect.right() + 12.0, start.y),
+            Vec2::new(150.0, theme::CHIP_HEIGHT),
+        );
+        let source_labels: Vec<String> = std::iter::once("全部来源".to_string())
+            .chain(apps.iter().cloned())
+            .collect();
+        let source_options: Vec<(usize, &str)> = source_labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| (index, label.as_str()))
+            .collect();
+        let source_index = selected
+            .as_ref()
+            .and_then(|app| {
+                apps.iter()
+                    .position(|candidate| candidate.eq_ignore_ascii_case(app))
+            })
+            .map_or(0, |index| index + 1);
+        if let Some(index) = dropdown_at(
+            ui,
+            source_rect,
+            &format!("{id_prefix}-source"),
+            source_index,
+            &source_options,
+        ) {
+            out.source = Some(if index == 0 {
+                None
+            } else {
+                apps.get(index - 1).cloned()
+            });
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

@@ -258,7 +258,10 @@ pub fn card_active() -> Color32 {
     scale_alpha(palette().card_active, card_alpha())
 }
 pub fn input_focused() -> Color32 {
-    scale_alpha(palette().input_focused, (card_alpha() + 8).min(255))
+    scale_alpha(
+        palette().input_focused,
+        card_alpha().saturating_add(8).min(255),
+    )
 }
 pub fn border() -> Color32 {
     palette().border
@@ -780,6 +783,19 @@ mod tests {
         );
         set_glass_opacity(75);
         set_light(false);
+    }
+
+    #[test]
+    fn input_focused_alpha_saturates_at_full_glass() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_light(false);
+        set_glass_opacity(100);
+        assert_eq!(
+            input_focused().a(),
+            255,
+            "最高不透明度下输入框焦点色不应发生 u8 溢出"
+        );
+        set_glass_opacity(75);
     }
 
     #[test]

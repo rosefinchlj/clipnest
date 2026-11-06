@@ -3,8 +3,7 @@
 //! 表格列：多选框 / 类型 / 内容摘要 / 来源 / 时间 / 大小 / 收藏（spec §6.4）。
 
 use crate::model::{
-    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, CopyState, MatchMode,
-    SortOrder, TimeRange,
+    fmt_relative_time, fmt_size, ClipFilter, ClipId, ClipItem, ClipKind, CopyState, TimeRange,
 };
 use crate::ui::export_dialog;
 use crate::ui::thumbs::ThumbCache;
@@ -156,121 +155,36 @@ pub(crate) fn page(
         state.schedule_search(false);
     }
 
-    // ---- 筛选开关 + 时间范围（默认收起）----
+    // ---- 筛选开关 + 时间范围（默认收起，与候选窗共用控件）----
     let time_open = state.manager_time_open;
+    let filter_width = widgets::time_filter_width(ui, state.manager_time_range, time_open);
     let toggle_rect = Rect::from_min_size(
         Pos2::new(inner.left(), toolbar_rect.bottom() + 8.0),
-        Vec2::new(66.0, theme::CHIP_HEIGHT),
+        Vec2::new(filter_width, theme::CHIP_HEIGHT),
     );
-    if widgets::button_at(ui, toggle_rect, "筛选", widgets::ButtonKind::Secondary).clicked() {
+    if widgets::time_filter_button(ui, toggle_rect, state.manager_time_range, time_open) {
         state.manager_time_open = !time_open;
         if !state.manager_time_open {
             state.date_picker_open = false;
         }
     }
-    let chevron = Pos2::new(toggle_rect.right() - 12.0, toggle_rect.center().y);
-    let stroke = egui::Stroke::new(1.4_f32, theme::text_secondary());
-    if time_open {
-        ui.painter().line_segment(
-            [Pos2::new(chevron.x - 4.0, chevron.y + 2.0), chevron],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [chevron, Pos2::new(chevron.x + 4.0, chevron.y + 2.0)],
-            stroke,
-        );
-    } else {
-        ui.painter().line_segment(
-            [Pos2::new(chevron.x - 4.0, chevron.y - 2.0), chevron],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [chevron, Pos2::new(chevron.x + 4.0, chevron.y - 2.0)],
-            stroke,
-        );
-    }
-    if !time_open && state.manager_time_range != TimeRange::All {
-        ui.painter().circle_filled(
-            Pos2::new(toggle_rect.right() - 8.0, toggle_rect.top() + 8.0),
-            2.5,
-            theme::accent(),
-        );
-    }
 
-    // ---- 关键字模式 / 排序 / 来源 ----
-    let mut left = toggle_rect.right() + 12.0;
-    let mode_rect = Rect::from_min_size(
-        Pos2::new(left, toggle_rect.top()),
-        Vec2::new(96.0, theme::CHIP_HEIGHT),
-    );
-    left = mode_rect.right() + theme::GAP_XS;
-    let sort_rect = Rect::from_min_size(
-        Pos2::new(left, toggle_rect.top()),
-        Vec2::new(112.0, theme::CHIP_HEIGHT),
-    );
-    left = sort_rect.right() + theme::GAP_XS;
-    let source_rect = Rect::from_min_size(
-        Pos2::new(left, toggle_rect.top()),
-        Vec2::new(150.0, theme::CHIP_HEIGHT),
-    );
-    let mode_options: Vec<(MatchMode, &str)> = MatchMode::all()
-        .iter()
-        .map(|mode| (*mode, mode.label()))
-        .collect();
-    if let Some(mode) = widgets::dropdown_at(
+    // ---- 关键字模式 / 排序 / 来源（与候选窗同一组件，管理台保留来源筛选）----
+    let meta = widgets::filter_meta_row(
         ui,
-        mode_rect,
-        "history-match-mode",
+        Pos2::new(toggle_rect.right() + 12.0, toggle_rect.top()),
+        "history",
         state.match_mode,
-        &mode_options,
-    ) {
+        state.sort,
+        Some((&state.source_app, &state.source_apps)),
+    );
+    if let Some(mode) = meta.match_mode {
         state.set_match_mode(mode);
     }
-    ui.interact(
-        mode_rect,
-        egui::Id::new("history-match-mode-hint"),
-        Sense::hover(),
-    )
-    .on_hover_text(state.match_mode.hint());
-    let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
-        .iter()
-        .map(|sort| (*sort, sort.label()))
-        .collect();
-    if let Some(sort) =
-        widgets::dropdown_at(ui, sort_rect, "history-sort", state.sort, &sort_options)
-    {
+    if let Some(sort) = meta.sort {
         state.set_sort(sort);
     }
-    let source_labels: Vec<String> = std::iter::once("全部来源".to_string())
-        .chain(state.source_apps.iter().cloned())
-        .collect();
-    let source_options: Vec<(usize, &str)> = source_labels
-        .iter()
-        .enumerate()
-        .map(|(index, label)| (index, label.as_str()))
-        .collect();
-    let source_index = state
-        .source_app
-        .as_ref()
-        .and_then(|app| {
-            state
-                .source_apps
-                .iter()
-                .position(|candidate| candidate.eq_ignore_ascii_case(app))
-        })
-        .map_or(0, |index| index + 1);
-    if let Some(index) = widgets::dropdown_at(
-        ui,
-        source_rect,
-        "history-source",
-        source_index,
-        &source_options,
-    ) {
-        let source = if index == 0 {
-            None
-        } else {
-            state.source_apps.get(index - 1).cloned()
-        };
+    if let Some(source) = meta.source {
         state.set_source_app(source);
     }
 

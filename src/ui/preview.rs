@@ -212,6 +212,7 @@ impl PreviewState {
                 state.picker_time_open = false;
                 state.pending = None;
             }
+
             if std::env::var_os("CLIPNEST_PREVIEW_DATE").is_some() {
                 let day = crate::ui::widgets::today_start_ms();
                 state.picker_time_range = crate::model::TimeRange::Custom;
@@ -224,19 +225,30 @@ impl PreviewState {
                 state.date_picker_open = std::env::var_os("CLIPNEST_PREVIEW_DATE_ONLY").is_none();
                 state.pending = None;
             }
-        } else if matches!(mode, "manager" | "favorites" | "trash")
-            && std::env::var_os("CLIPNEST_PREVIEW_DATE").is_some()
-        {
-            let day = crate::ui::widgets::today_start_ms();
-            state.manager_time_range = crate::model::TimeRange::Custom;
-            state.manager_time_open = true;
-            state.manager_custom_day = Some(day - 2 * 86_400_000);
-            state.manager_custom_end = Some(day);
-            state.date_picker_start = Some(day - 2 * 86_400_000);
-            state.date_picker_end = Some(day);
-            state.date_picker_month = Some(crate::ui::widgets::month_start_ms(day));
-            state.date_picker_open = std::env::var_os("CLIPNEST_PREVIEW_DATE_ONLY").is_none();
-            state.pending = None;
+        } else if matches!(mode, "manager" | "favorites" | "trash") {
+            if let Ok(range) = std::env::var("CLIPNEST_PREVIEW_TIME") {
+                state.manager_time_range = match range.as_str() {
+                    "today" => crate::model::TimeRange::Today,
+                    "7" => crate::model::TimeRange::Last7Days,
+                    "30" => crate::model::TimeRange::Last30Days,
+                    "90" => crate::model::TimeRange::Last90Days,
+                    _ => crate::model::TimeRange::All,
+                };
+                state.manager_time_open = false;
+                state.pending = None;
+            }
+            if std::env::var_os("CLIPNEST_PREVIEW_DATE").is_some() {
+                let day = crate::ui::widgets::today_start_ms();
+                state.manager_time_range = crate::model::TimeRange::Custom;
+                state.manager_time_open = true;
+                state.manager_custom_day = Some(day - 2 * 86_400_000);
+                state.manager_custom_end = Some(day);
+                state.date_picker_start = Some(day - 2 * 86_400_000);
+                state.date_picker_end = Some(day);
+                state.date_picker_month = Some(crate::ui::widgets::month_start_ms(day));
+                state.date_picker_open = std::env::var_os("CLIPNEST_PREVIEW_DATE_ONLY").is_none();
+                state.pending = None;
+            }
         }
 
         let mut thumbs = ThumbCache::new(ctx);

@@ -2,7 +2,7 @@
 //!
 //! 交互严格对应 spec §6.1 键盘表与 §6.2 列表项规格；所有副作用通过 [`UiAction`] 交给 Lead。
 
-use crate::model::{ClipItem, ClipKind, MatchMode, SortOrder, TimeRange};
+use crate::model::{ClipItem, ClipKind, MatchMode, TimeRange};
 use crate::ui::export_dialog;
 use crate::ui::keys::{self, PickerCommand};
 use crate::ui::thumbs::ThumbCache;
@@ -10,15 +10,6 @@ use crate::ui::{paint, theme, widgets, ManagerPage, UiAction, UiState};
 use eframe::egui::{self, Align2, Pos2, Rect, UiBuilder, Vec2};
 use std::path::PathBuf;
 use std::time::Instant;
-
-/// 折叠状态下的筛选按钮文案：已选时间条件时直接显示，避免只留一个含义不明的圆点。
-fn filter_button_label(time_range: TimeRange, expanded: bool) -> String {
-    if expanded || time_range == TimeRange::All {
-        "筛选".to_string()
-    } else {
-        format!("筛选 · {}", time_range.label())
-    }
-}
 
 /// 渲染候选窗（`ui` 为面板内容区，外层 frame 由 [`UiState::show`] 提供）。
 pub(crate) fn show(
@@ -172,125 +163,35 @@ pub(crate) fn show(
         }
     });
 
-    // ---- 3a) 关键字模式 / 排序 / 来源（紧凑一行）----
-    let meta_rect = Rect::from_min_size(
+    // ---- 3a) 关键字模式 / 排序（与筛选按钮共用组件）----
+    let meta = widgets::filter_meta_row(
+        ui,
         Pos2::new(full.left(), meta_top),
-        Vec2::new(full.width(), theme::CHIP_HEIGHT),
+        "picker",
+        state.match_mode,
+        state.sort,
+        None,
     );
-    // 筛选按钮在折叠时直接显示当前生效的时间条件（如「筛选 · 近7天」），
-    // 比只有一个色点更明确；点击仍展开/收起时间筛选行。
-    let filter_active = !time_open && state.picker_time_range != TimeRange::All;
-    let filter_label = filter_button_label(state.picker_time_range, time_open);
-    let filter_width = if filter_active {
-        paint::text_width(ui, filter_label.as_str(), theme::font_body()) + 44.0
-    } else {
-        64.0
-    };
+    if let Some(mode) = meta.match_mode {
+        state.set_match_mode(mode);
+    }
+    if let Some(sort) = meta.sort {
+        state.set_sort(sort);
+    }
+
+    // ---- 3b) 日期筛选开关 + 时间范围 ----
+    let filter_width = widgets::time_filter_width(ui, state.picker_time_range, time_open);
     let toggle_rect = Rect::from_min_size(
         Pos2::new(full.right() - 10.0 - filter_width, meta_top),
         Vec2::new(filter_width, theme::CHIP_HEIGHT),
     );
-    let mut next_mode = None;
-    let mut next_sort = None;
-    ui.scope_builder(UiBuilder::new().max_rect(meta_rect), |ui| {
-        let mut left = full.left();
-        let mode_rect = Rect::from_min_size(
-            Pos2::new(left, meta_top),
-            Vec2::new(104.0, theme::CHIP_HEIGHT),
-        );
-        // ComboBox 的按钮会比传入矩形略宽（箭头/内边距），这里留出足够间距，
-        // 避免两个下拉的箭头/底框叠在一起。
-        left = mode_rect.right() + 12.0;
-        let mode_options: Vec<(MatchMode, &str)> = MatchMode::all()
-            .iter()
-            .map(|mode| (*mode, mode.label()))
-            .collect();
-        if let Some(mode) = widgets::dropdown_at(
-            ui,
-            mode_rect,
-            "picker-match-mode",
-            state.match_mode,
-            &mode_options,
-        ) {
-            next_mode = Some(mode);
-        }
-        ui.interact(
-            mode_rect,
-            egui::Id::new("picker-match-mode-hint"),
-            egui::Sense::hover(),
-        )
-        .on_hover_text(state.match_mode.hint());
-        let sort_rect = Rect::from_min_size(
-            Pos2::new(left, meta_top),
-            Vec2::new(104.0, theme::CHIP_HEIGHT),
-        );
-        let sort_options: Vec<(SortOrder, &str)> = SortOrder::all()
-            .iter()
-            .map(|sort| (*sort, sort.label()))
-            .collect();
-        if let Some(sort) =
-            widgets::dropdown_at(ui, sort_rect, "picker-sort", state.sort, &sort_options)
-        {
-            next_sort = Some(sort);
-        }
-    });
-    if let Some(mode) = next_mode {
-        state.set_match_mode(mode);
-    }
-    if let Some(sort) = next_sort {
-        state.set_sort(sort);
-    }
-    // ---- 3b) 日期筛选开关 + 时间范围 ----
-    let filter_kind = if filter_active {
-        widgets::ButtonKind::FilterActive
-    } else {
-        widgets::ButtonKind::Secondary
-    };
-    let filter_resp = widgets::button_at(ui, toggle_rect, &filter_label, filter_kind);
-    let filter_clicked = filter_resp.clicked();
-    let filter_hint = if filter_active {
-        format!(
-            "时间筛选已生效：{}。点击展开调整",
-            state.picker_time_range.label()
-        )
-    } else {
-        "按时间范围筛选".to_string()
-    };
-    filter_resp.on_hover_text(filter_hint);
-    if filter_clicked {
+    if widgets::time_filter_button(ui, toggle_rect, state.picker_time_range, time_open) {
         state.picker_time_open = !time_open;
         if !state.picker_time_open {
             state.date_picker_open = false;
         }
     }
-    let chevron = Pos2::new(toggle_rect.right() - 12.0, toggle_rect.center().y);
-    let stroke = egui::Stroke::new(
-        1.4_f32,
-        if filter_active {
-            theme::accent()
-        } else {
-            theme::text_secondary()
-        },
-    );
-    if time_open {
-        ui.painter().line_segment(
-            [Pos2::new(chevron.x - 4.0, chevron.y + 2.0), chevron],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [chevron, Pos2::new(chevron.x + 4.0, chevron.y + 2.0)],
-            stroke,
-        );
-    } else {
-        ui.painter().line_segment(
-            [Pos2::new(chevron.x - 4.0, chevron.y - 2.0), chevron],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [chevron, Pos2::new(chevron.x + 4.0, chevron.y - 2.0)],
-            stroke,
-        );
-    }
+
     if time_open {
         let time_rect = Rect::from_min_size(
             Pos2::new(full.left(), time_top),
@@ -1063,10 +964,19 @@ mod tests {
 
     #[test]
     fn filter_button_reflects_active_time_range() {
-        assert_eq!(filter_button_label(TimeRange::All, false), "筛选");
-        assert_eq!(filter_button_label(TimeRange::Last7Days, false), "筛选 · 近7天");
-        assert_eq!(filter_button_label(TimeRange::Custom, false), "筛选 · 指定日期");
-        assert_eq!(filter_button_label(TimeRange::Last7Days, true), "筛选");
+        assert_eq!(widgets::time_filter_label(TimeRange::All, false), "筛选");
+        assert_eq!(
+            widgets::time_filter_label(TimeRange::Last7Days, false),
+            "筛选 · 近7天"
+        );
+        assert_eq!(
+            widgets::time_filter_label(TimeRange::Custom, false),
+            "筛选 · 指定日期"
+        );
+        assert_eq!(
+            widgets::time_filter_label(TimeRange::Last7Days, true),
+            "筛选"
+        );
     }
 
     #[test]

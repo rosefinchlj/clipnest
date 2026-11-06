@@ -1157,3 +1157,25 @@
 - `cargo test --release`：**248 passed / 0 failed / 1 ignored**。
 - `--ui-preview settings` + `CLIPNEST_PREVIEW_TOAST` 截图 `docs/screenshots/manager-toast.png`：管理台底部可见「完整备份完成：28 条，图片 8，收藏文件副本 0，1.17 MB」，位于保存栏上方、不遮挡按钮。
 - release 构建 + 9 尺寸图标 patch：exe 13,303,296B，SHA-256 `5F19E622D6D41F69BBB8FC0A2891192D62DF245299EFF62DA42AAC8DF740595C`；`--selftest` 15 项 PASS。
+
+## 53. v1.13.8（2026-11-06，管理台筛选行与候选窗统一）
+
+### 用户反馈
+- 用户 m18857 发管理台筛选行截图：「管理台：这里的ui表现和粘贴板不一样，我要做成一样的效果的。是不是可以做成一个组件复用？」
+- 截图里管理台是「筛选」固定宽按钮 + 右上蓝点、关键词/排序各 96/112、来源 150、gap 6；候选窗已经是「筛选 · 近7天」动态强调色按钮，两者视觉与间距不一致。
+
+### 实现
+- `src/ui/widgets.rs` 新增共享组件：
+  - `time_filter_label(time_range, expanded)`：展开或全部时间显示「筛选」，否则显示「筛选 · 近7天 / 指定日期」；
+  - `time_filter_width(ui, time_range, expanded)`：无生效条件 64，有生效条件按文字宽 +44；
+  - `time_filter_button(ui, rect, time_range, expanded) -> bool`：`ButtonKind::FilterActive` 强调色、chevron、hover 提示；
+  - `FilterMetaResult` + `filter_meta_row(ui, start, id_prefix, match_mode, sort, source)`：关键词模式/排序固定 104，gap 12，来源 150 且可选；候选窗传 `None`，管理台传来源列表。
+- `src/ui/picker.rs` 删除本地 `filter_button_label` 和整段 chevron/宽度代码，改用共享组件；管理台 `src/ui/pages/history.rs` 同步改为动态宽度 + 共享按钮，去掉蓝点，meta 行从按钮右侧 +12 开始，并应用共享组件返回的 match/sort/source。
+- 修复 `src/ui/theme.rs::input_focused()` 在最高磨砂不透明度下 `card_alpha() + 8` 的 u8 溢出（`saturating_add(8)`），避免 debug 预览 panic、release 下焦点色 alpha 回绕。
+- `src/ui/preview.rs` 允许 `CLIPNEST_PREVIEW_TIME` 同时作用于管理台预览，便于对比截图。
+
+### 校验
+- 更新 `filter_button_reflects_active_time_range` 调用共享 `widgets::time_filter_label`；新增 `input_focused_alpha_saturates_at_full_glass`。
+- `cargo test --release`：**249 passed / 0 failed / 1 ignored**。
+- `--ui-preview manager` + `CLIPNEST_PREVIEW_TIME=7` 截图 `docs/screenshots/manager-filter.png`：管理台显示「筛选 · 近7天」强调色按钮，无蓝点；关键词/排序/来源与候选窗同宽同间距。
+- release 构建 + 9 尺寸图标 patch：exe 13,298,176B，SHA-256 `31DC9590ACBA4EA8EDF995E119768418EAB3F3FF082E68E9702217A9AD0F0A91`；`--selftest` 15 项 PASS。
