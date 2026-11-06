@@ -586,12 +586,22 @@ fn extract_all_verified(
 
 /// 打开备份里的数据库快照（只读）并做结构与版本检查。
 fn open_snapshot(path: &Path, key_hex: Option<&str>) -> StoreResult<Connection> {
+    let encrypted = crate::db_crypto::is_encrypted_file(path);
+    if encrypted && key_hex.is_none() {
+        return Err(StoreError::Msg(
+            "备份中的数据库已加密，需要当前 Windows 用户密钥才能检查/恢复".to_string(),
+        ));
+    }
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    if let Some(key) = key_hex {
-        conn.execute_batch(&format!("PRAGMA key = \"x'{key}'\";"))?;
+    // 明文备份不能带 key 打开：SQLCipher 对明文库执行 PRAGMA key 会报
+    // `file is not a database`。是否加密以快照文件头为准，而不是当前库状态。
+    if encrypted {
+        if let Some(key) = key_hex {
+            conn.execute_batch(&format!("PRAGMA key = \"x'{key}'\";"))?;
+        }
     }
     let check: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if check != "ok" {

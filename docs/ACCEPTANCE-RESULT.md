@@ -1108,3 +1108,28 @@
 - UI 实测：管理台「导出」选择 `target\ui-export-test.json`，写出 47,492B；设置 → 数据 →「完整备份…」选择 `target\ui-backup-test.cnbak`，日志「完整备份完成：28 条，图片 8」，文件 1,172,332B。均不再只留 `.lnk`。
 - 用户真实数据目录未改动；`%APPDATA%\ClipNest` 保持原样，恢复副本在 `%APPDATA%\ClipNest.recover-20261106`。
 - release 构建 + 9 尺寸图标 patch：exe 13,302,784B，SHA-256 `F222A66D6FBD0A828F74D96FE4BF6D94154DDDCE9F93540960C1BC44787A7FC9`；`--selftest` 15 项 PASS；app v1.13.5 启动后读取真实 `data.db`（32 条，明文）。
+
+## 51. v1.13.6（2026-11-06，加密后无法恢复明文备份）
+
+### 用户反馈
+- 清空历史后，使用 `C:\Users\jun.liu\Downloads\clipnest-backup-20261106-100628.cnbak` 恢复没有效果。日志两次报 `检查备份失败：SQLite 错误: file is not a database`。
+
+### 根因
+- 该备份创建于 10:06（加密开启前），压缩包内 `data.db` 是明文 SQLite（Python 校验可读出 clips=34、integrity_check=ok）。
+- 10:15 开启数据库加密后，恢复流程仍把当前 `db.key` 传给 `open_snapshot()`；SQLCipher 对明文库执行 `PRAGMA key` 会报 `file is not a database`。
+- 是否加密应看**备份内数据库文件头**，而不是当前主库是否加密。
+
+### 修复
+- `src/store/backup.rs::open_snapshot()` 先用 `db_crypto::is_encrypted_file(path)` 判断快照是否加密：
+  - 明文快照：即使调用方传入 key 也不执行 `PRAGMA key`；
+  - 加密快照：必须提供 key，否则返回「备份中的数据库已加密，需要当前 Windows 用户密钥」；
+  - 校验仍走 `PRAGMA quick_check`。
+- 增加回归断言：明文备份分别用当前 key 检查/恢复都必须成功。
+
+### 校验
+- `cargo test --release backup`：5 passed / 0 failed（含加密备份往返与明文备份进加密库）。
+- 新增 `plaintext_backup_restores_into_encrypted_database`：明文备份恢复到已加密主库，数据保留。
+- `cargo test --release`：**247 passed / 0 failed / 1 ignored**。
+- 用户备份解包校验：`data.db` 311,296B，`SQLite format 3`，clips=34、blobs=8、integrity_check=ok；恢复预览显示 30 条有效条目、8 张图片、完整性校验通过。
+- 实机恢复：v1.13.6 管理台选择该 `.cnbak` → 预览 →「开始恢复」，日志 `从备份合并恢复完成：新增 30 条，跳过重复/缺失 0 条，图片 8`；管理台条目数 32（含恢复后新采集的剪贴板条目）。
+- release 构建 + 9 尺寸图标 patch：exe 13,303,296B，SHA-256 `621D6A1FAA64B55D9AAB7D00E5C4B526816D74FE43B255F173FDB00A3B49A436`；`--selftest` 15 项 PASS；app v1.13.6 启动并在恢复后保持运行。

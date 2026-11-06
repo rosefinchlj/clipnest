@@ -145,9 +145,16 @@ fn backup_roundtrip_restores_text_image_and_favorite_files() {
     assert_eq!(preview.format_version, BACKUP_FORMAT_VERSION);
     assert!(!preview.app_version.is_empty());
 
+    // 明文备份即使当前库已加密、调用方传入了 key，也应忽略 key 正常检查。
+    let bogus_key = "00".repeat(32);
+    let preview_plain = backup::inspect_backup(&backup_path, Some(&bogus_key))
+        .expect("明文备份不应因多余 key 而检查失败");
+    assert_eq!(preview_plain.clips, 3);
+
     // 5) 恢复到另一个隔离库。
     let (dir_b, db_b) = open_db("backup-roundtrip-b");
-    let restored = backup::restore_backup(&db_b, &backup_path, None).expect("恢复失败");
+    let restored =
+        backup::restore_backup(&db_b, &backup_path, Some(&bogus_key)).expect("恢复失败");
     assert_eq!(restored.inserted, 3);
     assert_eq!(restored.skipped, 0);
     assert_eq!(restored.images, 1);
@@ -302,5 +309,21 @@ fn encrypted_database_backup_can_be_inspected_and_restored() {
     let report =
         backup::restore_backup(&dst, &backup_path, key.as_deref()).expect("恢复加密备份失败");
     assert_eq!(report.inserted, 1);
+    assert_eq!(clip_count(&dst), 1);
+}
+
+#[test]
+fn plaintext_backup_restores_into_encrypted_database() {
+    // 用户场景：先创建明文备份，之后开启数据库加密，再从旧明文备份恢复。
+    let (src_dir, src) = open_db("plain-backup-into-enc-src");
+    src.upsert(&text_input("明文备份恢复进加密库")).unwrap();
+    let backup_path = src_dir.join("plain-into-enc.cnbak");
+    backup::create_backup(&src, &backup_path).expect("创建明文备份失败");
+
+    let (_dst_dir, mut dst) = open_db("plain-backup-into-enc-dst");
+    dst.set_encryption(true).expect("目标库开启加密失败");
+    let key = crate::db_crypto::load_key_hex(&dst.data_dir).expect("读取目标库密钥失败");
+    let report = backup::restore_backup(&dst, &backup_path, key.as_deref())
+        .expect("明文备份恢复到加密库失败");    assert_eq!(report.inserted, 1);
     assert_eq!(clip_count(&dst), 1);
 }
