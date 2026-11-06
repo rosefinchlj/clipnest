@@ -1,6 +1,6 @@
 [package]
 name = "clipnest"
-version = "1.13.6"
+version = "1.13.7"
 edition = "2021"
 rust-version = "1.85"
 description = "ClipNest · 剪贴匣 —— Windows 深色/浅色磨砂玻璃剪贴板管理器"

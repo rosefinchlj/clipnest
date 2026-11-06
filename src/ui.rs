@@ -38,8 +38,8 @@ use std::time::{Duration, Instant};
 
 /// 搜索防抖 80ms（spec §6.1/§11）。
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(80);
-/// Toast 显示 1.6s（spec §6.3/§7.3）。
-const TOAST_DURATION: Duration = Duration::from_millis(1600);
+/// Toast 显示 3.2s：导出/备份/恢复的结果包含路径与条数，1.6s 太短容易错过。
+pub(crate) const TOAST_DURATION: Duration = Duration::from_millis(3200);
 /// 翻页/加载更多时距列表底部多少像素触发。
 const LOAD_MORE_MARGIN: f32 = 240.0;
 
@@ -582,6 +582,19 @@ impl UiState {
             text: msg.into(),
             until: Instant::now() + TOAST_DURATION,
         });
+    }
+
+    /// 当前 toast 的文本与淡入淡出透明度；候选窗和管理台共用同一套动画。
+    pub(crate) fn toast_view(&self) -> Option<(String, f32)> {
+        let toast = self.toast.as_ref()?;
+        let remaining = toast
+            .until
+            .saturating_duration_since(Instant::now())
+            .as_secs_f32();
+        let total = TOAST_DURATION.as_secs_f32();
+        let elapsed = (total - remaining).max(0.0);
+        let alpha = (elapsed / 0.12).clamp(0.0, 1.0) * (remaining / 0.28).clamp(0.0, 1.0);
+        Some((toast.text.clone(), alpha))
     }
 
     /// 当前模式。

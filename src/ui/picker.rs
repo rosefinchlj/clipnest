@@ -395,15 +395,8 @@ pub(crate) fn show(
         state.request_manager(ManagerPage::Settings, actions);
     }
 
-    // ---- 6) Toast（窗口下部浮起，1.6s 淡出）----
-    if let Some(toast) = &state.toast {
-        let remaining = toast
-            .until
-            .saturating_duration_since(Instant::now())
-            .as_secs_f32();
-        let elapsed = (1.6 - remaining).max(0.0);
-        let alpha = (elapsed / 0.10).clamp(0.0, 1.0) * (remaining / 0.22).clamp(0.0, 1.0);
-        let text = toast.text.clone();
+    // ---- 6) Toast（窗口下部浮起，3.2s 淡出）----
+    if let Some((text, alpha)) = state.toast_view() {
         widgets::paint_toast(
             ui,
             Pos2::new(full.center().x, list_rect.bottom() - 6.0),

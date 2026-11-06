@@ -59,6 +59,17 @@ pub(crate) fn show(
     if !state.preview {
         edge_resize(ui, full);
     }
+
+    // ---- Toast：管理台自己的导出/备份/恢复结果提示 ----
+    // 之前 toast 只在候选窗绘制，管理台里点完按钮看不到成功/失败反馈。
+    if let Some((text, alpha)) = state.toast_view() {
+        widgets::paint_toast(
+            ui,
+            Pos2::new(full.center().x, full.bottom() - 96.0),
+            &text,
+            alpha,
+        );
+    }
 }
 
 /// 处理管理台快捷键。

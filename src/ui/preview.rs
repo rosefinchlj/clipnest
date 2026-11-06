@@ -194,12 +194,13 @@ impl PreviewState {
             }
         }
         state.detail_open = true;
-        if mode == "picker" {
-            if let Ok(text) = std::env::var("CLIPNEST_PREVIEW_TOAST") {
-                if !text.is_empty() {
-                    state.toast(text);
-                }
+        // 截图自检：候选窗和管理台都能注入一条 toast，验证结果提示的可见性。
+        if let Ok(text) = std::env::var("CLIPNEST_PREVIEW_TOAST") {
+            if !text.is_empty() {
+                state.toast(text);
             }
+        }
+        if mode == "picker" {
             if let Ok(range) = std::env::var("CLIPNEST_PREVIEW_TIME") {
                 state.picker_time_range = match range.as_str() {
                     "today" => crate::model::TimeRange::Today,

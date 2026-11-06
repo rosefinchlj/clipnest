@@ -1133,3 +1133,27 @@
 - 用户备份解包校验：`data.db` 311,296B，`SQLite format 3`，clips=34、blobs=8、integrity_check=ok；恢复预览显示 30 条有效条目、8 张图片、完整性校验通过。
 - 实机恢复：v1.13.6 管理台选择该 `.cnbak` → 预览 →「开始恢复」，日志 `从备份合并恢复完成：新增 30 条，跳过重复/缺失 0 条，图片 8`；管理台条目数 32（含恢复后新采集的剪贴板条目）。
 - release 构建 + 9 尺寸图标 patch：exe 13,303,296B，SHA-256 `621D6A1FAA64B55D9AAB7D00E5C4B526816D74FE43B255F173FDB00A3B49A436`；`--selftest` 15 项 PASS；app v1.13.6 启动并在恢复后保持运行。
+
+## 52. v1.13.7（2026-11-06，导出/备份/恢复结果没有提示）
+
+### 用户反馈
+- 「导出、备份、恢复，操作结果都没有提示，体验不佳。」
+
+### 根因
+- 操作流程其实已经产生提示：`src/app.rs` 与 `src/manager_window.rs` 收到 `BackupEvent::Created/Restored/Failed`、`Event::Toast` 后都会调用 `UiState::toast()`；导出开始时也会弹「正在导出到 …」。
+- 但 toast **只在候选窗 `src/ui/picker.rs::show()` 里绘制**，管理台 `src/ui/manager.rs::show()` 没有绘制 toast。导出/备份/恢复按钮都在管理台，所以提示只存在于不可见的候选窗状态里，用户看起来就是「点了没反应」。
+- 另外 toast 默认只有 1.6s，即使显示也容易错过包含路径/条数的结果。
+
+### 修复
+- `src/ui.rs`：
+  - 增加 `pub(crate) fn toast_view() -> Option<(String, f32)>`，统一候选窗与管理台的淡入淡出计算；
+  - `TOAST_DURATION` 从 1600ms 延长到 **3200ms**。
+- `src/ui/manager.rs::show()` 末尾绘制 `widgets::paint_toast()`，位于窗口底部内容区上方、底部保存栏之上；失败提示同样可见。
+- `src/ui/picker.rs` 改用 `state.toast_view()`，不再各自写一套 1.6s 公式。
+- `src/ui/preview.rs` 允许 `CLIPNEST_PREVIEW_TOAST` 在管理台预览中注入假 toast，便于截图验证。
+
+### 校验
+- 新增 `toast_view_reports_text_and_alpha`：toast 中段文本正确、透明度接近 1。
+- `cargo test --release`：**248 passed / 0 failed / 1 ignored**。
+- `--ui-preview settings` + `CLIPNEST_PREVIEW_TOAST` 截图 `docs/screenshots/manager-toast.png`：管理台底部可见「完整备份完成：28 条，图片 8，收藏文件副本 0，1.17 MB」，位于保存栏上方、不遮挡按钮。
+- release 构建 + 9 尺寸图标 patch：exe 13,303,296B，SHA-256 `5F19E622D6D41F69BBB8FC0A2891192D62DF245299EFF62DA42AAC8DF740595C`；`--selftest` 15 项 PASS。

@@ -162,6 +162,18 @@ fn toast_lifecycle() {
 }
 
 #[test]
+fn toast_view_reports_text_and_alpha() {
+    let mut s = state();
+    s.toast("完整备份完成");
+    if let Some(t) = &mut s.toast {
+        t.until = Instant::now() + Duration::from_millis(1600);
+    }
+    let (text, alpha) = s.toast_view().expect("toast 应可见");
+    assert_eq!(text, "完整备份完成");
+    assert!(alpha > 0.9, "toast 中段应基本不透明：{alpha}");
+}
+
+#[test]
 fn search_debounce_eventually_dispatches_once() {
     let mut s = state();
     let ctx = egui::Context::default();
